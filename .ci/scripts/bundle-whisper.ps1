@@ -18,10 +18,13 @@ Set-Location $repoRoot
 #    audio/TTS components; it is a developer-machine check, not a CI gate.
 #    If CI cannot reach GitHub/HuggingFace, point SAROS_WHISPER_URL / SAROS_WHISPER_MODEL_URL
 #    at internal mirrors (both are passed straight through to fetch-whisper.mjs).
+$packMode = node build/saros/pack-optimization.mjs --mode
+if ($LASTEXITCODE -ne 0) { Write-Error 'Invalid packaging mode'; exit 1 }
 $extraArgs = @()
+if ($packMode -eq 'standard') { $extraArgs += '--skip-model' }
 if ($env:SAROS_WHISPER_URL) { $extraArgs += @('--whisper-url', $env:SAROS_WHISPER_URL) }
 if ($env:SAROS_WHISPER_MODEL_URL) { $extraArgs += @('--model-url', $env:SAROS_WHISPER_MODEL_URL) }
-Write-Host "=== Fetching whisper.cpp binaries + model (optional dependency, local ASR) ==="
+Write-Host "=== Fetching whisper.cpp (mode=$packMode; standard defers model to first ASR use) ==="
 node build/saros/fetch-whisper.mjs --skip-selftest @extraArgs
 if ($LASTEXITCODE -ne 0) {
   Write-Host "[WARN] whisper fetch failed (exit $LASTEXITCODE) - installer will ship WITHOUT local ASR."
@@ -67,11 +70,5 @@ if ($dllCount -gt 0) {
   Write-Host "[WARN] no whisper DLLs found in build/saros/bin - whisper-cli will not start"
 }
 
-$model = Join-Path $repoRoot "build\saros\models\ggml-base.bin"
-if (Test-Path $model) {
-  New-Item -ItemType Directory -Force -Path $stagingModels | Out-Null
-  Copy-Item $model $stagingModels -Force
-  Write-Host "[OK] bundled ggml-base.bin -> resources/saros/models/"
-} else {
-  Write-Host "[WARN] ggml-base.bin not present in build/saros/models - skipping (whisper has no model to load)"
-}
+node build/saros/pack-optimization.mjs --stage-model $buildOut
+if ($LASTEXITCODE -ne 0) { Write-Error 'Whisper model staging policy failed'; exit 1 }

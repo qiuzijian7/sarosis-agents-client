@@ -213,7 +213,7 @@ const scanDanglingLinks = (nodeModulesDir, label) => {
 	scan(nodeModulesDir, 0);
 };
 
-const scanHeavy = (nodeModulesDir, label) => {
+const scanHeavy = (nodeModulesDir, label, isProfileSeed = false) => {
 	if (!nodeModulesDir || !fs.existsSync(nodeModulesDir)) {
 		return;
 	}
@@ -225,7 +225,7 @@ const scanHeavy = (nodeModulesDir, label) => {
 		}
 	}
 	const virtualStore = path.join(nodeModulesDir, '.pnpm');
-	if (fs.existsSync(virtualStore)) {
+	if (isProfileSeed && fs.existsSync(virtualStore)) {
 		for (const entry of fs.readdirSync(virtualStore)) {
 			if (VIRTUAL_STORE_HEAVY_RE.test(entry)) {
 				problem(`${label} 的 .pnpm 里还有 ${entry}（种子里的内核副本，prepack 应裁掉）`
@@ -244,7 +244,7 @@ if (bundledRuntime) {
 		for (const p of fs.readdirSync(seedProfiles, { withFileTypes: true })) {
 			if (p.isDirectory()) {
 				const nm = path.join(seedProfiles, p.name, 'node_modules');
-				scanHeavy(nm, `种子 profile ${p.name}`);
+				scanHeavy(nm, `种子 profile ${p.name}`, true);
 				scanDanglingLinks(nm, `种子 profile ${p.name}`);
 			}
 		}

@@ -204,12 +204,14 @@ foreach ($name in @('whisper-cli.exe', 'whisper.dll', 'ggml.dll')) {
     $asrMissing += $name
   }
 }
-$asrModel = Join-Path $appRoot "..\saros\models\ggml-base.bin"
-if (Test-Path $asrModel) {
-  Write-Host '  [OK] resources\saros\models\ggml-base.bin'
+$packMode = node build/saros/pack-optimization.mjs --mode
+if ($LASTEXITCODE -ne 0) { Write-Error 'Invalid packaging mode'; exit 1 }
+node build/saros/pack-optimization.mjs --check-model (Split-Path (Split-Path $appRoot))
+if ($LASTEXITCODE -ne 0) { Write-Error 'Whisper model policy verification failed'; exit 1 }
+if ($packMode -eq 'standard') {
+  Write-Host '  [OK] Whisper base model externalized; first ASR use downloads and verifies the fixed model'
 } else {
-  Write-Host '  [WARN] resources\saros\models\ggml-base.bin MISSING - whisper has no model to load'
-  $asrMissing += 'ggml-base.bin'
+  Write-Host '  [OK] resources\saros\models\ggml-base.bin (verified offline model)'
 }
 if ($asrMissing.Count -gt 0) {
   Write-Host "[WARN] Installer ships WITHOUT local ASR. Fix: node build/saros/fetch-whisper.mjs"

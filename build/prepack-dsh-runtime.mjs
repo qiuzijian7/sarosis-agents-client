@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 //   （10-28 的守卫把"不许有 libreoffice 内核"硬编码，11-02 Office 路线把清单置空后守卫没跟上
 //    ⇒ CI 全新构建会误报拦出包）。详见 build/saros/prune-list.mjs。
 import { PRUNE_LIST, VIRTUAL_STORE_HEAVY_RE } from './saros/prune-list.mjs';
+import { SEED_GENERATOR_REVISION, archiveSeedPlugin, relativizeSeedPaths } from './saros/seed-package.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = join(root, 'dsh-plugins', 'dsh-compat.json');
@@ -371,7 +372,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	}
 	if (existsSync(markerPath)) {
 		const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
-		if (marker.dsh === dshVersion && JSON.stringify(marker.plugins) === JSON.stringify(wantPlugins) && existsSync(join(profileDir, 'package.json'))) {
+		if (marker.generatorRevision === SEED_GENERATOR_REVISION && marker.dsh === dshVersion && JSON.stringify(marker.plugins) === JSON.stringify(wantPlugins) && existsSync(join(profileDir, 'package.json'))) {
 			// ★ 2026-10-28：marker 只说明"上次建的时候清单是这个"，**不说明磁盘上真有**。
 			//   实测（本机 0.2.1-rc.1 种子）：marker 26 个插件、仓库已 33 个，两个插件目录曾被删空过，
 			//   而 marker 与清单恰好一致 ⇒ 永不自愈 ⇒ 装机后首启还要 `dsh plugin add`（需 pnpm）✗。
@@ -381,9 +382,11 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 				// ★ 2026-11-07：marker 命中不代表产物是"干净"的 —— 旧种子里可能还留着上次裁剪
 				//   造成的悬空 junction（gulp 拷贝时 stat ⇒ ENOENT ⇒ 整个打包任务崩）。
 				//   ⇒ 幂等跳过之前也补跑一次断链清理（和 prune 一样是幂等自愈，秒级）。
-				const vs = join(profileDir, 'node_modules', '.pnpm');
-				if (existsSync(vs)) {
-					pruneDanglingLinks(profileDir, 'profile seed');
+				relativizeSeedPaths(profileDir);
+				prune(profileDir, 'profile seed');
+				const afterPruneGaps = seedPluginGaps(profileDir, wantPlugins);
+				if (afterPruneGaps.length) {
+					throw new Error(`cached profile seed lost required plugins after prune: ${afterPruneGaps.join(', ')}`);
 				}
 				console.log('[prepack-dsh] profile seed 已是最新，跳过');
 				return;
@@ -393,8 +396,9 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	}
 	console.log('[prepack-dsh] building profile seed（约 1–3 分钟，仅构建期一次性）…');
 	removeTreeOrThrow(seed, 'dsh 要求 profile 目录不存在，由它自己创建'); // 种子里的 node_modules 很深 ⇒ 必须走扩展长度删除
-	// copy 导入模式：node_modules 是真文件而不是指向 pnpm store 的链接——否则搬不走。
-	const env = { ...process.env, DSH_HOME: seed, npm_config_package_import_method: 'copy' };
+	// pnpm 11 的通用配置只认 pnpm_config_*；npm_config_* 不保证 copy 导入生效。
+	// 只复制包文件，保留 pnpm 的既有 isolated 布局和 Windows 默认虚拟店名长度。
+	const env = { ...process.env, DSH_HOME: seed, pnpm_config_package_import_method: 'copy' };
 	// ★ 2026-11-07：把**仓库 pin 的 pnpm** 前置到 dsh 子进程的 PATH（dsh plugin add spawn 裸 `pnpm`）。
 	//   Windows 上 process.env 的键可能是 `Path` 而非 `PATH` ⇒ 找到真实的那个键再改，避免多出一个
 	//   大小写不同的重复键（Node 在 Windows 上会合并，但子进程继承时行为不总一致）。
@@ -477,6 +481,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 			'# ⚠ 不强钉 nodeLinker：pnpm 12 的 .pnpm 虚拟店布局实测可正常启动 Host，',
 			'#   强切 hoisted 反而让 required 插件起不来（2026-11-07 实测）。体积由下面的',
 			'#   .pnpm 内核裁剪兜住；进一步的布局优化另做。',
+			'packageImportMethod: copy',
 			'dangerouslyAllowAllBuilds: true',
 			'allowBuilds:',
 			...APPROVED_BUILD_DEPS.map(name => `  ${name}: true`),
@@ -489,16 +494,11 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	}
 	for (const src of pluginSources) {
 		const pkg = JSON.parse(readFileSync(join(src, 'package.json'), 'utf8'));
-		// 与运行时 supervisor._stagePlugin 同构：暂存到 profile 内再装（避开跨盘符 file: 坑）。
+		// 不可变 tgz 避免下一次 pnpm add 重新导入全部 file: 目录；归档留在 profile 内，可搬运。
 		const flat = pkg.name.replace(/^@/, '').replace(/\//g, '-');
-		const staged = join(profileDir, '.vssaros', 'plugins', `${flat}-${pkg.version}`);
-		removeTree(staged);
-		mkdirSync(staged, { recursive: true });
-		cpSync(src, staged, {
-			recursive: true,
-			filter: s => !/[\\/]node_modules([\\/]|$)/.test(s.slice(src.length)),
-		});
-		dsh(['plugin', '--profile', 'vssaros', 'add', `file:${staged.replace(/\\/g, '/')}`]);
+		const archive = join(profileDir, '.vssaros', 'plugins', `${flat}-${pkg.version}.tgz`);
+		await archiveSeedPlugin(src, archive);
+		dsh(['plugin', '--profile', 'vssaros', 'add', `file:${archive.replace(/\\/g, '/')}`]);
 		const installed = join(profileDir, 'node_modules', ...pkg.name.split('/'), 'package.json');
 		if (!existsSync(installed)) {
 			throw new Error(`seed 插件安装失败：${pkg.name}`);
@@ -536,21 +536,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	// 后处理：暂存插件的 file: 依赖是构建机绝对路径（pnpm 安装时写入 package.json / lockfile），
 	// 搬到用户机器上会断。改写成 profile 相对路径——暂存目录就在 profile 里（.vssaros/plugins/），
 	// 相对写法天然可搬运。
-	const seedPrefix = profileDir.replace(/\\/g, '/');
-	let rewritten = 0;
-	for (const f of ['package.json', 'pnpm-lock.yaml']) {
-		const p = join(profileDir, f);
-		if (!existsSync(p)) {
-			continue;
-		}
-		const text = readFileSync(p, 'utf8');
-		const fixed = text.replaceAll(`file:${seedPrefix}/`, 'file:');
-		if (fixed !== text) {
-			const { writeFileSync: wf } = await import('node:fs');
-			wf(p, fixed);
-			rewritten++;
-		}
-	}
+	const rewritten = relativizeSeedPaths(profileDir);
 	console.log(`[prepack-dsh] seed path rewrite: ${rewritten} file(s) de-absolutized`);
 	// ★ 安全（2026-10-17）：上面那次"试启动"会在种子里生成 `.credentials.yaml`
 	// （`client-connection/browser-session` 的 kind=grant 记录）——**绝不能烘进安装包**：
@@ -592,6 +578,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 			'# 由 build/prepack-dsh-runtime.mjs 生成：随种子分发的最小白名单。',
 			'# 只放行下面这些包运行 install 脚本；新装的第三方插件若带 build script，',
 			'# pnpm 会提示 `pnpm approve-builds`，由用户自行决定（绝不无条件放行）。',
+			'packageImportMethod: copy',
 			'allowBuilds:',
 			...APPROVED_BUILD_DEPS.map(name => `  ${name}: true`),
 			''
@@ -609,7 +596,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		}
 		throw new Error(`profile 种子里还有 ${remainingDangling.length} 个悬空链接 ⇒ gulp 的 vinyl-fs stat 会 ENOENT（本次出包必须失败）`);
 	}
-	writeFileSync(markerPath, JSON.stringify({ dsh: dshVersion, plugins: wantPlugins, createdAt: new Date().toISOString() }, undefined, 2));
+	writeFileSync(markerPath, JSON.stringify({ generatorRevision: SEED_GENERATOR_REVISION, dsh: dshVersion, plugins: wantPlugins, createdAt: new Date().toISOString() }, undefined, 2));
 	console.log(`[prepack-dsh] profile seed ready (${Math.round(dirSize(seed) / 1024 / 1024)} MB)；覆盖全部 ${Object.keys(wantPlugins).length} 个随包插件 ✓`);
 	if (acceptedVersionGates.size) {
 		// 这些豁免**落在 profile 里**（DSH_HOME=seed）⇒ 随种子带到用户机器，用户首启不再撞版本闸门。
@@ -740,7 +727,8 @@ function prune(targetDir, label = 'runtime') {
 	//   上面的 PRUNE_LIST（hoisted 路径）根本命不中 ⇒ 种子实测 755MB。
 	//   即便 `nodeLinker: hoisted` 已写进 pnpm-workspace.yaml，也顺手把虚拟店里的内核裁掉。
 	const virtualStore = join(targetDir, 'node_modules', '.pnpm');
-	if (existsSync(virtualStore)) {
+	const isProfileSeed = label === 'profile seed' && /(?:^|[\\/])profile-seed[\\/]profiles[\\/][^\\/]+$/.test(targetDir);
+	if (isProfileSeed && existsSync(virtualStore)) {
 		for (const entry of readdirSync(virtualStore)) {
 			if (!VIRTUAL_STORE_HEAVY_RE.test(entry)) {
 				continue;

@@ -21,6 +21,14 @@ $UpdateServer = $env:SAROS_UPDATE_SERVER
 if (-not $UpdateServer) { $UpdateServer = "http://zijianqiu-any1.devcloud.woa.com:3030" }
 $UploadToken = $env:SAROS_UPLOAD_TOKEN
 
+node build/saros/release-assets.mjs --invalidate-upload
+if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Failed to invalidate old upload receipts" -ForegroundColor Red; exit 1 }
+node build/saros/pack-optimization.mjs --check-exes
+if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Installer gate failed; upload aborted" -ForegroundColor Red; exit 1 }
+$assetsJson = node build/saros/pack-optimization.mjs --targets-json
+if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Invalid packaging policy" -ForegroundColor Red; exit 1 }
+$setupAssets = ConvertFrom-Json -InputObject ($assetsJson -join "`n")
+
 Write-Host "=== VsSaros exe upload to update server ===" -ForegroundColor Green
 Write-Host "Server: $UpdateServer"
 
@@ -51,7 +59,8 @@ Write-Host "========================================"
 Write-Host ""
 
 # ---- Verify version-info.json exists (written by packaging step) ----
-$versionInfoPath = ".build\win32-x64\user-setup\version-info.json"
+$firstSetupTarget = @($setupAssets)[0].target
+$versionInfoPath = ".build\win32-x64\${firstSetupTarget}-setup\version-info.json"
 if (Test-Path $versionInfoPath) {
     $versionInfo = Get-Content $versionInfoPath -Raw | ConvertFrom-Json
     Write-Host "Packaged version-info.json:"
@@ -79,10 +88,9 @@ Write-Host "Using: $curlExe"
 Write-Host ""
 
 # ---- Packages to upload ----
-$packages = @(
-    @{ Platform = "win32-x64-user"; ExePath = ".build\win32-x64\user-setup\VsSarosUserSetup.exe"; Name = "User Setup" }
-    @{ Platform = "win32-x64";     ExePath = ".build\win32-x64\system-setup\VsSarosSetup.exe"; Name = "System Setup" }
-)
+$packages = @($setupAssets | ForEach-Object {
+    @{ Platform = $_.platform; ExePath = $_.rel; Name = $_.target }
+})
 
 # ---- Upload each package ----
 $successCount = 0
@@ -105,6 +113,16 @@ foreach ($pkg in $packages) {
     $sizeMB = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
     Write-Host "  File size: ${sizeMB} MB"
 
+    # 与更新服务器 MAX_UPLOAD_SIZE（默认 2 GiB）对齐：超限就地失败并给出可读原因，
+    # 不再白传几百 MB 后只拿到 curl (55) Broken pipe。
+    $maxUploadMB = 2048
+    if ($env:SAROS_MAX_UPLOAD_MB) { $maxUploadMB = [int]$env:SAROS_MAX_UPLOAD_MB }
+    if ($sizeMB -gt $maxUploadMB) {
+        Write-Host "  [ERROR] ${sizeMB} MB exceeds upload limit ${maxUploadMB} MB (server MAX_UPLOAD_SIZE / SAROS_MAX_UPLOAD_MB)" -ForegroundColor Red
+        $failCount++
+        continue
+    }
+
     # Build upload URL
     $uploadUrl = "${UpdateServer}/admin/upload?platform=${platform}&commit=${commit}&productVersion=${productVersion}"
 
@@ -113,6 +131,9 @@ foreach ($pkg in $packages) {
     # -H "Expect:" suppresses Expect: 100-continue header
     # -sS shows errors but not progress bar (we add our own logging)
     # --connect-timeout 30 --max-time 600 sets reasonable timeouts
+    $responseDir = Join-Path (Get-Location).Path '.build\pack-reports\upload-responses'
+    New-Item -ItemType Directory -Path $responseDir -Force | Out-Null
+    $responseFile = Join-Path $responseDir ($platform + '.json')
     $curlArgs = @(
         "-sS",
         "-X", "POST",
@@ -121,7 +142,7 @@ foreach ($pkg in $packages) {
         "--connect-timeout", "30",
         "--max-time", "600",
         "--upload-file", $exePath,
-        "-o", "NUL",
+        "-o", $responseFile,
         "-w", "`n%{http_code}"
     )
 
@@ -133,27 +154,40 @@ foreach ($pkg in $packages) {
     $uploaded = $false
     for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
         Write-Host "  Uploading... (attempt $attempt/$maxRetries)"
+        if (Test-Path -LiteralPath $responseFile) { Remove-Item -LiteralPath $responseFile -Force }
 
-        $output = & $curlExe @curlArgs 2>&1
-        $exitCode = $LASTEXITCODE
+        # PowerShell 5.1 会把本机命令的 stderr 转成 ErrorRecord；在 $ErrorActionPreference=Stop
+        # 下 curl 的任何告警都会抛 NativeCommandError 并终止整个脚本 —— 3 次重试和第二个
+        # 安装包都跑不到。调用期间临时降级为 Continue，让重试与错误汇总真正生效。
+        $prevErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $output = & $curlExe @curlArgs 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevErrorAction
+        }
 
         # Extract HTTP status code from last line of output
         $lines = ($output -join "`n").Trim().Split("`n")
         $httpCode = $lines[-1].Trim()
 
         if ($exitCode -eq 0 -and $httpCode -eq "200") {
-            Write-Host "  [OK] Upload successful (HTTP 200)" -ForegroundColor Green
-            $successCount++
-            $uploaded = $true
-            break
-        } else {
-            $errMsg = ($output | Select-Object -First 5) -join " "
-            if ($attempt -lt $maxRetries) {
-                Write-Host "  [WARN] Upload failed (curl exit=$exitCode, HTTP $httpCode): $errMsg -- retrying in 5s..." -ForegroundColor Yellow
-                Start-Sleep -Seconds 5
-            } else {
-                Write-Host "  [ERROR] Upload failed (curl exit=$exitCode, HTTP $httpCode): $errMsg" -ForegroundColor Red
+            node build/saros/release-assets.mjs --record-upload $platform $responseFile $UpdateServer
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  [OK] Upload and immutable archive receipt verified" -ForegroundColor Green
+                $successCount++
+                $uploaded = $true
+                break
             }
+            Write-Host "  [WARN] HTTP 200 did not provide a valid immutable archive receipt" -ForegroundColor Yellow
+        }
+        $errMsg = ($output | Select-Object -First 5) -join " "
+        if ($attempt -lt $maxRetries) {
+            Write-Host "  [WARN] Upload failed (curl exit=$exitCode, HTTP $httpCode): $errMsg -- retrying in 5s..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 5
+        } else {
+            Write-Host "  [ERROR] Upload failed (curl exit=$exitCode, HTTP $httpCode): $errMsg" -ForegroundColor Red
         }
     }
     if (-not $uploaded) { $failCount++ }
@@ -169,11 +203,15 @@ if ($failCount -gt 0) {
     exit 1
 }
 
+node build/saros/release-assets.mjs --complete-upload $UpdateServer
+if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Immutable archive links are incomplete or not downloadable; release blocked" -ForegroundColor Red; exit 1 }
+
 # ---- Verify: check server manifest ----
 Write-Host ""
 Write-Host "--- Verify manifest ---"
 try {
-    $verifyUrl = "${UpdateServer}/api/update/win32-x64-user/saros/${commit}"
+    $verifyPlatform = $packages[0].Platform
+    $verifyUrl = "${UpdateServer}/api/update/${verifyPlatform}/saros/${commit}"
     $response = Invoke-WebRequest -Uri $verifyUrl -UseBasicParsing -TimeoutSec 10
     if ($response.StatusCode -eq 204) {
         Write-Host "[OK] Verify success: server manifest updated, commit matches" -ForegroundColor Green

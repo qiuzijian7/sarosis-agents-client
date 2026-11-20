@@ -54,14 +54,15 @@ const GH_TOKEN = process.env.GH_TOKEN || '';          // 私有仓库需要
 const MANIFEST_PATH = process.env.MANIFEST_PATH || path.join(__dirname, 'manifest.json');
 // 静态下载目录：默认 manifest.json 同级的 ../downloads，可用 DOWNLOADS_DIR 覆盖
 const DOWNLOADS_DIR = process.env.DOWNLOADS_DIR || path.resolve(__dirname, '..', 'downloads');
-// 单文件下载大小上限（默认 512MB），防止误传大文件耗尽内存
-const MAX_DOWNLOAD_SIZE = Number(process.env.MAX_DOWNLOAD_SIZE) || 512 * 1024 * 1024;
+// 单文件下载大小上限（默认 2 GiB）。内置 ffmpeg / whisper 后 Windows 安装包约 760 MiB，
+// 旧的 512 MiB 默认值会让刚上传的包立刻被下载端 413 挡住、历史归档也被过滤掉。
+const MAX_DOWNLOAD_SIZE = Number(process.env.MAX_DOWNLOAD_SIZE) || 2 * 1024 * 1024 * 1024;
 // 上传端点鉴权 token（流水线 POST /admin/upload 需在 X-Upload-Token 头携带）
 const UPLOAD_TOKEN = process.env.UPLOAD_TOKEN || '';
 // 对外公开基础 URL（用于拼接下载 url；留空则用请求 Host 头推导）
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
-// 上传文件大小上限（默认 512MB）
-const MAX_UPLOAD_SIZE = Number(process.env.MAX_UPLOAD_SIZE) || 512 * 1024 * 1024;
+// 上传文件大小上限（默认 2 GiB，须与 MAX_DOWNLOAD_SIZE 一致；可用环境变量覆盖）
+const MAX_UPLOAD_SIZE = Number(process.env.MAX_UPLOAD_SIZE) || 2 * 1024 * 1024 * 1024;
 
 // ---- 历史版本归档（供官网「历史版本下载」）----------------------------------
 // 归档形状：DOWNLOADS_DIR/archive/<版本标识>/<安装包文件名>
@@ -398,6 +399,17 @@ function handleUpload(req, res, url) {
 		return;
 	}
 
+	// 预检 Content-Length：curl --upload-file 会声明文件大小，超限直接回 413，
+	// 不必等传到几百 MB 才断开（那样客户端只看到 curl (55) Broken pipe，看不到真实原因）。
+	const declaredSize = Number(req.headers['content-length'] || 0);
+	if (Number.isFinite(declaredSize) && declaredSize > MAX_UPLOAD_SIZE) {
+		console.warn(`[upload] 拒绝 platform=${platform}: ${declaredSize} > MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE}`);
+		res.writeHead(413, { 'Content-Type': 'application/json', 'Connection': 'close' });
+		res.end(JSON.stringify({ error: 'file too large', size: declaredSize, limit: MAX_UPLOAD_SIZE }));
+		req.resume();
+		return;
+	}
+
 	const fileName = `${baseName}.exe`;
 	fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 	const filePath = path.join(DOWNLOADS_DIR, fileName);
@@ -416,13 +428,17 @@ function handleUpload(req, res, url) {
 			received += chunk.length;
 			if (received > MAX_UPLOAD_SIZE) {
 				aborted = true;
-				req.destroy();
+				// 无 Content-Length 的兜底分支：先把 413 发出去，再丢弃剩余请求体。
+				// 原来直接 req.destroy() 会把响应一起带走，客户端只看到 curl (55) Broken pipe。
+				if (!res.headersSent) {
+					res.writeHead(413, { 'Content-Type': 'application/json', 'Connection': 'close' });
+					res.end(JSON.stringify({ error: 'file too large', size: received, limit: MAX_UPLOAD_SIZE }));
+				}
+				req.unpipe(hashTransform);
+				req.resume();
 				writeStream.destroy();
 				try { fs.unlinkSync(filePath); } catch { /* ignore */ }
-				if (!res.headersSent) {
-					res.writeHead(413, { 'Content-Type': 'application/json' });
-					res.end(JSON.stringify({ error: 'file too large' }));
-				}
+				callback();
 				return;
 			}
 			callback(null, chunk);

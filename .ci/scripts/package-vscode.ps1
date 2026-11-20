@@ -5,6 +5,8 @@
 # $repoRoot 因此为 null，随后 Set-Location 一并失败。改用 Split-Path 两次。
 $repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
+node build/saros/pack-optimization.mjs --invalidate-staging
+if ($LASTEXITCODE -ne 0) { Write-Error "Failed to invalidate previous packaging reports"; exit 1 }
 
 # 直接调本地 gulp/tsc，绕开 npx（npx 在 CI 无 stdin 时会交互式询问
 # "Ok to proceed?" 从而无限挂起）。
@@ -21,6 +23,8 @@ if (-not (Test-Path $tsc)) { Write-Error "local tsc not found at $tsc"; exit 1 }
 Write-Host "Prepacking bundled dsh runtime"
 node build/prepack-dsh-runtime.mjs
 if ($LASTEXITCODE -ne 0) { Write-Error "prepack-dsh-runtime failed"; exit 1 }
+node build/saros/pack-optimization.mjs --check-seed
+if ($LASTEXITCODE -ne 0) { Write-Error "Bundled profile seed is incomplete; packaging aborted before Office preparation"; exit 1 }
 
 # Office 运行时 Python 负载（2026-11-02，≈150MB 下载 + 解包；缓存命中时只剩解包）：
 # 7 个 Office 技能（docx/xlsx/pptx + 渲染 / PDF / 重算）靠它跑。与 dsh-runtime 同理 ——
@@ -55,3 +59,6 @@ if (-not (Test-Path "extensions/agent-studio/out/extension.js")) {
 # 缺失且无法自愈时脚本会 exit(1) 禁止带病出包。
 node build/saros/strip-before-pack.mjs
 if ($LASTEXITCODE -ne 0) { Write-Error "strip-before-pack failed"; exit 1 }
+$vsOutRoot = Join-Path (Split-Path $repoRoot) "VSCode-win32-x64"
+node build/saros/pack-optimization.mjs --record-staging $vsOutRoot
+if ($LASTEXITCODE -ne 0) { Write-Error "Failed to record staging build identity"; exit 1 }

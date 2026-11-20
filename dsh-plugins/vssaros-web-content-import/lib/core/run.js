@@ -12,8 +12,9 @@ import { spawn } from 'node:child_process';
  * - 超时 ⇒ `timedOut:true` 且杀进程；
  * - 输出超 `maxBytes` ⇒ 截断（不丢进程；yt-dlp 的 stderr 进度条很长 ✓）。
  */
-export function runCommand(file, args, { timeoutMs = 60000, maxBytes = 2 * 1024 * 1024 } = {}) {
-	return new Promise(resolve => {
+export function runCommand(file, args, { timeoutMs = 60000, maxBytes = 2 * 1024 * 1024, signal } = {}) {
+	return new Promise((resolve, reject) => {
+		signal?.throwIfAborted();
 		let child;
 		try {
 			child = spawn(file, args, { windowsHide: true });
@@ -30,20 +31,28 @@ export function runCommand(file, args, { timeoutMs = 60000, maxBytes = 2 * 1024 
 			try { child.kill('SIGKILL'); } catch { /* 已经退了 */ }
 		}, timeoutMs);
 		timer.unref?.();
+		const abort = () => {
+			try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+		};
+		signal?.addEventListener('abort', abort, { once: true });
+		if (signal?.aborted) { abort(); }
+		const finish = result => {
+			clearTimeout(timer);
+			signal?.removeEventListener('abort', abort);
+			if (signal?.aborted) { reject(signal.reason); } else { resolve(result); }
+		};
 		const cap = (buf, chunk) => (buf.length < maxBytes ? buf + chunk : buf);
 		child.stdout?.on('data', d => { stdout = cap(stdout, d.toString()); });
 		child.stderr?.on('data', d => { stderr = cap(stderr, d.toString()); });
 		child.on('error', e => {
 			if (settled) { return; }
 			settled = true;
-			clearTimeout(timer);
-			resolve({ ok: false, code: -1, spawnError: String(e?.message ?? e), stdout, stderr, timedOut });
+			finish({ ok: false, code: -1, spawnError: String(e?.message ?? e), stdout, stderr, timedOut });
 		});
 		child.on('close', code => {
 			if (settled) { return; }
 			settled = true;
-			clearTimeout(timer);
-			resolve({ ok: code === 0 && !timedOut, code: code ?? -1, stdout, stderr, timedOut });
+			finish({ ok: code === 0 && !timedOut, code: code ?? -1, stdout, stderr, timedOut });
 		});
 	});
 }

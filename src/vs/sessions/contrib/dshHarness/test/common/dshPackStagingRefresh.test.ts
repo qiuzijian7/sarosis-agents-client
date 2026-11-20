@@ -51,7 +51,8 @@ suite('打包暂存区的 dsh-plugins 必须每次刷新', () => {
 		const body = s.slice(at, at + 2200);
 		assert.match(body, /opts\.refresh/, 'ensureDir 必须支持 refresh 选项');
 		assert.match(body, /rmSync\(stagingAbs, \{ recursive: true, force: true \}\)/, 'refresh 必须先删旧目录（否则残留删不掉的文件）');
-		assert.match(body, /cpSync\(repoAbsForced, stagingAbs, \{ recursive: true \}\)/, 'refresh 必须整目录从仓库重拷');
+		assert.match(body, /cpSync\(repoAbsForced, stagingAbs, \{ recursive: true(?:\s*\}|,)/, 'refresh 必须递归从仓库重拷（允许排除开发负载的过滤器）');
+		assert.match(body, /opts\.filter\(path\.relative\(repoAbsForced, src\)\)/, '刷新过滤器必须接收仓库相对路径，防止开发依赖误进包');
 	});
 
 	test('2) dsh-plugins 的调用必须带 refresh:true（否则旧副本永远进包）', () => {
@@ -61,7 +62,7 @@ suite('打包暂存区的 dsh-plugins 必须每次刷新', () => {
 		// 取这次调用的完整实参（到下一个 `);` 为止）
 		const end = s.indexOf(');', at);
 		const call = s.slice(at, end);
-		assert.match(call, /\{\s*refresh:\s*true\s*\}/,
+		assert.match(call, /\{\s*refresh:\s*true(?:\s*\}|\s*,)/,
 			'dsh-plugins 必须 `{ refresh: true }` —— 它是我们自己每次发版都在改的目录，'
 			+ '"哨兵在就跳过"会让新加文件（vendor/、cordis.presets.yml、lib/app/…）永远进不了包 ✗');
 	});

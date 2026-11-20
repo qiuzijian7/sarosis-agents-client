@@ -18,6 +18,8 @@
 // 白等到超时 ✗（但**不会**误破门 ✓ —— 错向"保守"那一侧 ✓）；时钟跳变仍影响 mtime 判定 ✗。
 
 import { open, readFile, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
 
 /** 锁文件后缀（**协议的一部分**，IDE 侧同名常量必须一致）。 */
 export const FILE_LOCK_SUFFIX = '.lock';
@@ -61,8 +63,6 @@ async function pidOf(lock) {
 	}
 }
 
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
 /**
  * 抢锁；返回**释放函数**（务必放进 `finally` ✓；释放会同时停掉心跳 ✓）。
  *
@@ -75,14 +75,23 @@ export async function acquireFileLock(lock, {
 	pollMs = FILE_LOCK_POLL_MS,
 	heartbeatMs = FILE_LOCK_HEARTBEAT_MS,
 	label = '文件',
+	signal,
+	reclaimStale = true,
 } = {}) {
-	const content = JSON.stringify({ pid: process.pid, at: new Date().toISOString() });
+	const content = JSON.stringify({ pid: process.pid, at: new Date().toISOString(), owner: randomUUID() });
 	const deadline = Date.now() + waitMs;
 	for (;;) {
+		signal?.throwIfAborted();
 		try {
 			const handle = await open(lock, 'wx');
-			await handle.writeFile(content);
-			await handle.close();
+			try {
+				await handle.writeFile(content);
+				await handle.close();
+			} catch (error) {
+				await handle.close().catch(() => {});
+				await unlink(lock).catch(() => {});
+				throw error;
+			}
 			// 心跳：持锁期间刷新 mtime ⇒ "卡死但仍在跑"的持有者不会被误破门 ✓
 			const timer = setInterval(() => {
 				const now = new Date();
@@ -91,7 +100,9 @@ export async function acquireFileLock(lock, {
 			timer.unref?.();
 			return async () => {
 				clearInterval(timer);
-				await unlink(lock).catch(() => {});
+				try {
+					if (await readFile(lock, 'utf8') === content) { await unlink(lock); }
+				} catch { /* 已释放或持有者已变更 */ }
 			};
 		} catch (e) {
 			if (e?.code !== 'EEXIST') {
@@ -107,13 +118,13 @@ export async function acquireFileLock(lock, {
 			const alive = pid === undefined ? undefined : isPidAlive(pid);
 			const stale = Date.now() - heldSince > staleMs;
 			// 破门：**过期且持有者已不在**（或无从得知）才动手 ✓；活着 ⇒ 绝不 ✗
-			if (stale && alive !== true) {
+			if (reclaimStale && stale && alive !== true) {
 				await unlink(lock).catch(() => {});
 			} else if (Date.now() > deadline) {
 				const holder = pid === undefined ? '持有者未知' : (alive === true ? `持有者进程 ${pid} 仍在运行` : `持有者 ${pid} 已不在（但锁文件删不掉？）`);
 				throw new Error(`${label}正被另一个写者占用（${lock}，已等待 ${waitMs}ms；${holder}）。若确认无其它进程在写，删除该锁文件后重试。`);
 			} else {
-				await delay(pollMs);
+				await delay(pollMs, undefined, { signal });
 			}
 		}
 	}

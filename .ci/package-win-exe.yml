@@ -12,6 +12,34 @@ on:
 variables:
   NODE_OPTIONS:
     value: --max-old-space-size=8192
+  SAROS_PACK_MODE:
+    value: offline
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 打包模式：offline 保持完整离线能力；standard 外置 Whisper 模型（首用下载约 141 MiB）
+      required: true
+  SAROS_SETUP_TARGETS:
+    value: both
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 安装包目标：both / user / system；日常验证可选 user 减少重复压缩
+      required: true
+  SAROS_MAX_EXE_MB:
+    value: '850'
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 单个 EXE 的 MiB 上限；超过即禁止上传与发布
+      required: true
+  SAROS_MAX_EXE_GROWTH_PERCENT:
+    value: '10'
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 设置 SAROS_PACK_BASELINE_REPORT 时允许的最大体积增长百分比
+      required: true
   SAROS_UPDATE_SERVER:
     value: http://21.139.192.124:3030
     readonly: true
@@ -19,6 +47,20 @@ variables:
       type: vuex-input
       description: 升级服务器地址
       required: true
+  SAROS_PACK_BASELINE_REPORT:
+    value: ''
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 可选：上次安装包体积报告 JSON 的构建机路径，启用增长预算校验
+      required: false
+  SAROS_RELEASE_DOWNLOAD_BASE_URL:
+    value: ''
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 可选：可信公网 HTTPS 下载源（仅 origin）；留空与升级服务器地址一致
+      required: false
   WOA_GITLAB_TOKEN:
     value: "${{ settings.WOA_GITLAB_TOKEN.password }}"
     readonly: true
@@ -122,5 +164,10 @@ stages:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/create-release.ps1'
         shell: powershell
+      - name: 归档包体审计与发布回执
+        uses: UploadArtifactory@8.*
+        with:
+          filePath: .build/pack-reports/**/*.json
+          downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
 concurrency: {}
 syntax-dialect: INHERIT

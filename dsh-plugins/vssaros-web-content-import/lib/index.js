@@ -43,7 +43,8 @@ import { toLosslessJsonValue } from './core/lossless.js';
 
 import { acquireFileLock, lockFileFor } from './lock.js';
 
-import { kbRootOf, pickVaultDir, writeRawMarkdown } from './store.js';
+import { dataRootOf, kbRootOf, pickVaultDir, writeRawMarkdown } from './store.js';
+import { ensureWhisperModel, modelCachePath, readWhisperManifest, verifyModelFile } from './whisperModel.js';
 
 
 export const name = 'vssaros-web-content-import';
@@ -104,13 +105,33 @@ export function findOnPath(name) {
 export function resolveWhisperModel(config) {
 	const direct = [config?.whisperModel, process.env.WHISPER_MODEL_PATH].find(v => typeof v === 'string' && v.trim());
 	if (direct) { return direct.trim(); }
-	const binDir = [config?.binDir, process.env.VSSAROS_BIN_DIR, findOnPath('whisper-cli')]
-		.find(v => typeof v === 'string' && v.trim());
-	if (binDir) {
-		const candidate = join(binDir.trim(), '..', 'models', 'ggml-base.bin');
+	for (const binDir of whisperBinDirectories(config)) {
+		const candidate = join(binDir, '..', 'models', 'ggml-base.bin');
 		if (existsSync(candidate)) { return candidate; }
 	}
 	return undefined;
+}
+
+function whisperBinDirectories(config) {
+	return [...new Set([config?.binDir, process.env.VSSAROS_BIN_DIR, findOnPath('whisper-cli')]
+		.filter(value => typeof value === 'string' && value.trim()).map(value => value.trim()))];
+}
+
+export async function ensureContentImportModel(config, { signal, allowDownload = true, onProgress, install = ensureWhisperModel } = {}) {
+	signal?.throwIfAborted();
+	const local = resolveWhisperModel(config);
+	if (local) { return local; }
+	let manifest;
+	for (const binDir of whisperBinDirectories(config)) {
+		manifest = await readWhisperManifest(join(binDir, '..', 'models'));
+		if (manifest) { break; }
+	}
+	if (!manifest || manifest.mode !== 'standard') { return undefined; }
+	const root = dataRootOf(config);
+	const cached = modelCachePath(root, manifest.model);
+	if (await verifyModelFile(cached, manifest.model, signal)) { return cached; }
+	if (!allowDownload || config.autoDownloadWhisperModel === false) { return undefined; }
+	return install(root, { spec: manifest.model, signal, onProgress });
 }
 
 /** HTTP 抓整页 HTML（桌面 UA + 超时 + 大小上限）。 */
@@ -149,65 +170,77 @@ function blockedGuidance(quality, route) {
 }
 
 /** 视频流程：yt-dlp 元信息 → 字幕轨 → 无字幕轨 ⇒ 本地 ASR（best-effort，任何一步失败都如实记 notes）。 */
-async function fetchVideoContent(url, route, config, notes) {
+async function fetchVideoContent(url, route, config, notes, modelOptions = {}) {
+	const signal = modelOptions.signal;
+	const run = (file, args, options) => runCommand(file, args, { ...options, signal });
+	signal?.throwIfAborted();
 	const ytdlp = resolveBinary(config, 'yt-dlp');
-	const metaRun = await runCommand(ytdlp, ytDlpMetaArgs(url), { timeoutMs: 45000 });
+	const metaRun = await run(ytdlp, ytDlpMetaArgs(url), { timeoutMs: 45000 });
 	if (!metaRun.ok) {
 		const reason = metaRun.spawnError ? `yt-dlp 不可用（${metaRun.spawnError}）` : `yt-dlp 元信息失败（${(metaRun.stderr || metaRun.stdout || '').trim().split('\n').pop() ?? '未知'}）`;
 		return { ok: false, reason };
 	}
 	const meta = parseYtDlpPrint(metaRun.stdout.trim().split('\n')[0] ?? '', { platformName: route.name });
-
-	// 字幕轨（落盘后读回；没有字幕时 yt-dlp 可能非 0 退出 ⇒ 以"目录里是否真有字幕文件"判定 ✓）
 	let subtitles;
 	const tmp = await mkdtemp(join(tmpdir(), 'vssaros-wci-'));
 	try {
-		await runCommand(ytdlp, ytDlpSubtitleArgs(url, join(tmp, 'sub.%(ext)s')), { timeoutMs: 60000 });
-		const files = (await readdir(tmp)).filter(n => /\.(srt|vtt)$/i.test(n));
-		if (files.length) {
-			// 优先人工字幕（文件名不带 .auto），其次自动字幕（与 IDE 侧同口径 ✓）
-			const picked = files.find(n => !/\.auto\./i.test(n)) ?? files[0];
-			const text = parseSubtitlesToText(await readFile(join(tmp, picked), 'utf8'));
-			if (text) { subtitles = { kind: /\.auto\./i.test(picked) ? 'auto' : 'manual', text }; }
+		try {
+			await run(ytdlp, ytDlpSubtitleArgs(url, join(tmp, 'sub.%(ext)s')), { timeoutMs: 60000 });
+			const files = (await readdir(tmp)).filter(n => /\.(srt|vtt)$/i.test(n));
+			if (files.length) {
+				const picked = files.find(n => !/\.auto\./i.test(n)) ?? files[0];
+				const text = parseSubtitlesToText(await readFile(join(tmp, picked), 'utf8'));
+				if (text) { subtitles = { kind: /\.auto\./i.test(picked) ? 'auto' : 'manual', text }; }
+			}
+		} catch (error) {
+			signal?.throwIfAborted();
+			notes.push(`字幕轨抓取失败：${error.message}`);
 		}
-	} catch (e) {
-		notes.push(`字幕轨抓取失败：${e?.message ?? e}`);
-	}
-
-	if (!subtitles) {
-		// 无字幕轨 ⇒ 本地 ASR（whisper）：下载音频 → ffmpeg 提 16k mono wav → whisper-cli 转写。
-		const ffmpeg = resolveBinary(config, 'ffmpeg');
-		const whisper = resolveBinary(config, 'whisper-cli');
-		const model = resolveWhisperModel(config);
-		if (!model) {
-			notes.push('该视频没有字幕轨，且本地 ASR 不可用（找不到 whisper 模型：配 `WHISPER_MODEL_PATH` 指到 ggml-base.bin，或让 `VSSAROS_BIN_DIR` 指向含它的 bin 目录）⇒ 口播内容拿不到');
-		} else {
-			const audioTpl = join(tmp, 'audio.%(ext)s');
-			const dl = await runCommand(ytdlp, ytDlpAudioArgs(url, audioTpl), { timeoutMs: 300000 });
-			const audio = (await readdir(tmp).catch(() => [])).find(n => /^audio\./.test(n) && !/\.(srt|vtt)$/i.test(n));
-			if (!dl.ok || !audio) {
-				notes.push(`ASR 前置失败（下载音频${dl.timedOut ? '超时' : '失败'}）⇒ 口播内容拿不到`);
+		if (!subtitles) {
+			const ffmpeg = resolveBinary(config, 'ffmpeg');
+			const whisper = resolveBinary(config, 'whisper-cli');
+			let model = resolveWhisperModel(config);
+			if (!model) {
+				try {
+					const probe = await run(whisper, ['--help'], { timeoutMs: 5000 });
+					if (probe.ok || /whisper/i.test(probe.stdout + probe.stderr)) {
+						model = await ensureContentImportModel(config, modelOptions);
+					}
+				} catch (error) {
+					signal?.throwIfAborted();
+					notes.push(`Whisper 模型获取失败：${error.message}（可手动配置 WHISPER_MODEL_PATH 后重试）`);
+				}
+			}
+			if (!model) {
+				notes.push('该视频没有字幕轨，且本地 ASR 不可用（找不到 whisper 模型：配 WHISPER_MODEL_PATH 或允许标准包首用下载）⇒ 口播内容拿不到');
 			} else {
-				const wav = join(tmp, 'audio.wav');
-				const ff = await runCommand(ffmpeg, buildFfmpegAudioArgs(join(tmp, audio), wav), { timeoutMs: 120000 });
-				if (!ff.ok || !existsSync(wav)) {
-					notes.push(`ASR 前置失败（ffmpeg 提音轨失败）⇒ 口播内容拿不到`);
+				const dl = await run(ytdlp, ytDlpAudioArgs(url, join(tmp, 'audio.%(ext)s')), { timeoutMs: 300000 });
+				const audio = (await readdir(tmp).catch(() => [])).find(n => /^audio\./.test(n) && !/\.(srt|vtt)$/i.test(n));
+				if (!dl.ok || !audio) {
+					notes.push(`ASR 前置失败（下载音频${dl.timedOut ? '超时' : '失败'}）⇒ 口播内容拿不到`);
 				} else {
-					const asr = await runCommand(whisper, buildWhisperArgs(model, wav), { timeoutMs: 600000 });
-					const text = parseWhisperStdout(asr.stdout);
-					if (text) {
-						subtitles = { kind: 'asr', text };
-						notes.push('口播文本来自本地 ASR（whisper，离线；可能有个别错字/简繁混排）');
+					const wav = join(tmp, 'audio.wav');
+					const ff = await run(ffmpeg, buildFfmpegAudioArgs(join(tmp, audio), wav), { timeoutMs: 120000 });
+					if (!ff.ok || !existsSync(wav)) {
+						notes.push('ASR 前置失败（ffmpeg 提音轨失败）⇒ 口播内容拿不到');
 					} else {
-						notes.push(`本地 ASR 没转出文本（${asr.spawnError ? 'whisper-cli 不可用：' + asr.spawnError : '解析不到时间轴'}）⇒ 口播内容拿不到`);
+						const asr = await run(whisper, buildWhisperArgs(model, wav), { timeoutMs: 600000 });
+						const text = parseWhisperStdout(asr.stdout);
+						if (text) {
+							subtitles = { kind: 'asr', text };
+							notes.push('口播文本来自本地 ASR（whisper，离线；可能有个别错字/简繁混排）');
+						} else {
+							notes.push(`本地 ASR 没转出文本（${asr.spawnError ? 'whisper-cli 不可用：' + asr.spawnError : '解析不到时间轴'}）⇒ 口播内容拿不到`);
+						}
 					}
 				}
 			}
 		}
+		signal?.throwIfAborted();
+		return { ok: true, meta, subtitles };
+	} finally {
+		await rm(tmp, { recursive: true, force: true }).catch(() => {});
 	}
-	// 临时目录（字幕 / 音频 / wav）用完即清 —— 不留在系统 temp 里 ✓
-	await rm(tmp, { recursive: true, force: true }).catch(() => {});
-	return { ok: true, meta, subtitles };
 }
 
 export function apply(ctx, config = {}) {
@@ -250,6 +283,7 @@ export function apply(ctx, config = {}) {
 					url: { type: 'string', description: '目标链接（文章 / 视频；短链会自动展开）' },
 					html: { type: 'string', description: '已抓到的整页 HTML（登录墙路径：先用 browser 抓，再把 HTML 喂进来；此时 url 仍必填 —— 用来做平台识别与来源记录）' },
 					mode: { type: 'string', enum: ['read', 'write'], description: 'read=只读回内容（默认）；write=同时写进知识库' },
+					downloadModel: { type: 'boolean', description: '标准包在无字幕视频首次 ASR 时下载约 141 MiB Whisper 模型并校验缓存（默认 true）；false 禁止下载，离线包不触网获取模型' },
 					vault: { type: 'string', description: 'write 时的目标库 id（缺省取第一个库）' },
 					slug: { type: 'string', description: 'write 时的文件名（缺省从标题派生，重名自动追加 -2/-3）' },
 					images: { type: 'boolean', description: 'write 时是否把正文图片下载进 assets/（默认 true；下载失败会保留远程 URL 并说明）' },
@@ -319,7 +353,8 @@ export function apply(ctx, config = {}) {
 				},
 			},
 			isConcurrencySafe: () => true,
-			execute: async (params) => {
+			execute: async (params, exec) => {
+				exec?.signal?.throwIfAborted();
 				const url = typeof params?.url === 'string' ? params.url.trim() : '';
 				const htmlInput = typeof params?.html === 'string' && params.html.trim() ? params.html : undefined;
 				const mode = params?.mode === 'write' ? 'write' : 'read';
@@ -342,7 +377,17 @@ export function apply(ctx, config = {}) {
 					body = extracted.body;
 					images = extracted.images;
 				} else if (route.type === 'video') {
-					const video = await fetchVideoContent(url, route, config, notes);
+					let lastProgress = '';
+					const video = await fetchVideoContent(url, route, config, notes, {
+						signal: exec?.signal, allowDownload: params.downloadModel !== false,
+						onProgress: event => {
+							const progress = `${event.stage}:${Math.floor(event.received / event.total * 10) * 10}`;
+							if (progress === lastProgress) { return; }
+							lastProgress = progress;
+							ctx.logger?.info(`Whisper 模型 ${event.stage}: ${Math.round(event.received / 1048576)}/${Math.round(event.total / 1048576)} MiB`);
+							if (event.stage === 'ready') { notes.push('Whisper 模型已校验并缓存，后续 ASR 无需重复下载'); }
+						},
+					});
 					if (!video.ok) { return { status: 'blocked', platform: route.id, platformName: route.name, kind: route.type, url, notes: [...notes, video.reason] }; }
 					meta = video.meta;
 					subtitles = video.subtitles;
@@ -390,6 +435,7 @@ export function apply(ctx, config = {}) {
 				};
 
 				// ── 落盘（mode=write）─────────────────────────────────────────────────────
+				exec?.signal?.throwIfAborted();
 				if (mode === 'write') {
 					const kbRoot = kbRootOf(config);
 					const picked = await pickVaultDir(kbRoot, params?.vault);
@@ -462,6 +508,7 @@ export function apply(ctx, config = {}) {
 		//   · 上限 20 条：再多会顶到工具调用超时，分批调用更稳（description 里写明了 ✓）。
 		const batchExecute = definition.execute;
 		definition.execute = async (params, exec) => {
+			exec?.signal?.throwIfAborted();
 			// ★ `urlFile`：从清单文件里抽链接（爬虫产物直接喂进来 ✓）。
 			//   读文件失败 ⇒ **不静默**：把原因拼进错误信息（用户要能区分"文件没写对"与"链接抓不到"）。
 			let fromFile = [];
@@ -488,6 +535,7 @@ export function apply(ctx, config = {}) {
 			}
 			const results = [];
 			for (const url of urls) {
+				exec?.signal?.throwIfAborted();
 				try {
 					const one = await batchExecute({ ...params, url, urls: undefined }, exec);
 					results.push({
@@ -502,6 +550,7 @@ export function apply(ctx, config = {}) {
 							: {}),
 					});
 				} catch (e) {
+					exec?.signal?.throwIfAborted();
 					results.push({ url, ok: false, error: String(e?.message ?? e) });
 				}
 			}

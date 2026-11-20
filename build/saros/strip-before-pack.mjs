@@ -949,7 +949,8 @@ ensureOptionalBin(`whisper-cli${BIN_EXT}`, `resources/saros/bin/whisper-cli${BIN
 		ensureOptionalBin(d, `resources/saros/bin/${d}`, `build/saros/bin/${d}`);
 	}
 }
-ensureOptionalBin('ggml-base.bin (whisper 模型)', 'resources/saros/models/ggml-base.bin', 'build/saros/models/ggml-base.bin');
+const modelStage = spawnSync(process.execPath, [join(__dirname, 'pack-optimization.mjs'), '--prepare-model', buildDir], { stdio: 'inherit' });
+if (modelStage.status !== 0) { process.exit(modelStage.status || 1); }
 
 if (criticalMissing > 0) {
 	console.error(`\n💥 ${criticalMissing} 项关键构件缺失且无法自愈——禁止带病出包！`);

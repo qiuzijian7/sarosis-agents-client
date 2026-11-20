@@ -27,6 +27,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { ensureReleaseLinks, assertExpectedLinks, assertReleaseVersion, assertTagCommit } = require('./release-links.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const GITLAB_API = 'https://git.woa.com/api/v3';
@@ -54,10 +55,7 @@ const CURL_BIN = IS_WIN ? 'curl.exe' : 'curl';
  * ⚠ zip 必须发布：DarwinUpdateService 走 electron.autoUpdater（Squirrel.Mac），只认 zip。
  */
 const RELEASE_ASSETS = IS_WIN
-	? [
-		{ kind: '用户级安装', rel: '.build/win32-x64/user-setup/VsSarosUserSetup.exe' },
-		{ kind: '系统级安装', rel: '.build/win32-x64/system-setup/VsSarosSetup.exe' },
-	]
+	? require('./pack-policy.cjs').resolvePackPolicy().assets
 	: [
 		{ kind: 'macOS 安装包（dmg）', rel: `.build/darwin-${MAC_ARCH}/VsSaros.dmg` },
 		{ kind: 'macOS 自动更新包（zip）', rel: `.build/darwin-${MAC_ARCH}/VsSaros-darwin-${MAC_ARCH}.zip` },
@@ -223,7 +221,7 @@ function releaseIdOf(projectId, tag, headers) {
  * 为什么要：残桩发布过去**一个多月没人发现**（流水线一直 success，用户拿不到包）——
  * 失败必须"响"，不能只在日志里 warn。
  */
-function verifyRelease(projectId, tag, headers, { minDescLen = 200, minLinks = 0 } = {}) {
+function verifyRelease(projectId, tag, headers, { minDescLen = 200, minLinks = 0, expectedLinks = [] } = {}) {
 	const r = curl('GET', `${GITLAB_API}/projects/${projectId}/releases/${encodeURIComponent(tag)}`, { headers, fallbackBearer: true });
 	if (r.status !== 200 || !r.data) {
 		throw new Error(`release verification failed: GET release ${tag} -> ${r.status}: ${brief(r.data)}`);
@@ -233,6 +231,7 @@ function verifyRelease(projectId, tag, headers, { minDescLen = 200, minLinks = 0
 	if (desc.length < minDescLen) {
 		throw new Error(`release verification failed: ${tag} 描述只有 ${desc.length} 字符（期望 ≥${minDescLen}）⇒ 残桩（多半是 tag message）`);
 	}
+	assertExpectedLinks(links, expectedLinks);
 	if (links.length < minLinks) {
 		throw new Error(`release verification failed: ${tag} 资产链接 ${links.length} 条（期望 ≥${minLinks}）⇒ EXE 没挂上`);
 	}
@@ -300,12 +299,15 @@ function sha256Of(file) {
 
 // ---------- git tag on main repo (best effort) ----------
 function ensureGitTag(tag, dryRun) {
+	const commit = git(['rev-parse', 'HEAD']).trim();
 	try { git(['fetch', '--tags', 'origin']); } catch { warn('git fetch --tags failed, continue'); }
-	const remote = git(['ls-remote', '--tags', 'origin', `refs/tags/${tag}`]).trim();
-	if (remote) { log(`tag ${tag} already on origin, skip push`); return; }
+	const remote = git(['ls-remote', '--tags', 'origin', `refs/tags/${tag}`, `refs/tags/${tag}^{}`]).trim();
+	if (remote) { assertTagCommit(remote, tag, commit); log(`tag ${tag} already on origin at verified build commit`); return; }
 	if (!git(['tag', '-l', tag]).trim()) {
 		if (dryRun) { log(`[dry-run] would create local tag ${tag}`); }
-		else { git(['tag', '-a', tag, '-m', `VsSaros ${tag}`]); }
+		else { git(['tag', '-a', tag, commit, '-m', `VsSaros ${tag}`]); }
+	} else {
+		assertTagCommit(`${git(['rev-parse', `${tag}^{commit}`]).trim()} refs/tags/${tag}`, tag, commit);
 	}
 	if (dryRun) { log(`[dry-run] would push tag ${tag} to origin`); return; }
 	try {
@@ -318,7 +320,7 @@ function ensureGitTag(tag, dryRun) {
 }
 
 // ---------- GitLab (woa.git vssarosis_issue) ----------
-async function gitlabCreateRelease(tag, changelog, dryRun) {
+async function gitlabCreateRelease(tag, changelog, dryRun, archivedDownloads = []) {
 	const token = gitlabToken();
 	if (!token) { throw new Error('no git.woa.com token (set WOA_GITLAB_TOKEN in BK-CI pipeline variables, or git credential)'); }
 	// 工蜂私人令牌(PAT)必须用 PRIVATE-TOKEN 头；Authorization: Bearer 会 401
@@ -364,22 +366,22 @@ async function gitlabCreateRelease(tag, changelog, dryRun) {
 		log('产物内容门禁通过');
 	}
 
-	// 2. upload exes to project uploads
-	const downloads = [];
-	for (const exe of RELEASE_ASSETS) {
-		const abs = path.join(REPO_ROOT, exe.rel);
-		if (!fs.existsSync(abs)) { warn(`exe missing, skipped: ${exe.rel}`); continue; }
-		const sizeMB = (fs.statSync(abs).size / 1048576).toFixed(2);
-		const name = path.basename(exe.rel);
-		if (dryRun) { log(`[dry-run] would upload ${name} (${sizeMB} MiB) to GitLab uploads`); continue; }
-		const r = curl('POST', `${GITLAB_API}/projects/${GITLAB_PROJECT}/uploads`,
-			{ headers: glHeaders, fallbackBearer: true, formFile: { path: abs, name }, timeoutSec: 900 });
-		if (r.status === 201 && r.data && r.data.url) {
-			const full = String(r.data.url).startsWith('http') ? r.data.url : `${GITLAB_WEB}${r.data.url}`;
-			downloads.push({ kind: exe.kind, name, url: full, sizeMB });
-			log(`uploaded ${name} (${sizeMB} MiB)`);
-		} else {
-			warn(`upload ${name} -> ${r.status}: ${brief(r.data)}`);
+	const downloads = IS_WIN ? archivedDownloads : [];
+	if (IS_WIN) {
+		if (dryRun) { log('[dry-run] would reuse verified immutable update-server archives (no GitLab EXE upload)'); }
+		else if (downloads.length !== RELEASE_ASSETS.length) { throw new Error('Missing selected installer archives'); }
+	} else {
+		for (const asset of RELEASE_ASSETS) {
+			const abs = path.join(REPO_ROOT, asset.rel);
+			if (!fs.existsSync(abs)) { throw new Error(`release asset missing: ${asset.rel}`); }
+			const sizeMB = (fs.statSync(abs).size / 1048576).toFixed(2);
+			const name = path.basename(asset.rel);
+			if (dryRun) { log(`[dry-run] would upload ${name} (${sizeMB} MiB) to GitLab uploads`); continue; }
+			const result = curl('POST', `${GITLAB_API}/projects/${GITLAB_PROJECT}/uploads`,
+				{ headers: glHeaders, fallbackBearer: true, formFile: { path: abs, name }, timeoutSec: 900 });
+			if (result.status !== 201 || !result.data?.url) { throw new Error(`upload ${name} failed: HTTP ${result.status}`); }
+			const url = String(result.data.url).startsWith('http') ? result.data.url : `${GITLAB_WEB}${result.data.url}`;
+			downloads.push({ kind: asset.kind, name, url, sizeMB });
 		}
 	}
 
@@ -421,14 +423,15 @@ async function gitlabCreateRelease(tag, changelog, dryRun) {
 	} else {
 		throw new Error(`GitLab release failed -> ${r.status}: ${brief(r.data)}`);
 	}
-	// 回读校验：残桩（描述没落上 / 资产没挂上）必须失败，不能"发布成功但用户下载不到"
-	verifyRelease(GITLAB_PROJECT, tag, glHeaders, { minDescLen: 200, minLinks: downloads.length });
+	const issueReleaseId = releaseIdOf(GITLAB_PROJECT, tag, glHeaders);
+	ensureReleaseLinks(curl, { api: GITLAB_API, project: GITLAB_PROJECT, releaseId: issueReleaseId, tag, headers: glHeaders }, downloads);
+	verifyRelease(GITLAB_PROJECT, tag, glHeaders, { minDescLen: 200, minLinks: RELEASE_ASSETS.length, expectedLinks: downloads });
 	return downloads;
 }
 
 // ---------- GitLab main repo (sarosis-agents-client, mirror release) ----------
 // 主仓库镜像 Release：changelog + EXE 下载直链（release asset links），不重复托管 EXE 本体
-// （EXE 仍在 vssarosis_issue uploads，避免主仓库撞 100MB 限制与体积膨胀）。
+// Windows EXE 只上传升级服务器一次；两个工蜂仓库均挂不可变归档直链。
 async function gitlabCreateMainRepoRelease(tag, changelog, downloads, dryRun) {
 	const token = gitlabToken();
 	if (!token) { throw new Error('no git.woa.com token (set WOA_GITLAB_TOKEN in BK-CI pipeline variables, or git credential)'); }
@@ -438,8 +441,9 @@ async function gitlabCreateMainRepoRelease(tag, changelog, downloads, dryRun) {
 	if (dryRun) {
 		log(`[dry-run] would ensure main-repo tag ${tag}`);
 	} else {
+		const buildCommit = git(['rev-parse', 'HEAD']).trim();
 		const r = curl('POST',
-			`${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/repository/tags?tag_name=${encodeURIComponent(tag)}&ref=main&message=${encodeURIComponent(`VsSaros ${tag}`)}`,
+			`${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/repository/tags?tag_name=${encodeURIComponent(tag)}&ref=${buildCommit}&message=${encodeURIComponent(`VsSaros ${tag}`)}`,
 			{ headers: glHeaders, fallbackBearer: true });
 		if (r.status === 201) { log(`main-repo tag ${tag} created via API`); }
 		else if (r.status === 400 || r.status === 409) { log(`main-repo tag ${tag} already exists`); }
@@ -461,7 +465,8 @@ async function gitlabCreateMainRepoRelease(tag, changelog, downloads, dryRun) {
 		'|------|------|------|',
 		dlRows || `| Windows x64 | - | 见 [发布仓库 Release](${issueRel}) |`,
 		'',
-		`> 安装包托管于 [vssarosis_issue Releases](${issueRel})（避免主仓库膨胀）；本 Release 资产区附同名直链。`,
+		IS_WIN ? '> 安装包托管于升级服务器的版本化归档；两个工蜂 Release 复用同一份直链，不重复上传 EXE。'
+			: `> 安装包托管于 [vssarosis_issue Releases](${issueRel})；本 Release 资产区附同名直链。`,
 	].join('\n');
 
 	// 3. create or update release（★ 2026-10-21：按**数字 id** 改，见 releaseIdOf 的注释）
@@ -472,30 +477,9 @@ async function gitlabCreateMainRepoRelease(tag, changelog, downloads, dryRun) {
 	}
 	log(`main-repo release: ${GITLAB_WEB}/${GITLAB_MAIN_PROJECT_PATH}/-/releases/${tag}`);
 
-	// 4. attach EXE 直链 as release asset links（幂等：先查重）
-	//    ★ 2026-10-21：asset links 的 `:release_id` 同样只认**数字 id**（旧代码用 tag ⇒ 永远 404
-	//    ⇒ EXE 直链从来没挂上 ⇒ 用户点开 Release 找不到包）。
 	const mainReleaseId = releaseIdOf(GITLAB_MAIN_PROJECT, tag, glHeaders);
-	if (!mainReleaseId) { throw new Error(`main-repo release id not found for ${tag} (cannot attach asset links)`); }
-	const existing = curl('GET', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${mainReleaseId}/assets/links`,
-		{ headers: glHeaders, fallbackBearer: true });
-	const existingNames = new Set(
-		existing.status === 200 && Array.isArray(existing.data) ? existing.data.map((l) => l.name) : []);
-	for (const d of downloads) {
-		if (existingNames.has(d.name)) { log(`asset link exists: ${d.name}`); continue; }
-		// ★ 2026-10-21：工蜂的 assets/links 端点**按 tag 也能用**（按 id 在工蜂上 404）⇒
-		//   先试 id，404/405 再试 tag（两边都试，缺哪边补哪边）。
-		let lr = curl('POST', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${mainReleaseId}/assets/links`,
-			{ headers: glHeaders, fallbackBearer: true, json: { name: d.name, url: d.url, link_type: 'other' } });
-		if (lr.status === 404 || lr.status === 405) {
-			lr = curl('POST', `${GITLAB_API}/projects/${GITLAB_MAIN_PROJECT}/releases/${encodeURIComponent(tag)}/assets/links`,
-				{ headers: glHeaders, fallbackBearer: true, json: { name: d.name, url: d.url, link_type: 'other' } });
-		}
-		if (lr.status === 201) { log(`asset link added: ${d.name}`); }
-		else { warn(`asset link ${d.name} -> ${lr.status}: ${brief(lr.data)}`); }
-	}
-	// 回读校验（★ 2026-10-21）：描述与直链都必须真的落上，否则这次"发布"等于没发。
-	verifyRelease(GITLAB_MAIN_PROJECT, tag, glHeaders, { minDescLen: 200, minLinks: downloads.length });
+	ensureReleaseLinks(curl, { api: GITLAB_API, project: GITLAB_MAIN_PROJECT, releaseId: mainReleaseId, tag, headers: glHeaders }, downloads);
+	verifyRelease(GITLAB_MAIN_PROJECT, tag, glHeaders, { minDescLen: 200, minLinks: RELEASE_ASSETS.length, expectedLinks: downloads });
 }
 
 // ---------- GitHub (mirror) ----------
@@ -574,6 +558,14 @@ async function githubCreateRelease(tag, changelog, dryRun) {
 	const version = resolveVersion(args);
 	const tag = `v${version}`;
 	log(`version=${version} tag=${tag}${args.dryRun ? ' (dry-run)' : ''}`);
+	let archivedDownloads = [];
+	if (IS_WIN && !args.dryRun) {
+		assertReleaseVersion(version, JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'product.json'), 'utf8')).version);
+		execFileSync(process.execPath, [path.join(__dirname, 'pack-optimization.mjs'), '--check-exes'], { stdio: 'inherit' });
+		const { loadArchivedDownloads } = await import('./release-assets.mjs');
+		archivedDownloads = await loadArchivedDownloads(REPO_ROOT);
+		if (archivedDownloads.some(item => !item.url.startsWith('https:'))) { warn('归档直链使用 HTTP；生产建议配置可信 HTTPS 下载地址'); }
+	}
 
 	// ★ 2026-10-21：changelog 的区间依赖**历史 tag** ⇒ 先把 tag 拉下来再生成
 	//   （CI 的 checkout 常常是浅克隆 ⇒ 本地 tag 列表是空的 ⇒ 区间会退化成"最近 50 条"，
@@ -585,7 +577,7 @@ async function githubCreateRelease(tag, changelog, dryRun) {
 	ensureGitTag(tag, args.dryRun);
 
 	try {
-		const downloads = await gitlabCreateRelease(tag, changelog, args.dryRun);
+		const downloads = await gitlabCreateRelease(tag, changelog, args.dryRun, archivedDownloads);
 		await gitlabCreateMainRepoRelease(tag, changelog, downloads || [], args.dryRun);
 	} catch (e) {
 		console.error(`[release][ERROR] GitLab: ${e.message}`);

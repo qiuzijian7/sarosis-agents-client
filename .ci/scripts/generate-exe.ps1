@@ -1,5 +1,8 @@
 ﻿$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
+foreach ($report in @('.build/pack-reports/installers.json', '.build/pack-reports/uploads.json')) {
+  if (Test-Path -LiteralPath $report) { Remove-Item -LiteralPath $report -Force -ErrorAction Stop }
+}
 
 # 直接调本地 gulp，绕开 npx（npx 找不到本地包时会交互式询问 "Ok to proceed?"，
 # CI 无 stdin 导致无限挂起）。
@@ -8,14 +11,26 @@ if (-not (Test-Path $gulp)) { Write-Error "local gulp not found at $gulp"; exit 
 
 Write-Host "=== Generating Windows EXE installer ==="
 
-# 清理上次构建残留的安装包 exe（构建机杀软可能仍锁定该文件，导致 Inno 重写同名文件时
-# EndUpdateResource failed (110)）。仅删除 Inno 产物 VsSarosSetup*.exe，保留暂存的应用本体 (Code.exe 等)。
-Get-ChildItem -Path .build\win32-x64 -Recurse -Filter VsSarosSetup*.exe -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
+$assetsJson = node build/saros/pack-optimization.mjs --targets-json
+if ($LASTEXITCODE -ne 0) { Write-Error "Invalid packaging policy"; exit 1 }
+$setupAssets = ConvertFrom-Json -InputObject ($assetsJson -join "`n")
+$allAssetsJson = node build/saros/pack-optimization.mjs --all-targets-json
+if ($LASTEXITCODE -ne 0) { Write-Error "Invalid packaging policy"; exit 1 }
+$allSetupAssets = ConvertFrom-Json -InputObject ($allAssetsJson -join "`n")
+function Remove-InstallerArtifact([string]$RelativePath) {
+  if (Test-Path -LiteralPath $RelativePath) { Remove-Item -LiteralPath $RelativePath -Force -ErrorAction Stop }
+}
+Remove-InstallerArtifact '.build/pack-reports/installers.json'
+foreach ($asset in $allSetupAssets) { Remove-InstallerArtifact $asset.rel }
+node --test build/saros/pack-optimization.test.mjs build/saros/release-assets.test.mjs dsh-plugins/vssaros-web-content-import/test/whisperModel.test.mjs
+if ($LASTEXITCODE -ne 0) { Write-Error "Packaging policy regression tests failed"; exit 1 }
 
 # ===== 校验 @vscode/tree-sitter-wasm 已进打包产物（语法高亮 wasm）=====
 # 构建机 npm install 偶发漏装该包 -> gulp 依赖流不进包 -> 运行时 tree-sitter.js 404。
 # 在 Inno 打包前自愈：从仓库 node_modules 复制到 VSCode-win32-x64 产物目录。
 $vsOutRoot = Join-Path (Split-Path $repoRoot) "VSCode-win32-x64"
+node build/saros/pack-optimization.mjs --check-staging $vsOutRoot
+if ($LASTEXITCODE -ne 0) { Write-Error "Staging was not built successfully for this commit; installer generation aborted"; exit 1 }
 $buildTsw = Join-Path $vsOutRoot "resources\app\node_modules\@vscode\tree-sitter-wasm"
 $repoTsw  = Join-Path $repoRoot "node_modules\@vscode\tree-sitter-wasm"
 $tswKey = "wasm\tree-sitter.js"
@@ -100,11 +115,13 @@ function Invoke-InnoTask {
   param([string]$Task)
   $max = 3
   for ($i = 1; $i -le $max; $i++) {
-    & $gulp $Task --verbose
+    & $gulp $Task --verbose | Out-Host
     if ($LASTEXITCODE -eq 0) { return $true }
     Write-Host ('[WARN] ' + $Task + ' failed (exit ' + $LASTEXITCODE + '), retry ' + $i + '/' + $max + ' after 10s')
     Start-Sleep -Seconds 10
-    Get-ChildItem -Path .build\win32-x64 -Recurse -Filter VsSarosSetup*.exe -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
+    foreach ($asset in $setupAssets) {
+      if ($Task -eq ('vscode-win32-x64-' + $asset.target + '-setup')) { Remove-InstallerArtifact $asset.rel }
+    }
   }
   return $false
 }
@@ -123,8 +140,23 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "[OK] 产物内容门禁通过"
 
-if (-not (Invoke-InnoTask 'vscode-win32-x64-inno-updater'))  { Write-Error "Inno updater setup failed"; exit 1 }
-if (-not (Invoke-InnoTask 'vscode-win32-x64-user-setup'))    { Write-Error "User setup failed"; exit 1 }
-if (-not (Invoke-InnoTask 'vscode-win32-x64-system-setup'))  { Write-Error "System setup failed"; exit 1 }
+node build/saros/pack-optimization.mjs --check-model $vsOutRoot
+if ($LASTEXITCODE -ne 0) { Write-Error "Whisper model packaging policy mismatch"; exit 1 }
+node build/saros/pack-optimization.mjs --audit $vsOutRoot --clean
+if ($LASTEXITCODE -ne 0) { Write-Error "Staging optimization failed"; exit 1 }
+node build/saros/check-pack-contents.mjs $vsOutRoot
+if ($LASTEXITCODE -ne 0) { Write-Error "Staging content gate failed after cleanup"; exit 1 }
 
+if (-not (Invoke-InnoTask 'vscode-win32-x64-inno-updater')) { Write-Error "Inno updater setup failed"; exit 1 }
+foreach ($asset in $setupAssets) {
+  if (-not (Invoke-InnoTask ('vscode-win32-x64-' + $asset.target + '-setup'))) {
+    foreach ($candidate in $allSetupAssets) { Remove-InstallerArtifact $candidate.rel }
+    Write-Error ($asset.target + " setup failed"); exit 1
+  }
+}
+node build/saros/pack-optimization.mjs --record-exes $vsOutRoot
+if ($LASTEXITCODE -ne 0) {
+  foreach ($asset in $allSetupAssets) { Remove-InstallerArtifact $asset.rel }
+  Write-Error "Installer size gate failed; artifacts removed to prevent upload"; exit 1
+}
 Write-Host "=== EXE installers generated ==="

@@ -48,6 +48,9 @@ Write-Host "[4/5] 创建启动脚本..." -ForegroundColor Cyan
 $startScript = @"
 # 启动 VsSarosis 更新服务器
 `$env:PORT = $Port
+# Windows 安装包内置 ffmpeg / whisper 后约 760 MiB，旧的 512 MiB 上限会拒收
+`$env:MAX_UPLOAD_SIZE = 2147483648
+`$env:MAX_DOWNLOAD_SIZE = 2147483648
 node `$PSScriptRoot\update-server\server.mjs
 "@
 $startScript | Out-File -FilePath "$DeployPath\start.ps1" -Encoding UTF8
@@ -65,6 +68,8 @@ $pm2Config = @{
             env = @{
                 NODE_ENV = "production"
                 PORT = $Port
+                MAX_UPLOAD_SIZE = 2147483648
+                MAX_DOWNLOAD_SIZE = 2147483648
             }
         }
     )
@@ -82,4 +87,4 @@ Write-Host "3. 使用 PM2 启动: pm2 start ecosystem.config.js" -ForegroundColo
 Write-Host "4. 或直接启动: .\start.ps1" -ForegroundColor White
 Write-Host "5. 测试服务: curl http://localhost:$Port/health" -ForegroundColor White
 Write-Host ""
-Write-Host "更新服务器 URL: http://$ServerIP:$Port" -ForegroundColor Green
+Write-Host "更新服务器 URL: http://${ServerIP}:$Port" -ForegroundColor Green
