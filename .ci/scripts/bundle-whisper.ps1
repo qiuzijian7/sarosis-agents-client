@@ -38,6 +38,8 @@ if ($LASTEXITCODE -ne 0) {
 #    bundles them. Target dirs = <repo>/../VSCode-win32-x64/resources/saros/{bin,models}/
 #    (same layout strip-before-pack.mjs section 5.6 uses - keep this script in sync with it).
 $buildOut = Join-Path (Split-Path $repoRoot) "VSCode-win32-x64"
+node build/saros/pack-optimization.mjs --check-staging $buildOut
+if ($LASTEXITCODE -ne 0) { Write-Error 'Staging was not built successfully; whisper bundle aborted'; exit 1 }
 $stagingBin = Join-Path $buildOut "resources\saros\bin"
 $stagingModels = Join-Path $buildOut "resources\saros\models"
 $repoBin = Join-Path $repoRoot "build\saros\bin"

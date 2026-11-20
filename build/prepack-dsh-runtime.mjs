@@ -332,6 +332,23 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	const seed = join(runtimeDir, 'profile-seed');
 	const profileDir = join(seed, 'profiles', 'vssaros');
 	const markerPath = join(seed, 'seed.json');
+	const APPROVED_BUILD_DEPS = ['koffi', 'esbuild', 'better-sqlite3', 'sharp'];
+	const writeShippedWorkspaceConfig = () => {
+		const wsPath = join(profileDir, 'pnpm-workspace.yaml');
+		writeFileSync(wsPath, [
+			'# Shipped seed policy: explicit build-script whitelist and pinned official tool.',
+			'# New third-party packages with build scripts still require pnpm approve-builds.',
+			'autoInstallPeers: false',
+			'strictPeerDependencies: false',
+			'verifyDepsBeforeRun: false',
+			'packageImportMethod: copy',
+			'overrides:',
+			`  "@deepseek-ai/dsh-tools": "${dshVersion}"`,
+			'allowBuilds:',
+			...APPROVED_BUILD_DEPS.map(name => `  ${name}: true`),
+			''
+		].join('\n'));
+	};
 	const pluginSources = [
 		// 仓库侧**全部**随包插件（模块插件 + patch 型伴生插件 + vendored），foundation 已排第一 ✓。
 		// ⚠ 2026-10-19：这里原先只收 `vssaros.module` ⇒ foundation / kb-refs / browser / unreal /
@@ -382,6 +399,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 				if (afterPruneGaps.length) {
 					throw new Error(`cached profile seed lost required plugins after prune: ${afterPruneGaps.join(', ')}`);
 				}
+				writeShippedWorkspaceConfig();
 				console.log('[prepack-dsh] profile seed 已是最新，跳过');
 				return;
 			}
@@ -392,7 +410,14 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	removeTreeOrThrow(seed, 'dsh 要求 profile 目录不存在，由它自己创建'); // 种子里的 node_modules 很深 ⇒ 必须走扩展长度删除
 	// pnpm 11 的通用配置只认 pnpm_config_*；npm_config_* 不保证 copy 导入生效。
 	// 只复制包文件，保留 pnpm 的既有 isolated 布局和 Windows 默认虚拟店名长度。
-	const env = { ...process.env, DSH_HOME: seed, pnpm_config_package_import_method: 'copy' };
+	const env = {
+		...process.env,
+		DSH_HOME: seed,
+		pnpm_config_package_import_method: 'copy',
+		pnpm_config_auto_install_peers: 'false',
+		pnpm_config_strict_peer_dependencies: 'false',
+		pnpm_config_verify_deps_before_run: 'false',
+	};
 	// ★ 2026-11-07：把**仓库 pin 的 pnpm** 前置到 dsh 子进程的 PATH（dsh plugin add spawn 裸 `pnpm`）。
 	//   Windows 上 process.env 的键可能是 `Path` 而非 `PATH` ⇒ 找到真实的那个键再改，避免多出一个
 	//   大小写不同的重复键（Node 在 Windows 上会合并，但子进程继承时行为不总一致）。
@@ -453,7 +478,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	//   ⇒ 在 profile 的 package.json 里显式列出允许构建的依赖。
 	//   ★ 这个字段**随种子带到用户机器** ⇒ 用户在「插件中心/页面里装插件」时也不会再被这道闸门拦
 	//     （用户侧的同类失败此前无人注意过：pnpm 只在报错时才提示）。
-	const APPROVED_BUILD_DEPS = ['koffi', 'esbuild', 'better-sqlite3', 'sharp'];
+	// APPROVED_BUILD_DEPS 在函数开头定义，供构建期与随包配置共用。
 	try {
 		const pkgPath = join(profileDir, 'package.json');
 		const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
@@ -468,14 +493,15 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		//    ⇒ 两个位置都写（新旧 pnpm 各自读自己认的那份）。**这个文件随种子带到用户机器**
 		//      ⇒ 用户在插件中心装插件时也不会再被这道闸门拦。
 		const ws = [
-			'# 由 build/prepack-dsh-runtime.mjs 生成（构建期临时版本；种子完成后会降级为最小白名单）。',
-			'# pnpm ≥10.19 把设置从 package.json 搬到这里，键名 allowBuilds（映射）。',
-			'# dangerouslyAllowAllBuilds 只在**构建期**开：插件的 install 脚本名单是动态的，',
-			'#   枚举一次必然漏下一个（2026-11-07：CI 报 koffi，本机接着报 node-pty/protobufjs/…）。',
-			'# ⚠ 不强钉 nodeLinker：pnpm 12 的 .pnpm 虚拟店布局实测可正常启动 Host，',
-			'#   强切 hoisted 反而让 required 插件起不来（2026-11-07 实测）。体积由下面的',
-			'#   .pnpm 内核裁剪兜住；进一步的布局优化另做。',
+			'# Build-time seed policy: keep install inputs portable and do not auto-resolve',
+			'# optional @deepseek-ai peers from npm. The bundled runtime provides them.',
+			'# The exact dsh-tools override avoids registry ranges that have no stable 0.2.2 release.',
+			'autoInstallPeers: false',
+			'strictPeerDependencies: false',
+			'verifyDepsBeforeRun: false',
 			'packageImportMethod: copy',
+			'overrides:',
+			`  "@deepseek-ai/dsh-tools": "${dshVersion}"`,
 			'dangerouslyAllowAllBuilds: true',
 			'allowBuilds:',
 			...APPROVED_BUILD_DEPS.map(name => `  ${name}: true`),
@@ -566,19 +592,10 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	//   这份 yaml 随种子带到用户机器 ⇒ 若保留该开关，用户以后在插件中心装任意第三方插件时，
 	//   它的 install 脚本会被无条件跑（供应链风险）。⇒ 种子建成后降级为明确的最小白名单，
 	//   之后用户装带 build script 的包时 pnpm 会提示 approve-builds，由用户自己决定 ✓。
-	const wsPath = join(profileDir, 'pnpm-workspace.yaml');
-	if (existsSync(wsPath)) {
-		writeFileSync(wsPath, [
-			'# 由 build/prepack-dsh-runtime.mjs 生成：随种子分发的最小白名单。',
-			'# 只放行下面这些包运行 install 脚本；新装的第三方插件若带 build script，',
-			'# pnpm 会提示 `pnpm approve-builds`，由用户自行决定（绝不无条件放行）。',
-			'packageImportMethod: copy',
-			'allowBuilds:',
-			...APPROVED_BUILD_DEPS.map(name => `  ${name}: true`),
-			''
-		].join('\n'));
-		console.log('[prepack-dsh] pnpm-workspace.yaml 已降级为最小白名单（dangerouslyAllowAllBuilds 不随包）');
-	}
+	// ★ 2026-11-20：随包配置继续禁用可选 peer 自动安装，并保留 dsh-tools 精确覆盖，
+	//   防止用户后续装插件时重新去 registry 解析没有稳定 0.2.2 的宽范围。
+	writeShippedWorkspaceConfig();
+	console.log('[prepack-dsh] pnpm-workspace.yaml 已降级为最小白名单（dangerouslyAllowAllBuilds 不随包）');
 	// ★ 2026-11-08（Log 9 + Log 10 连续两次）：**写 marker 之前再验一遍断链**。
 	//   断链是「产物坏了」，不是「加速项缺了」——放行等于让它在 4.6 分钟后崩掉整个 gulp 任务
 	//   （staging 半截 ⇒ verify / generate-exe 连锁失败 ⇒ 0 个 exe）。⇒ 在这里就 throw：

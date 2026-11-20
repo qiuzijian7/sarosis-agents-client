@@ -1,8 +1,22 @@
-﻿$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
+﻿$ErrorActionPreference = 'Stop'
+$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
-foreach ($report in @('.build/pack-reports/installers.json', '.build/pack-reports/uploads.json')) {
+$vsOutRoot = Join-Path (Split-Path $repoRoot) "VSCode-win32-x64"
+
+foreach ($report in @('.build/pack-reports/installers.json', '.build/pack-reports/uploads.json', '.build/pack-reports/installer-comparison.json')) {
   if (Test-Path -LiteralPath $report) { Remove-Item -LiteralPath $report -Force -ErrorAction Stop }
 }
+foreach ($installer in @('.build/win32-x64/user-setup/VsSarosUserSetup.exe', '.build/win32-x64/system-setup/VsSarosSetup.exe')) {
+  if (Test-Path -LiteralPath $installer) { Remove-Item -LiteralPath $installer -Force -ErrorAction Stop }
+}
+
+Write-Host "=== EXE preflight: seed / staging / model ==="
+node build/saros/pack-optimization.mjs --check-seed
+if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Bundled seed preflight failed; EXE generation aborted" -ForegroundColor Red; exit 1 }
+node build/saros/pack-optimization.mjs --check-staging $vsOutRoot
+if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Staging build identity preflight failed; EXE generation aborted" -ForegroundColor Red; exit 1 }
+node build/saros/pack-optimization.mjs --check-model $vsOutRoot
+if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Whisper model policy preflight failed; EXE generation aborted" -ForegroundColor Red; exit 1 }
 
 # 直接调本地 gulp，绕开 npx（npx 找不到本地包时会交互式询问 "Ok to proceed?"，
 # CI 无 stdin 导致无限挂起）。
@@ -11,18 +25,33 @@ if (-not (Test-Path $gulp)) { Write-Error "local gulp not found at $gulp"; exit 
 
 Write-Host "=== Generating Windows EXE installer ==="
 
+function Assert-SetupAssets($Assets, [int]$ExpectedCount, [string]$Label) {
+  $items = @($Assets)
+  if ($items.Count -ne $ExpectedCount) { throw "$Label must contain $ExpectedCount installer targets (actual $($items.Count))" }
+  foreach ($asset in $items) {
+    if (@('user', 'system') -notcontains $asset.target) { throw "$Label has invalid target: $($asset.target)" }
+    if (@('win32-x64-user', 'win32-x64') -notcontains $asset.platform) { throw "$Label has invalid platform: $($asset.platform)" }
+    if ([string]::IsNullOrWhiteSpace($asset.rel) -or $asset.rel -notlike '.build/win32-x64/*/*.exe') { throw "$Label has invalid installer path: $($asset.rel)" }
+  }
+}
+
+$expectedTargetCount = 2
+if ($env:SAROS_SETUP_TARGETS -eq 'user' -or $env:SAROS_SETUP_TARGETS -eq 'system') { $expectedTargetCount = 1 }
 $assetsJson = node build/saros/pack-optimization.mjs --targets-json
 if ($LASTEXITCODE -ne 0) { Write-Error "Invalid packaging policy"; exit 1 }
-$setupAssets = ConvertFrom-Json -InputObject ($assetsJson -join "`n")
+try { $setupAssets = ConvertFrom-Json -InputObject ($assetsJson -join "`n") } catch { Write-Host "[ERROR] Invalid installer target JSON: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
+Assert-SetupAssets $setupAssets $expectedTargetCount 'Selected targets'
 $allAssetsJson = node build/saros/pack-optimization.mjs --all-targets-json
 if ($LASTEXITCODE -ne 0) { Write-Error "Invalid packaging policy"; exit 1 }
-$allSetupAssets = ConvertFrom-Json -InputObject ($allAssetsJson -join "`n")
+try { $allSetupAssets = ConvertFrom-Json -InputObject ($allAssetsJson -join "`n") } catch { Write-Host "[ERROR] Invalid all-target JSON: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
+Assert-SetupAssets $allSetupAssets 2 'All targets'
 function Remove-InstallerArtifact([string]$RelativePath) {
   if (Test-Path -LiteralPath $RelativePath) { Remove-Item -LiteralPath $RelativePath -Force -ErrorAction Stop }
 }
 Remove-InstallerArtifact '.build/pack-reports/installers.json'
 foreach ($asset in $allSetupAssets) { Remove-InstallerArtifact $asset.rel }
-node --test build/saros/pack-optimization.test.mjs build/saros/release-assets.test.mjs dsh-plugins/vssaros-web-content-import/test/whisperModel.test.mjs
+Write-Host "=== Packaging policy regression tests (120s per-test timeout) ==="
+node --test --test-timeout=120000 --test-concurrency=1 build/saros/pack-optimization.test.mjs build/saros/release-assets.test.mjs dsh-plugins/vssaros-web-content-import/test/whisperModel.test.mjs
 if ($LASTEXITCODE -ne 0) { Write-Error "Packaging policy regression tests failed"; exit 1 }
 
 # ===== 校验 @vscode/tree-sitter-wasm 已进打包产物（语法高亮 wasm）=====
@@ -92,7 +121,7 @@ Write-Host "[OK] agent-studio/out 与 node_modules/typescript 已确认进包 ($
 # 「需要准备 DeepSeek Harness 运行环境」，用户看到的正是"仍然无法找到 dsh"✗✗。
 # 为什么这里必须自己判：BK 流水线配的是"前面插件失败也继续跑"，所以 verify-staging.ps1 红了**拦不住**
 # 后面的步骤；而 Inno 任务一旦跑完就会产出/上传安装包 ⇒ 必须在**调用 Inno 之前**硬拦（exit 1 时
-# 上面第 13 行已经把旧的 VsSarosSetup*.exe 删了 ⇒ 上传步骤无物可传，不会又发一份坏包 ✓）。
+# 上面第 9–11 行已经把旧的 VsSarosSetup*.exe 删了 ⇒ 上传步骤无物可传，不会又发一份坏包 ✓）。
 # 判据与运行时解析同源：<appPath>/dsh-runtime/<bundled>/node_modules/@deepseek-ai/dsh/lib/bin.js
 $compatFile = Join-Path $repoRoot "dsh-plugins\dsh-compat.json"
 if (-not (Test-Path $compatFile)) {

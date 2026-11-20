@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as tar from 'tar';
 
-export const SEED_GENERATOR_REVISION = 2;
+export const SEED_GENERATOR_REVISION = 3;
 export const UNSCOPED_SEED_PLUGINS = Object.freeze(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar']);
 export const SEED_PATH_FILES = Object.freeze(['package.json', 'pnpm-lock.yaml', 'node_modules/.pnpm/lock.yaml']);
 

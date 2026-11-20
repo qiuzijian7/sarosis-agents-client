@@ -228,6 +228,16 @@ export function checkBundledSeed(repoRoot = REPO_ROOT) {
 	if (!fs.existsSync(path.join(profile, 'package.json')) || !fs.existsSync(path.join(runtime, 'node_modules/@deepseek-ai/dsh/lib/bin.js'))) {
 		throw new Error('Bundled seed or runtime entry is missing');
 	}
+	const workspace = fs.readFileSync(path.join(profile, 'pnpm-workspace.yaml'), 'utf8');
+	if (/dangerouslyAllowAllBuilds\s*:\s*true/.test(workspace)
+		|| !/^autoInstallPeers:\s*false$/m.test(workspace)
+		|| !/^strictPeerDependencies:\s*false$/m.test(workspace)
+		|| !/^verifyDepsBeforeRun:\s*false$/m.test(workspace)
+		|| !/^packageImportMethod:\s*copy$/m.test(workspace)
+		|| !/^overrides:/m.test(workspace)
+		|| !workspace.includes(`"@deepseek-ai/dsh-tools": "${bundled}"`)) {
+		throw new Error('Bundled seed pnpm workspace policy is unsafe or incomplete');
+	}
 	for (const required of ['@vssaros/dsh-foundation', '@vssaros/dsh-bridge', '@deepseek-ai/dsh-web-app']) {
 		if (!Object.hasOwn(marker.plugins, required)) { throw new Error(`Bundled seed marker is missing a required plugin: ${required}`); }
 	}
@@ -342,8 +352,8 @@ function main(args) {
 		console.log('[pack-size] staging build identity verified');
 		return;
 	}
-	if (args[0] === '--targets-json') { console.log(JSON.stringify(packPolicy.assets)); return; }
-	if (args[0] === '--all-targets-json') { console.log(JSON.stringify(policy.WINDOWS_ASSETS)); return; }
+	if (args[0] === '--targets-json') { console.log(JSON.stringify(policy.shellAssets(packPolicy.assets))); return; }
+	if (args[0] === '--all-targets-json') { console.log(JSON.stringify(policy.shellAssets(policy.WINDOWS_ASSETS))); return; }
 	if (args[0] === '--record-exes' || args[0] === '--check-exes') {
 		if (args[0] === '--record-exes') {
 			fs.rmSync(path.join(REPO_ROOT, REPORT_REL), { force: true });

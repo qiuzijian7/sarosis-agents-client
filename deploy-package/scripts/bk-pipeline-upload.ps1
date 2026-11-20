@@ -27,7 +27,14 @@ node build/saros/pack-optimization.mjs --check-exes
 if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Installer gate failed; upload aborted" -ForegroundColor Red; exit 1 }
 $assetsJson = node build/saros/pack-optimization.mjs --targets-json
 if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Invalid packaging policy" -ForegroundColor Red; exit 1 }
-$setupAssets = ConvertFrom-Json -InputObject ($assetsJson -join "`n")
+try { $setupAssets = ConvertFrom-Json -InputObject ($assetsJson -join "`n") } catch { Write-Host "[ERROR] Invalid installer target JSON: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
+if (@($setupAssets).Count -lt 1 -or @($setupAssets).Count -gt 2) { Write-Host "[ERROR] Invalid installer target count" -ForegroundColor Red; exit 1 }
+foreach ($asset in $setupAssets) {
+  if (@('user', 'system') -notcontains $asset.target -or @('win32-x64-user', 'win32-x64') -notcontains $asset.platform -or [string]::IsNullOrWhiteSpace($asset.rel)) {
+    Write-Host "[ERROR] Invalid installer target metadata" -ForegroundColor Red
+    exit 1
+  }
+}
 
 Write-Host "=== VsSaros exe upload to update server ===" -ForegroundColor Green
 Write-Host "Server: $UpdateServer"

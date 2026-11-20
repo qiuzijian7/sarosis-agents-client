@@ -39,6 +39,12 @@ function fixture(t) {
 	return root;
 }
 
+function assertOrdered(source, first, second, message = 'required tokens are missing or out of order') {
+	const a = source.indexOf(first);
+	const b = source.indexOf(second);
+	assert.ok(a >= 0 && b >= 0 && a < b, `${message}: ${first}@${a}, ${second}@${b}`);
+}
+
 async function serve(t, handler) {
 	const server = http.createServer(handler);
 	server.listen(0, '127.0.0.1');
@@ -177,8 +183,16 @@ test('real update server archives upload once and immutable URL survives latest 
 			MANIFEST_PATH: path.join(root, 'manifest.json'), VERSIONS_PATH: path.join(root, 'versions.json'), DOWNLOADS_DIR: path.join(root, 'downloads'),
 			ARCHIVE_DIR: path.join(root, 'downloads/archive'), ARCHIVE_ENABLED: '1', UPLOAD_TOKEN: 'test-only', MAX_DOWNLOAD_SIZE: '2147483648', MAX_UPLOAD_SIZE: '2147483648' }, stdio: ['ignore', 'pipe', 'pipe'],
 	});
-	const closed = once(child, 'exit');
-	t.after(async () => { if (child.exitCode === null) { child.kill(); } await closed; });
+	child.stdout?.resume();
+	child.stderr?.resume();
+	child.on('error', () => {});
+	const closed = new Promise(resolve => child.once('close', resolve));
+	t.after(async () => {
+		if (child.exitCode === null) { child.kill(); }
+		child.stdout?.destroy();
+		child.stderr?.destroy();
+		await closed;
+	});
 	let started = false;
 	for (let i = 0; i < 100; i++) {
 		try { const health = await fetch(base + '/health', { signal: AbortSignal.timeout(500) }); if (health.ok) { started = true; break; } } catch { /* starting */ }
@@ -189,15 +203,15 @@ test('real update server archives upload once and immutable URL survives latest 
 	const artifact = { ...installer.artifacts[0], size: payload.length, sha256: crypto.createHash('sha256').update(payload).digest('hex') };
 	const single = { ...installer, target: 'user', artifacts: [artifact] };
 	const uploadUrl = base + `/admin/upload?platform=${artifact.platform}&commit=${single.commit}&productVersion=${single.productVersion}`;
-	const uploaded = await fetch(uploadUrl, { method: 'POST', headers: { 'X-Upload-Token': 'test-only', 'Content-Type': 'application/octet-stream' }, body: payload });
+	const uploaded = await fetch(uploadUrl, { method: 'POST', headers: { 'X-Upload-Token': 'test-only', 'Content-Type': 'application/octet-stream' }, body: payload, signal: AbortSignal.timeout(30000) });
 	assert.equal(uploaded.status, 200);
 	const result = await uploaded.json();
 	const download = validateUploadResponse(result, single, artifact.platform, base);
 	recordUpload(root, single, artifact.platform, result, base);
 	await completeUpload(root, single, base);
-	const replacement = await fetch(uploadUrl, { method: 'POST', headers: { 'X-Upload-Token': 'test-only' }, body: Buffer.from('new-latest') });
+	const replacement = await fetch(uploadUrl, { method: 'POST', headers: { 'X-Upload-Token': 'test-only' }, body: Buffer.from('new-latest'), signal: AbortSignal.timeout(30000) });
 	assert.equal(replacement.status, 200);
-	const firstByte = await fetch(download.url, { headers: { Range: 'bytes=0-0' } });
+	const firstByte = await fetch(download.url, { headers: { Range: 'bytes=0-0' }, signal: AbortSignal.timeout(30000) });
 	assert.equal(firstByte.status, 206);
 	assert.equal(Buffer.from(await firstByte.arrayBuffer())[0], 1);
 	await probeArchive(download);
@@ -210,18 +224,23 @@ test('real update server archives upload once and immutable URL survives latest 
 
 test('publication consumes archives before git writes and upload preserves/validates response JSON', () => {
 	const release = fs.readFileSync(path.join(ROOT, 'build/saros/create-release.cjs'), 'utf8');
-	assert.ok(release.indexOf('archivedDownloads = await loadArchivedDownloads') < release.indexOf('const changelog = buildChangelog'));
+	assertOrdered(release, 'archivedDownloads = await loadArchivedDownloads', 'const changelog = buildChangelog');
+	assertOrdered(release, 'assertReleaseVersion(version,', 'const changelog = buildChangelog');
 	assert.match(release, /IS_WIN \? archivedDownloads : \[\]/);
 	assert.match(release, /ensureReleaseLinks\(curl, \{ api: GITLAB_API, project: GITLAB_PROJECT,/);
 	assert.match(release, /ensureReleaseLinks\(curl, \{ api: GITLAB_API, project: GITLAB_MAIN_PROJECT,/);
 	const upload = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
 	assert.match(upload, /"-o", \$responseFile/);
-	assert.ok(upload.indexOf('--invalidate-upload') < upload.indexOf('--check-exes'));
+	assertOrdered(upload, '--invalidate-upload', '--check-exes');
 	assert.match(upload, /--record-upload \$platform \$responseFile \$UpdateServer/);
 	assert.match(upload, /--complete-upload \$UpdateServer/);
 	const generate = fs.readFileSync(path.join(ROOT, '.ci/scripts/generate-exe.ps1'), 'utf8');
-	assert.ok(generate.indexOf("'.build/pack-reports/uploads.json'") < generate.indexOf('if (-not (Test-Path $gulp))'));
-	assert.ok(release.indexOf('assertReleaseVersion(version,') < release.indexOf('const changelog = buildChangelog'));
+	assertOrdered(generate, "'.build/pack-reports/uploads.json'", 'if (-not (Test-Path $gulp))');
+	assertOrdered(generate, '--check-seed', 'node --test');
+	assertOrdered(generate, '--check-staging', 'node --test');
+	assertOrdered(generate, '--check-model', 'node --test');
+	assert.match(generate, /--test-timeout=\d+/);
+	assert.match(generate, /\$setupAssets = ConvertFrom-Json/);
 	assert.match(release, /GITLAB_MAIN_PROJECT\}\/repository\/tags\?tag_name=.*&ref=\$\{buildCommit\}/);
 });
 

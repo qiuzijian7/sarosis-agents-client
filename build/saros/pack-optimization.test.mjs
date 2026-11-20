@@ -42,6 +42,12 @@ function sparseFile(file, size) {
 	try { fs.ftruncateSync(fd, size); } finally { fs.closeSync(fd); }
 }
 
+function assertOrdered(source, first, second, message = 'required tokens are missing or out of order') {
+	const a = source.indexOf(first);
+	const b = source.indexOf(second);
+	assert.ok(a >= 0 && b >= 0 && a < b, `${message}: ${first}@${a}, ${second}@${b}`);
+}
+
 test('targets default to both and reject invalid values', () => {
 	assert.deepEqual(policy.resolvePackPolicy({}).assets.map(item => item.target), ['user', 'system']);
 	assert.deepEqual(policy.resolvePackPolicy({ SAROS_SETUP_TARGETS: 'user' }).assets.map(item => item.platform), ['win32-x64-user']);
@@ -170,16 +176,16 @@ test('recorded installers reject target/version/commit changes and same-size tam
 
 test('CLI rejects unknown targets and publication gates missing artifacts before network', () => {
 	const script = path.join(ROOT, 'build/saros/pack-optimization.mjs');
-	const result = spawnSync(process.execPath, [script, '--targets-json'], { encoding: 'utf8', env: { ...process.env, SAROS_SETUP_TARGETS: 'wrong' } });
+	const result = spawnSync(process.execPath, [script, '--targets-json'], { encoding: 'utf8', env: { ...process.env, SAROS_SETUP_TARGETS: 'wrong' }, timeout: 30000 });
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /SAROS_SETUP_TARGETS/);
-	const targets = spawnSync(process.execPath, [script, '--targets-json'], { encoding: 'utf8', env: { ...process.env, SAROS_SETUP_TARGETS: 'system' } });
+	const targets = spawnSync(process.execPath, [script, '--targets-json'], { encoding: 'utf8', env: { ...process.env, SAROS_SETUP_TARGETS: 'system' }, timeout: 30000 });
 	assert.equal(targets.status, 0);
 	assert.deepEqual(JSON.parse(targets.stdout).map(item => item.target), ['system']);
 	const release = fs.readFileSync(path.join(ROOT, 'build/saros/create-release.cjs'), 'utf8');
-	assert.ok(release.indexOf("'--check-exes'") < release.indexOf('const changelog = buildChangelog'));
+	assertOrdered(release, "'--check-exes'", 'const changelog = buildChangelog');
 	const upload = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
-	assert.ok(upload.indexOf('--check-exes') < upload.indexOf('& $curlExe'));
+	assertOrdered(upload, '--check-exes', '& $curlExe');
 });
 
 test('staging requires successful packaging, current identity and unchanged entry hashes', t => {
@@ -224,9 +230,9 @@ test('baseline errors invalidate previous success and verification enforces grow
 test('CI creates staging marker only after successful package/strip and checks before cleanup', () => {
 	const pack = fs.readFileSync(path.join(ROOT, '.ci/scripts/package-vscode.ps1'), 'utf8');
 	const generate = fs.readFileSync(path.join(ROOT, '.ci/scripts/generate-exe.ps1'), 'utf8');
-	assert.ok(pack.indexOf('--invalidate-staging') < pack.indexOf('node build/prepack-dsh-runtime.mjs'));
-	assert.ok(pack.indexOf('--record-staging') > pack.indexOf('strip-before-pack failed'));
-	assert.ok(generate.indexOf('--check-staging') < generate.indexOf('--audit'));
+	assertOrdered(pack, '--invalidate-staging', 'node build/prepack-dsh-runtime.mjs');
+	assertOrdered(pack, 'strip-before-pack failed', '--record-staging');
+	assertOrdered(generate, '--check-staging', '--audit');
 	assert.match(generate, /--record-exes \$vsOutRoot/);
 });
 
@@ -235,7 +241,7 @@ test('PowerShell 5.1 target parsing and Inno retries return one boolean without 
 	const script = `
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Expected Windows PowerShell 5.1' }
-$assetsJson = '${JSON.stringify(policy.WINDOWS_ASSETS)}'
+$assetsJson = '${JSON.stringify(policy.shellAssets(policy.WINDOWS_ASSETS))}'
 $setupAssets = ConvertFrom-Json -InputObject ($assetsJson -join "\`n")
 if ($setupAssets.Count -ne 2) { throw 'Nested JSON array' }
 foreach ($asset in $setupAssets) {
@@ -388,7 +394,7 @@ test('all model copy points use one policy, with strict final check after deferr
 	assert.match(strip, /'--prepare-model', buildDir/);
 	assert.match(bundle, /--stage-model \$buildOut/);
 	assert.match(bundle, /'standard'\) \{ \$extraArgs \+= '--skip-model'/);
-	assert.ok(generate.indexOf('--check-model') < generate.indexOf("Invoke-InnoTask 'vscode-win32-x64-inno-updater'"));
+	assertOrdered(generate, '--check-model', "Invoke-InnoTask 'vscode-win32-x64-inno-updater'");
 });
 
 test('compression probe reads all formal Inno settings and rejects missing/duplicate keys', () => {
@@ -466,13 +472,30 @@ test('CI exposes mode/target/budgets while keeping offline defaults and archives
 	assert.match(source, /filePath: \.build\/pack-reports\/\*\*\/\*\.json/);
 });
 
-test('prepack uses pnpm 11 copy settings and keeps final seed configuration portable', () => {
+test('prepack pins compatible official tools, disables optional peer auto-install, and keeps final config portable', () => {
 	const source = fs.readFileSync(path.join(ROOT, 'build/prepack-dsh-runtime.mjs'), 'utf8');
+	const seed = fs.readFileSync(path.join(ROOT, 'build/saros/seed-package.mjs'), 'utf8');
+	assert.equal(SEED_GENERATOR_REVISION, 3);
+	assert.match(seed, /SEED_GENERATOR_REVISION = 3/);
 	assert.match(source, /pnpm_config_package_import_method: 'copy'/);
+	assert.match(source, /pnpm_config_auto_install_peers: 'false'/);
+	assert.match(source, /pnpm_config_strict_peer_dependencies: 'false'/);
+	assert.match(source, /pnpm_config_verify_deps_before_run: 'false'/);
 	assert.doesNotMatch(source, /[\s,{]npm_config_package_import_method:/);
-	const initialization = source.indexOf("dsh(['--profile', 'vssaros', '--from-default-profile'");
-	assert.ok(source.indexOf("pnpm_config_package_import_method: 'copy'") < initialization);
+	assertOrdered(source, "pnpm_config_package_import_method: 'copy'", "dsh(['--profile', 'vssaros', '--from-default-profile'");
 	assert.equal([...source.matchAll(/'packageImportMethod: copy'/g)].length, 2);
+	assert.equal([...source.matchAll(/'autoInstallPeers: false'/g)].length, 2);
+	assert.equal([...source.matchAll(/'overrides:'/g)].length, 2);
+	assert.equal([...source.matchAll(/@deepseek-ai\/dsh-tools/g)].length, 2);
+	assert.match(source, /\$\{dshVersion\}/);
+	const finalStart = source.indexOf("'# Shipped seed policy");
+	const finalEnd = source.indexOf("].join('\\n')", finalStart);
+	assert.ok(finalStart > 0 && finalEnd > finalStart);
+	const finalBlock = source.slice(finalStart, finalEnd);
+	assert.doesNotMatch(finalBlock, /dangerouslyAllowAllBuilds/);
+	assert.match(finalBlock, /'autoInstallPeers: false'/);
+	assert.match(finalBlock, /'overrides:'/);
+	assert.match(finalBlock, /@deepseek-ai\/dsh-tools/);
 });
 
 test('seed preflight rejects partial/mismatched seeds and checks every registered plugin', t => {
@@ -483,6 +506,18 @@ test('seed preflight rejects partial/mismatched seeds and checks every registere
 	assert.throws(() => checkBundledSeed(f.repo), /ENOENT/);
 	f.write(`repo/dsh-runtime/${bundled}/node_modules/@deepseek-ai/dsh/lib/bin.js`, 'runtime-entry');
 	f.write(`${prefix}/profiles/vssaros/package.json`, '{}');
+	const safeWorkspace = [
+		'autoInstallPeers: false',
+		'strictPeerDependencies: false',
+		'verifyDepsBeforeRun: false',
+		'packageImportMethod: copy',
+		'overrides:',
+		`  "@deepseek-ai/dsh-tools": "${bundled}"`,
+		'allowBuilds:',
+		'  koffi: true',
+		'',
+	].join('\n');
+	const workspaceFile = f.write(`${prefix}/profiles/vssaros/pnpm-workspace.yaml`, safeWorkspace);
 	const plugins = { '@vssaros/dsh-foundation': '0.2.7', '@vssaros/dsh-bridge': '0.2.50', '@deepseek-ai/dsh-web-app': bundled };
 	const marker = { generatorRevision: SEED_GENERATOR_REVISION, dsh: bundled, plugins };
 	const markerFile = f.write(`${prefix}/seed.json`, JSON.stringify(marker));
@@ -491,6 +526,11 @@ test('seed preflight rejects partial/mismatched seeds and checks every registere
 		f.write(`${prefix}/profiles/vssaros/node_modules/${name}/package.json`, JSON.stringify({ name, version }));
 	}
 	assert.deepEqual(checkBundledSeed(f.repo), { bundled, plugins: 3 });
+	fs.writeFileSync(workspaceFile, `${safeWorkspace}\ndangerouslyAllowAllBuilds: true\n`);
+	assert.throws(() => checkBundledSeed(f.repo), /workspace/);
+	fs.writeFileSync(workspaceFile, safeWorkspace.replace('autoInstallPeers: false', 'autoInstallPeers: true'));
+	assert.throws(() => checkBundledSeed(f.repo), /workspace/);
+	fs.writeFileSync(workspaceFile, safeWorkspace);
 	fs.writeFileSync(markerFile, JSON.stringify({ ...marker, generatorRevision: 0 }));
 	assert.throws(() => checkBundledSeed(f.repo), /different runtime/);
 	fs.writeFileSync(markerFile, JSON.stringify(marker));
@@ -511,9 +551,9 @@ test('seed preflight rejects partial/mismatched seeds and checks every registere
 
 test('CI seed preflight must stop before Office preparation when prepack only warns', () => {
 	const source = fs.readFileSync(path.join(ROOT, '.ci/scripts/package-vscode.ps1'), 'utf8');
+	assertOrdered(source, 'node build/prepack-dsh-runtime.mjs', 'pack-optimization.mjs --check-seed');
+	assertOrdered(source, 'pack-optimization.mjs --check-seed', 'node build/prepare-office-runtime.mjs');
 	const check = source.indexOf('pack-optimization.mjs --check-seed');
-	assert.ok(check > source.indexOf('node build/prepack-dsh-runtime.mjs'));
-	assert.ok(check < source.indexOf('node build/prepare-office-runtime.mjs'));
 	assert.match(source.slice(check, check + 240), /if \(\$LASTEXITCODE -ne 0\).*exit 1/);
 });
 
@@ -561,7 +601,8 @@ test('fresh and reused runtime entry paths discover every unscoped vendored plug
 	assert.ok(discoveryStart > 0 && discoveryEnd > discoveryStart);
 	const calls = [...source.slice(0, discoveryEnd).matchAll(/await safeBuildProfileSeed\([^;]+;/g)];
 	assert.equal(calls.length, 2, 'must cover existing-runtime and clean-install entry paths');
-	assert.ok(source.indexOf('const UNSCOPED_VENDORED =') < calls[0].index);
+	const unscopedAt = source.indexOf('const UNSCOPED_VENDORED =');
+	assert.ok(unscopedAt >= 0 && unscopedAt < calls[0].index);
 	const program = source.slice(0, discoveryEnd)
 		.replace(/^#![^\n]*\n/, '')
 		.replace(/^import .+;\r?$/gm, '')
@@ -604,4 +645,60 @@ test('Windows CI executable steps use ASCII names and explicit UTF8 charset', ()
 		assert.match(step, /charsetType: UTF_8/);
 		assert.match(step, /shell: powershell/);
 	}
+});
+
+test('PowerShell target CLI output is ASCII-only and contains no localization fields', () => {
+	const cli = path.join(ROOT, 'build/saros/pack-optimization.mjs');
+	for (const [flag, targets, expected] of [['--targets-json', 'both', 2], ['--targets-json', 'user', 1], ['--all-targets-json', 'both', 2]]) {
+		const result = spawnSync(process.execPath, [cli, flag], {
+			cwd: ROOT, env: { ...process.env, SAROS_PACK_MODE: 'offline', SAROS_SETUP_TARGETS: targets }, encoding: 'utf8', timeout: 30000,
+		});
+		assert.equal(result.status, 0, result.stderr || result.error?.message);
+		assert.doesNotMatch(result.stdout, /[^\x00-\x7f]/);
+		const assets = JSON.parse(result.stdout);
+		assert.equal(assets.length, expected);
+		for (const asset of assets) { assert.deepEqual(Object.keys(asset).sort(), ['platform', 'rel', 'target']); }
+	}
+});
+
+test('PowerShell 5.1 parses the actual target CLI output without mojibake', { skip: process.platform !== 'win32' }, () => {
+	const cli = path.join(ROOT, 'build/saros/pack-optimization.mjs').replace(/'/g, "''");
+	const node = process.execPath.replace(/'/g, "''");
+	const script = `
+$ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Expected Windows PowerShell 5.1' }
+$assetsJson = & '${node}' '${cli}' --targets-json
+if ($LASTEXITCODE -ne 0) { throw 'Target CLI failed' }
+$assetsText = [string]::Join([Environment]::NewLine, [string[]]$assetsJson)
+$setupAssets = ConvertFrom-Json -InputObject $assetsText
+if (@($setupAssets).Count -ne 2 -or $setupAssets[0].target -ne 'user' -or $setupAssets[0].PSObject.Properties.Name -contains 'kind') { throw 'ASCII target JSON regression' }
+$env:SAROS_SETUP_TARGETS = 'user'
+$singleJson = & '${node}' '${cli}' --targets-json
+if ($LASTEXITCODE -ne 0) { throw 'Single-target CLI failed' }
+$singleText = [string]::Join([Environment]::NewLine, [string[]]$singleJson)
+$singleAssets = ConvertFrom-Json -InputObject $singleText
+if (@($singleAssets).Count -ne 1 -or @($singleAssets)[0].target -ne 'user') { throw 'Single-target JSON regression' }
+Write-Output 'PS51_ASCII_TARGETS_OK'
+`;
+	const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+		cwd: ROOT, env: { ...process.env, SAROS_PACK_MODE: 'offline', SAROS_SETUP_TARGETS: 'both' }, encoding: 'utf8', timeout: 30000,
+	});
+	assert.equal(result.status, 0, result.stderr || result.error?.message);
+	assert.match(result.stdout, /PS51_ASCII_TARGETS_OK/);
+});
+
+test('EXE generation hard gate and target parsing fail closed after earlier stage errors', () => {
+	const generate = fs.readFileSync(path.join(ROOT, '.ci/scripts/generate-exe.ps1'), 'utf8');
+	const upload = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
+	const whisper = fs.readFileSync(path.join(ROOT, '.ci/scripts/bundle-whisper.ps1'), 'utf8');
+	assertOrdered(generate, '--check-seed', 'node --test');
+	assertOrdered(generate, '--check-staging', 'node --test');
+	assertOrdered(generate, '--check-model', 'node --test');
+	assert.match(generate, /--test-timeout=\d+/);
+	assert.match(generate, /--test-concurrency=1/);
+	assert.match(generate, /try \{ \$setupAssets = ConvertFrom-Json/);
+	assert.match(generate, /Assert-SetupAssets \$setupAssets \$expectedTargetCount/);
+	assert.match(upload, /try \{ \$setupAssets = ConvertFrom-Json/);
+	assert.match(upload, /Invalid installer target count/);
+	assertOrdered(whisper, '--check-staging', '$stagingBin');
 });

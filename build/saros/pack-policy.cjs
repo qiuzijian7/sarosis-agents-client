@@ -57,6 +57,10 @@ function hashFile(file) {
 	return hash.digest('hex');
 }
 
+function shellAssets(assets) {
+	return assets.map(({ target, platform, rel }) => ({ target, platform, rel }));
+}
+
 function inspectInstallers(root, policy, baseline) {
 	return policy.assets.map(asset => {
 		const file = path.join(root, asset.rel);
@@ -69,4 +73,4 @@ function inspectInstallers(root, policy, baseline) {
 	});
 }
 
-module.exports = { WINDOWS_ASSETS, resolvePackPolicy, checkExeBudget, hashFile, inspectInstallers };
+module.exports = { WINDOWS_ASSETS, resolvePackPolicy, checkExeBudget, hashFile, inspectInstallers, shellAssets };
