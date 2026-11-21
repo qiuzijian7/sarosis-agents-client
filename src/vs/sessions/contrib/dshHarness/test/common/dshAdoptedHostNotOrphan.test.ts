@@ -71,13 +71,17 @@ suite('被接管的 Host 不是孤儿', () => {
 		assert.match(src, /let parent = Number\(appPid\);/, 'parent 必须可改（接管后要换目标）');
 	});
 
-	test('4) 读拥有者记录要防 pid 复用：心跳新鲜 + 记录属于本 Host', () => {
+	test('4) 读拥有者记录要防 pid 复用：心跳新鲜 + 记录属于本 Host + 识别优雅分离', () => {
 		const src = code(WATCH);
 		const at = src.indexOf('export function readHostOwnership(');
 		assert.ok(at > 0, '找不到 readHostOwnership');
-		const body = src.slice(at, at + 1600);
-		assert.match(body, /now - statSync\(file\)\.mtimeMs <= OWNER_RECORD_STALE_MS/, '必须检查心跳（mtime）新鲜度');
+		const body = src.slice(at, at + 1800);
+		assert.match(body, /const mtimeMs = statSync\(file\)\.mtimeMs;/, '必须读取 owner 记录 mtime');
+		assert.match(body, /now - mtimeMs <= OWNER_RECORD_STALE_MS/, '必须检查心跳（mtime）新鲜度');
 		assert.match(body, /Number\(record\?\.hostPid\) === Number\(selfPid\)/, '必须确认记录是本 Host 的');
 		assert.match(body, /if \(fresh && forSelf && Number\.isFinite\(pid\) && pid > 1\) \{/, '三个条件缺一不可');
+		assert.match(body, /mtimeMs > now \+ OWNER_DETACHED_MIN_FUTURE_MS/, '未来 mtime 才认作优雅分离');
+		assert.match(body, /detachedUntil = mtimeMs;/, '必须把 detachedUntil 传给看护');
+		assert.match(src, /owner\.detachedUntil && owner\.detachedUntil > Date\.now\(\)/, '看护必须在未过期时停止计 miss');
 	});
 });

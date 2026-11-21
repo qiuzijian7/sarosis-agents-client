@@ -10,6 +10,7 @@
 //   （与 skills 的 `bundledSkillDir` 同一类道理：产品侧的东西用绝对路径交付给读不到源码的进程 ⇒
 //   内置技能/内置 agent 都活在同一层设计里）。没注入 ⇒ 退回"只列自定义"（不报错 ✓）。
 
+import { createHash } from 'node:crypto';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
@@ -216,6 +217,63 @@ async function fingerprintOf(root) {
 	} catch {
 		return 'absent';
 	}
+}
+
+/**
+ * **廉价、内容敏感的源文件签名**（P0-2）。
+ *
+ * 与 `scanAgentsFromConfig` 不同：这里只读目录 + `.agent.md` 的 `mtimeMs/size`，不读正文、
+ * 不解析 Markdown、不构造 preset 定义。Windows 上真机每个 `.agent.md` 的 readFile 可能被
+ * 杀软放大到几百毫秒，而 stat 可以并发且廉价 ⇒ 用它做 syncPresets 的前置短路判据。
+ */
+async function quickRootSignature(root) {
+	if (!root) { return 'absent'; }
+	try {
+		const entries = await readdir(root, { withFileTypes: true });
+		const dirs = entries.filter(e => e.isDirectory()).map(e => e.name).sort();
+		const parts = await Promise.all(dirs.map(async (id) => {
+			try {
+				const info = await stat(join(root, id, AGENT_FILE));
+				return info.isFile() ? `${id}:${Math.round(info.mtimeMs)}:${info.size}` : null;
+			} catch {
+				return null;
+			}
+		}));
+		return parts.filter(Boolean).join(',');
+	} catch {
+		return 'absent';
+	}
+}
+
+/** 稳定序列化插件注入的 agent 源；畸形数据退回 id 列表，签名宁可变化也不抛错。 */
+function sourceSignature(entries) {
+	return [...entries]
+		.sort(([a], [b]) => String(a).localeCompare(String(b)))
+		.map(([owner, agents]) => {
+			const rows = Array.isArray(agents) ? agents : [];
+			const payload = rows.map((agent) => {
+				try {
+					return `${agent?.id ?? ''}:${JSON.stringify(agent)}`;
+				} catch {
+					return `${agent?.id ?? ''}:unserializable`;
+				}
+			}).sort().join(',');
+			return `${String(owner)}:${payload}`;
+		})
+		.join('|');
+}
+
+/** 内置根 + 自定义根 + 内存插件 Bot 源的稳定签名；只读 stat，不读正文。 */
+export async function quickScanSignatureOf(config) {
+	const builtinRoot = agentsBuiltinRootOf(config);
+	const [builtinSig, customSig] = await Promise.all([
+		builtinRoot ? quickRootSignature(builtinRoot) : Promise.resolve('absent'),
+		quickRootSignature(agentsRootOf(config)),
+	]);
+	const sources = [...(agentSources.get(sourceRootOf(config))?.entries() ?? [])];
+	return createHash('sha256')
+		.update(`${builtinSig}|${customSig}|${sourceSignature(sources)}`)
+		.digest('hex');
 }
 
 /**

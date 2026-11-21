@@ -24,10 +24,10 @@
  *   ⇒ 不再读写 `state.json`，不再有 `current` / `history` / `install()` / `setCurrent()`。
  */
 
-import { execFile } from 'child_process';
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'fs';
+import { execFile, execFileSync } from 'child_process';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { delimiter, join } from '../../../../base/common/path.js';
+import { delimiter, dirname, join, resolve } from '../../../../base/common/path.js';
 import { isRuntimeVersionDir, isSupportedNodeVersion } from '../common/dshCli.js';
 import { DshErrorCode, IDshRuntimeInfo } from '../common/dshHarness.js';
 import { runtimeInstallMissing } from '../common/dshRuntimeInstall.js';
@@ -111,62 +111,172 @@ export function ensureLoopbackNoProxy(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv
 	return env;
 }
 
-/** 产物自带的 pnpm 单文件 bundle（打包版才有；dev 侧返回 undefined）。 */
-function bundledPnpmEntry(): string | undefined {
-	const res = (process as unknown as { resourcesPath?: string }).resourcesPath;
-	if (!res) {
-		return undefined;
-	}
-	// 打包版：<安装根>/resources/app/tools/pnpm/（由 build/saros/ensure-pnpm-tool.mjs 落位）。
-	// ★ 2026-11-07：pnpm 11.28.5 不再是单文件 bundle —— `bin/pnpm.mjs` 会动态 import
-	//   `dist/pnpm.mjs`，且还要 `dist/node_modules` / `dist/vendor` 等 ⇒ 整包随附。
-	//   两个文件都在才认（只拷 bin 会 ERR_MODULE_NOT_FOUND）。
-	const dir = join(res, 'app', 'tools', 'pnpm');
-	const entry = join(dir, 'bin', 'pnpm.mjs');
-	return existsSync(entry) && existsSync(join(dir, 'dist', 'pnpm.mjs')) ? entry : undefined;
+interface IBundledPnpm {
+	readonly entry: string;
+	readonly version: string;
 }
 
-/** PATH 里是否已经有 pnpm（有就尊重用户环境，不注入自带的）。 */
-function hasPnpmOnPath(pathValue: string): boolean {
+/**
+ * 候选 app 根：调用方给的（由随包插件目录反推，最可靠）→ 产物 `resources/app`
+ * → 当前工作目录 → Electron exe 上两级（dev 下 `<repo>/.build/electron/<exe>` ⇒ `<repo>`）。
+ * 每个候选都要过「package.json 的 pin + pnpm 整包文件」双重校验 ⇒ 猜错也不会误用。
+ */
+function appRootCandidates(explicit: string | undefined): string[] {
+	const out: string[] = [];
+	const push = (dir: string | undefined): void => {
+		if (dir && !out.some(x => x.toLowerCase() === dir.toLowerCase())) {
+			out.push(dir);
+		}
+	};
+	push(explicit);
+	const res = (process as unknown as { resourcesPath?: string }).resourcesPath;
+	push(res ? join(res, 'app') : undefined);
+	push(process.cwd());
+	push(resolve(dirname(process.execPath), '..', '..'));
+	return out;
+}
+
+/** 读 package.json 里的字符串字段（支持 `devDependencies.pnpm` 这类两级路径）。 */
+function readPkgString(file: string, ...keys: string[]): string | undefined {
+	try {
+		let value: unknown = JSON.parse(readFileSync(file, 'utf8'));
+		for (const key of keys) {
+			if (!value || typeof value !== 'object') {
+				return undefined;
+			}
+			value = (value as Record<string, unknown>)[key];
+		}
+		return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * 仓库 / 产物 **pin 的那一份 pnpm**（整包目录分发：`bin/pnpm.mjs` + `dist/pnpm.mjs` 都在）。
+ *
+ * ★★ 2026-11-21（真机：装 `billion-context` 报 `30 entries did not activate`，全是
+ *   `ENOENT …/lib/index.js`）：PATH 上漂进来 `pnpm 12.18.0`，项目 pin 的是 11.28.5。
+ *   `dsh plugin add` 会重物化整棵依赖树，两个版本算出的 `@deepseek-ai/dsh` peer 后缀不同
+ *   ⇒ 每个随包 `file:` 插件的 `.pnpm/@vssaros+…@<hash>` 目录被删旧建新（日志 `+129 -44`）
+ *   ⇒ 仍在跑的 Host 按旧路径 import ⇒ 30 个入口同时 ENOENT。
+ *
+ * 打包版读 `resources/app/tools/pnpm`（`ensure-pnpm-tool.mjs` 落位）；dev 没有这个目录，
+ * 回退到仓库 `node_modules/pnpm`。两者都用所在 app 根 `package.json` 的
+ * `devDependencies.pnpm` 校验 ⇒ 本机依赖装错版本时**不会**拿它冒充 pin。
+ */
+function bundledPnpmEntry(appRoot: string | undefined): IBundledPnpm | undefined {
+	const candidates: string[] = [];
+	const res = (process as unknown as { resourcesPath?: string }).resourcesPath;
+	if (res) {
+		candidates.push(join(res, 'app', 'tools', 'pnpm'));
+	}
+	for (const root of appRootCandidates(appRoot)) {
+		candidates.push(join(root, 'node_modules', 'pnpm'));
+	}
+	for (const dir of candidates) {
+		const entry = join(dir, 'bin', 'pnpm.mjs');
+		// pnpm 11 起是目录分发：只拷 bin 会 ERR_MODULE_NOT_FOUND（见 ensure-pnpm-tool.mjs）。
+		if (!existsSync(entry) || !existsSync(join(dir, 'dist', 'pnpm.mjs'))) {
+			continue;
+		}
+		const version = readPkgString(join(dir, 'package.json'), 'version');
+		if (!version) {
+			continue;
+		}
+		const pin = readPkgString(join(dirname(dirname(dir)), 'package.json'), 'devDependencies', 'pnpm');
+		if (pin && pin !== version) {
+			continue;
+		}
+		return { entry, version };
+	}
+	return undefined;
+}
+
+/** PATH 上第一个 pnpm 可执行文件（找不到 = 系统没装 pnpm）。 */
+function pnpmOnPath(pathValue: string): string | undefined {
 	const names = isWindows ? ['pnpm.cmd', 'pnpm.exe', 'pnpm.bat'] : ['pnpm'];
 	for (const dir of pathValue.split(delimiter)) {
 		if (!dir) {
 			continue;
 		}
 		for (const name of names) {
-			if (existsSync(join(dir, name))) {
-				return true;
+			const file = join(dir, name);
+			if (existsSync(file)) {
+				return file;
 			}
 		}
 	}
-	return false;
+	return undefined;
+}
+
+function hasPnpmOnPath(pathValue: string): boolean {
+	return pnpmOnPath(pathValue) !== undefined;
 }
 
 /**
- * 把**产物自带**的 pnpm 前置到子进程 PATH（仅当系统没有 pnpm 时才做）。
+ * 探测 PATH 上那份 pnpm 的版本。失败/超时返回 undefined ⇒ 按「版本未知」处理，仍注入 pin 版。
+ * 按 PATH 缓存：一次会话里启动路径与安装路径各调一次 `injectBundledPnpm`，不必起两次进程。
+ */
+let pnpmVersionCache: { key: string; version: string | undefined } | undefined;
+function pnpmVersionOnPath(pathValue: string, file: string): string | undefined {
+	const key = `${pathValue}\0${file}`;
+	if (pnpmVersionCache?.key === key) {
+		return pnpmVersionCache.version;
+	}
+	let version: string | undefined;
+	try {
+		const out = execFileSync(file, ['--version'], {
+			encoding: 'utf8', shell: isWindows, windowsHide: true, timeout: 4_000,
+		});
+		version = String(out).trim().split(/\s+/)[0] || undefined;
+	} catch {
+		version = undefined;
+	}
+	pnpmVersionCache = { key, version };
+	return version;
+}
+
+/**
+ * 把**仓库 pin 的那份 pnpm** 前置到子进程 PATH：系统没有 pnpm，或系统版本不是 pin 版本时都做。
  *
  * ★★ 2026-10-29（真机：别人机器上 `'pnpm' 不是内部或外部命令` ⇒ 35 个随包插件全没装上 ⇒
- *   界面只剩 dsh 官方页）：
- *   · 「启动时装插件」已有**直装兜底**（不依赖 pnpm，实测 35/35、4.3 秒）；
- *   · 但**运行时**仍要用 pnpm（页面里装第三方插件/技能、`dsh plugin add`）⇒ 产物必须自带一份。
+ *   界面只剩 dsh 官方页）：「启动时装插件」已有直装兜底，但运行时（页面里装第三方插件/技能、
+ *   `dsh plugin add`）仍要 pnpm ⇒ 产物必须自带一份。
+ * ★★ 2026-11-21：**只在 PATH 上恰好是 pin 版本时才「尊重用户环境」**，其余一律锁到 pin
+ *   ⇒ 启动路径与安装路径不会再各用一个版本交替重算 profile 的依赖树（见 bundledPnpmEntry 注释）。
  *
- * 实现要点（2026-11-07 起）：产物自带的是**仓库 pin 的 pnpm@11.28.5 整包**（约 21MB，
- * 入口 `bin/pnpm.mjs` → `dist/pnpm.mjs`），版本与构建期 prepack 用的那份同源。
- * shim 用 **Host 自己的 `node.path`** 跑它 ⇒ 用户机器**不需要装 node**（dshNodeInstaller 会托管
+ * shim 用 **Host 自己的 `node.path`** 跑 ⇒ 用户机器不需要装 node（dshNodeInstaller 会托管
  * 一个 ≥24.9.0 的 Node，满足 pnpm 11 的 ≥22.13 门槛）✓。
  *
- * ⚠ 与本文件顶部"不能用 Electron 跑 dsh"那条结论**不矛盾**：那条限制是 dsh 需要
- *   `node-addon-require-builtin`（Electron 39 不支持）；pnpm 是**纯 JS**，不碰那个能力 ✓。
+ * ⚠ 与文件顶部"不能用 Electron 跑 dsh"不矛盾：dsh 需要 `node-addon-require-builtin`；
+ *   pnpm 是纯 JS，不碰那个能力 ✓。
  */
-export function injectBundledPnpm(env: NodeJS.ProcessEnv, nodeExe: string | undefined): void {
-	const entry = bundledPnpmEntry();
-	if (!entry || !nodeExe) {
-		return;
-	}
+export function injectBundledPnpm(
+	env: NodeJS.ProcessEnv,
+	nodeExe: string | undefined,
+	appRoot?: string,
+	log: (line: string) => void = () => { },
+): void {
 	const key = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
 	const current = env[key] ?? '';
-	if (hasPnpmOnPath(current)) {
-		return; // 系统已有 pnpm ⇒ 尊重用户环境
+	const bundled = bundledPnpmEntry(appRoot);
+	const onPath = pnpmOnPath(current);
+	const onPathVersion = onPath ? pnpmVersionOnPath(current, onPath) : undefined;
+	if (!bundled) {
+		if (hasPnpmOnPath(current)) {
+			log(`⚠ 找不到仓库 pin 的 pnpm 整包 ⇒ 无法把 PATH 上的 ${onPathVersion ?? '未知版本'} 锁到 pin（dsh plugin add 可能重物化 profile 依赖树）`);
+		}
+		return;
+	}
+	if (hasPnpmOnPath(current) && onPathVersion === bundled.version) {
+		return; // PATH 上已经是 pin 版本 ⇒ 尊重用户环境
+	}
+	if (!nodeExe) {
+		return;
+	}
+	if (onPathVersion && onPathVersion !== bundled.version) {
+		log(`pnpm 版本锁定：PATH 上是 ${onPathVersion}，已前置仓库 pin 的 ${bundled.version}（避免 dsh plugin add 重算整棵依赖树）`);
 	}
 	try {
 		const dir = join(tmpdir(), 'vssaros-pnpm-shim');
@@ -176,19 +286,16 @@ export function injectBundledPnpm(env: NodeJS.ProcessEnv, nodeExe: string | unde
 		// ⚠ **必须用真正在用的那个 node**（`node.path`），不能用 Electron 顶替：
 		//   实测 Electron 39 的 node 跑 pnpm `--version` 没问题，但 `pnpm install` 装到
 		//   `added 513` 时**直接崩掉**（并发安装阶段不够用）✗✗。
-		//   而"别人机器没有 node"这件事由 `dshNodeInstaller` 兜着：没 node 就跑不了 dsh，
-		//   所以 Host 起来时 `node.path` **一定**是可用解释器（托管安装的或系统的）✓。
-		//   pnpm 11.28.5 还要求 Node ≥22.13，托管 Node 的门槛是 >=24.9.0 ⇒ 满足 ✓。
 		if (isWindows) {
 			writeFileSync(
 				join(dir, 'pnpm.cmd'),
-				'@echo off\r\n"' + nodeExe + '" "' + entry + '" %*\r\n',
+				'@echo off\r\n"' + nodeExe + '" "' + bundled.entry + '" %*\r\n',
 				'utf8',
 			);
 		} else {
 			writeFileSync(
 				join(dir, 'pnpm'),
-				'#!/bin/sh\n"' + nodeExe + '" "' + entry + '" "$@"\n',
+				'#!/bin/sh\n"' + nodeExe + '" "' + bundled.entry + '" "$@"\n',
 				{ mode: 0o755 },
 			);
 		}
@@ -213,8 +320,8 @@ export function sanitizedEnv(extra: Record<string, string | undefined> = {}): No
 	}
 	// 环回绕代理放在 `extra` 合并**之后**：即便调用方显式传了 `NO_PROXY`，也保证环回不被代理劫持 ✓。
 	ensureLoopbackNoProxy(env);
-	// ⚠ 产物自带的 pnpm 由调用方显式注入（`injectBundledPnpm(env, node.path)`）——
-	//   这里拿不到"真正在用的 node"，而 shim 必须用那个 node（用 Electron 顶替会崩，见那边注释）。
+	// ⚠ 产物自带的 pnpm 由调用方显式注入（`injectBundledPnpm(env, node.path, appRoot, log)`）——
+	//   这里拿不到"真正在用的 node"与 app 根，而 shim 必须用那个 node（用 Electron 顶替会崩，见那边注释）。
 	return env;
 }
 

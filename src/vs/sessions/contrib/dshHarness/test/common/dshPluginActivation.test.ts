@@ -5,6 +5,7 @@
 
 import assert from 'assert';
 import {
+	DSH_OFFICIAL_SESSION_SEARCH_BUNDLE, DSH_OFFICIAL_SESSION_SEARCH_ROW_ID, syncOfficialSessionSearchRows,
 	DSH_UNDISABLABLE_BUNDLES, isBundleDisableForbidden, isBundleEnabled, migrateOfficialWorktreeBundles, migrateRetiredEgoBundles, parseHmrPatchState, parseProfileBundles, serializeProfilePackageJson, setBundleEnabled, setRowDisabledOverride,
 } from '../../common/dshPluginActivation.js';
 
@@ -106,6 +107,28 @@ suite('dshPluginActivation（启停 = profile 组合的 bundles 成员）', () =
 		assert.deepStrictEqual(migrateRetiredEgoBundles(onlyOld).removed, []);
 		// 干净 profile（只有新插件）⇒ 无变化。
 		assert.deepStrictEqual(migrateRetiredEgoBundles([builtin]).removed, []);
+	});
+
+	test('★ 默认官方模式：清理旧 disabled 覆盖；legacy 模式：写回 disabled', () => {
+		const bundles = ['@deepseek-ai/dsh-base', DSH_OFFICIAL_SESSION_SEARCH_BUNDLE];
+		const initial = '- id: other\n  config: {}\n';
+		const disabled = `- id: other\n  config: {}\n\n- id: ${DSH_OFFICIAL_SESSION_SEARCH_ROW_ID}\n  disabled: true\n`;
+		// 默认（官方）模式必须把上一轮修复写下的禁用覆盖删掉，恢复官方 session_search。
+		const enabled = syncOfficialSessionSearchRows(disabled, bundles, false);
+		assert.strictEqual(enabled.changed, true);
+		assert.ok(!enabled.text.includes(`- id: ${DSH_OFFICIAL_SESSION_SEARCH_ROW_ID}`), enabled.text);
+		assert.ok(enabled.text.includes('- id: other\n  config: {}'), '既有 patch 内容不许被改写');
+		// 幂等：清理后再跑不写盘。
+		assert.strictEqual(syncOfficialSessionSearchRows(enabled.text, bundles, false).changed, false);
+		// 应急回退：禁用官方 group，让本仓轻量实现接管。
+		const legacy = syncOfficialSessionSearchRows(initial, bundles, true);
+		assert.strictEqual(legacy.changed, true);
+		assert.ok(legacy.text.includes(`- id: ${DSH_OFFICIAL_SESSION_SEARCH_ROW_ID}\n  disabled: true`), legacy.text);
+		assert.strictEqual(syncOfficialSessionSearchRows(legacy.text, bundles, true).changed, false);
+		// 没启用该 bundle 的 profile：完全不碰 patch。
+		const untouched = syncOfficialSessionSearchRows(disabled, ['@deepseek-ai/dsh-base'], false);
+		assert.strictEqual(untouched.changed, false);
+		assert.strictEqual(untouched.text, disabled);
 	});
 
 	test('缺失 dsh 结构时能补出来（不破坏其它字段）', () => {

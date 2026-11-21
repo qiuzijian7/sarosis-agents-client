@@ -139,7 +139,7 @@
 		// ★ 2026-10-26：`19 → 20`（新增 `importCodeWorkspace` —— 从 .code-workspace 导入多根工作区）。
 		// ★ 2026-11-05：`25 → 26`（新增 `rightbarBrowser` —— 右侧栏内嵌浏览器）。
 		// ★ 2026-11-17：`26 → 27`（新增 `createWorktree` / `removeWorktree` —— worktree 意图转发给 dsh Host）。
-		bridgeVersion: 27,
+		bridgeVersion: 29,
 		surface,
 		// ★ 2026-10-18：`chatOnly` 也放进 bridge（**同步可知**）。
 		//   为什么不能只靠 `data-vssaros-chat-only`：那个 DOM 标记要等 DOMContentLoaded 才写，
@@ -171,6 +171,9 @@
 		//   ⚠ 两者都**无参** —— 页面不能传 URL（否则等于给了页面一个任意开窗能力 ✗）。
 		openSettings: () => invoke({ method: 'openSettings' }),
 		openFeedback: () => invoke({ method: 'openFeedback' }),
+		// ★ 2026-11-21（桥 27 → 29）：dsh 设置里的可选组件管理；29 支持显式授权管理员安装。
+		componentsStatus: () => invoke({ method: 'componentsStatus' }),
+		installComponent: (id: string, allowElevation?: boolean) => invoke({ method: 'installComponent', id, ...(allowElevation ? { allowElevation: true } : {}) }),
 		// ★ 2026-10-23（桥 `18 → 19`）：desktop 窗口的「更新」入口。
 		//   三条都是**单向**命令（只回 true）—— 状态由宿主经 `vssaros:dsh:upgrade` **推**回来，
 		//   页面读 `document.documentElement.dataset.vssarosUpgrade` 或监听 `vssaros-dsh-upgrade` ✓。

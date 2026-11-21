@@ -101,7 +101,7 @@ try {
 }
 
 // ── ② client ─────────────────────────────────────────────────────────────
-function loadClient(fetchImpl) {
+function loadClient(fetchImpl, reactOverrides = {}) {
 	let mod = null;
 	// ⚠ 2026-11-02：`client.js` 的深链 effect 会读 `window.location`（`?wb=` / `#wb=`），
 	// 假 window 少了 location ⇒ apply() 直接抛，后面 12 条断言全部连锁失败（基线 18/30）。
@@ -111,6 +111,7 @@ function loadClient(fetchImpl) {
 		location: { search: '', hash: '', origin: 'http://127.0.0.1:1' },
 	};
 	const fakeReact = { createElement: (...a) => a, createContext: () => ({ Provider: 'Provider' }), useCallback: fn => fn, Component: class { }, Fragment: 'F', useRef: () => ({}), useLayoutEffect: () => { }, useState: init => [typeof init === 'function' ? init() : init, () => { }], useEffect: () => { } };
+	Object.assign(fakeReact, reactOverrides);
 	const fakeReactDom = { createPortal: (node, el, key) => ['portal', { el, key }, node] };
 	const require = name => {
 		if (name === 'react') { return fakeReact; }
@@ -366,8 +367,15 @@ await t('P3 所有权链：配置开启即接管开始页，live guideTakeover �
 	assert.match(homeMarkup, /data-vssaros-guide-root/, '自家开始页必须有常驻根锚点');
 	assert.match(homeMarkup, /data-vssaros-surface/, '开始页必须声明工作台承载面');
 	assert.match(homeMarkup, /vssaros-home-search/, 'v6 搜索框必须使用统一样式类');
-	assert.match(homeMarkup, /vssaros-home-tool-grid/, 'v6 常用工具必须使用工具网格');
-	assert.match(homeMarkup, /vssaros-home-entry-card/, '工具卡必须渲染为 v6 entry-card');
+	assert.match(homeMarkup, /vssaros-home-workbench-grid vssaros-home-tool-grid/, '工作台与工具必须共用同一个统一网格');
+	assert.match(homeMarkup, /vssaros-home-workbench-open/, '工具与工作台必须共用统一 item 卡片');
+	assert.match(homeMarkup, /data-vssaros-home-tool/, '工具必须并入工作台分组');
+	assert.match(homeMarkup, /data-vssaros-home-anchor-action/, '每个 item 必须有可点击的锚点');
+	assert.match(homeMarkup, /vssaros-home-anchor-button/, '每个 item 必须有独立可见的 anchor 按钮');
+	assert.match(homeMarkup, /vssaros-home-card-actions/, '图钉按钮与拖动手柄必须并排放在卡片动作区');
+	assert.match(homeMarkup, /aria-roledescription":"固定锚点/, 'anchor 按钮必须有明确的无障碍语义');
+	assert.doesNotMatch(homeMarkup, /vssaros-home-filters|目录分类/, '开始页不得再渲染分类页签');
+	assert.doesNotMatch(homeMarkup, /常用工具/, '开始页不得再有独立的常用工具分组');
 	assert.match(homeMarkup, /viewBox/, '工具/工作台卡必须使用 SVG 图标而非 emoji');
 	assert.match(homeMarkup, /data-vssaros-home-workbench/, '工作台目录必须渲染');
 	assert.match(homeMarkup, /vssaros-home-workbench-grid/, '工作台必须渲染为双列卡片网格');
@@ -377,7 +385,8 @@ await t('P3 所有权链：配置开启即接管开始页，live guideTakeover �
 	assert.match(homeMarkup, /aria-roledescription":"拖拽锚点/, '拖拽锚点必须有无障碍角色说明');
 	assert.match(homeMarkup, /vssaros-home-workbench-anchor-/, '每张工作台卡片必须有稳定锚点 id');
 	assert.match(homeMarkup, /data-vssaros-more-trigger/, '常用工具末尾必须有紧凑更多入口');
-	assert.match(homeMarkup, /data-vssaros-all-tools-trigger/, '工具区必须有全部工具入口');
+	assert.doesNotMatch(homeMarkup, /data-vssaros-all-tools-trigger|全部工具|vssaros-home-dialog/,
+		'开始页不得再有「全部工具」按钮或弹层');
 	assert.match(homeMarkup, /目录自动发现/, '工作台区必须展示目录自动发现标记');
 	assert.match(homeMarkup, /拖动卡片右上角锚点/, '必须展示拖拽说明');
 	assert.match(homeMarkup, /键盘：/, '必须展示键盘排序说明');
@@ -418,10 +427,188 @@ await t('P3 所有权链：配置开启即接管开始页，live guideTakeover �
 	assert.equal(client.__openSidebarWorkbenchPage('vssaros/kb/default'), false);
 	assert.equal(client.__openImageReference('@image:image.png'), false, '卸载后图片资源入口必须关闭');
 });
+/** 在 createElement 数组树里按 props 找节点（测试桩的 React 元素就是数组）。 */
+function findTreeProps(node, predicate) {
+	if (!Array.isArray(node)) { return null; }
+	const props = node[1];
+	if (props && typeof props === 'object' && !Array.isArray(props) && predicate(props)) { return props; }
+	for (const child of node) {
+		if (!Array.isArray(child) || child === node) { continue; }
+		const found = findTreeProps(child, predicate);
+		if (found) { return found; }
+	}
+	return null;
+}
+await t('开始页「浏览更多插件」直达商城工作台，不再打开宿主插件目录', () => {
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.doesNotMatch(source, /pluginNavigation/, '不得再调用宿主插件目录服务');
+	assert.match(source, /canonicalId === MARKET_WORKBENCH_ID/, '必须按目录真源的 canonicalId 定位商城页');
+	assert.match(source, /service\.open\(MARKET_WORKBENCH_ID\)/, '右栏目录未就绪时必须回落商城工作台本体');
+
+	// 展开「更多」菜单（分类 state 下线后，第 3 个 useState 是 menuOpen），再真实点击菜单按钮。
+	let stateCalls = 0;
+	const menuClient = loadClient(undefined, {
+		useState: init => {
+			stateCalls += 1;
+			const value = stateCalls === 3 ? true : (typeof init === 'function' ? init() : init);
+			return [value, () => { }];
+		},
+	});
+	const { service, ctx } = serviceOf(menuClient);
+	menuClient.__registerManifestPages(service);
+	assert.ok(service.getCatalogSnapshot().pages.some(page => page.canonicalId === 'vssaros/marketplace'),
+		'目录必须包含商城 active 页');
+	const opened = [];
+	menuClient.__testSetGlobal('__vssarosOpenWorkbenchCatalogPage', key => { opened.push(key); return true; });
+	let pluginListCalls = 0;
+	ctx.get = name => name === 'pluginNavigation' ? { openList: () => { pluginListCalls += 1; } } : undefined;
+	const sidebar = {
+		getTabs: () => [],
+		getSnapshot: () => ({ sessionId: 's1', prefs: { guideTakeover: false } }),
+		subscribe: () => () => { },
+		subscribeState: () => () => { },
+		openTab: () => { },
+	};
+	const tree = menuClient.makeVsSarosHomeGuide(service, ctx, sidebar)({});
+	const button = findTreeProps(tree, props => props['data-vssaros-browse-plugins'] === '1');
+	assert.ok(button && typeof button.onClick === 'function', '更多菜单必须保留「浏览更多插件」按钮');
+	button.onClick();
+	assert.deepStrictEqual(opened, ['manifest:/x/marketplace//vssaros-wb-marketplace'], '点击必须打开商城工作台');
+	assert.equal(pluginListCalls, 0, '点击不得打开宿主插件目录');
+
+	// 右栏目录未就绪 ⇒ 回落注册式商城工作台本体，仍不得打开宿主插件目录。
+	menuClient.__testDeleteGlobal('__vssarosOpenWorkbenchCatalogPage');
+	service.register({ title: '商城工作台', repository: 'vssaros:marketplace' }, Comp);
+	button.onClick();
+	assert.equal(ctx.calls.selected.includes('vssaros-wb:vssaros/marketplace'), true,
+		'右栏目录未就绪时必须打开注册式商城工作台');
+	assert.equal(pluginListCalls, 0, '回落路径也不得打开宿主插件目录');
+	service.dispose();
+});
+await t('开始页统一 item：工具并入工作台、分类下线、锚点点击固定到左侧栏', () => {
+	const anchorSource = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.match(anchorSource, /data-vssaros-home-anchors/, '左侧栏必须有锚点 item 容器');
+	assert.match(anchorSource, /\[data-sidebar-left\]/, '锚点容器必须挂在左侧栏 DOM');
+	assert.match(anchorSource, /__vssarosOpenHomeAnchor/, '左侧栏 item 必须能打开右栏页签');
+	assert.doesNotMatch(anchorSource, /allToolsOpen|allToolsDialog|data-vssaros-all-tools-trigger|vssaros-home-view-tools/,
+		'全部工具按钮与弹层实现必须彻底下线');
+	const anchorClient = loadClient();
+	const { service, ctx } = serviceOf(anchorClient);
+	anchorClient.__registerManifestPages(service);
+	// 生产里由 vssaros-scheduler 注册的「自动化任务」工作台，也必须进统一 item 列表。
+	service.register({ title: '自动化任务', repository: 'vssaros:scheduler' }, Comp);
+	const opened = [];
+	const toolOpened = [];
+	anchorClient.__testSetGlobal('__vssarosOpenWorkbenchCatalogPage', key => { opened.push(key); return true; });
+	const sidebar = {
+		getTabs: () => [
+			{ id: 'files', title: '文件', description: '浏览工作区文件' },
+			{ id: 'git', title: 'Git', description: '变更' },
+			{ id: 'hidden-tool', title: '隐藏', hidden: true },
+		],
+		getSnapshot: () => ({ sessionId: 's1', prefs: { guideTakeover: false } }),
+		subscribe: () => () => { },
+		subscribeState: () => () => { },
+		openTab: seed => { toolOpened.push(seed); },
+	};
+	const tree = anchorClient.makeVsSarosHomeGuide(service, ctx, sidebar)({});
+	const markup = JSON.stringify(tree);
+	assert.match(markup, /"data-vssaros-home-workbench":"vssaros\/scheduler\/default"/,
+		'自动化任务必须作为工作台 item 出现在统一列表');
+	assert.match(markup, /自动化任务/, '自动化任务卡片必须可见');
+	assert.match(markup, /"data-vssaros-home-tool":"files"/, '文件工具必须作为 item 出现在工作台分组');
+	assert.match(markup, /"data-vssaros-home-tool":"git"/, 'Git 工具必须作为 item 出现在工作台分组');
+	assert.doesNotMatch(markup, /"data-vssaros-home-tool":"hidden-tool"/, 'hidden 工具不得进开始页');
+	assert.doesNotMatch(markup, /vssaros-home-filters|目录分类/, '分类页签必须下线');
+	assert.doesNotMatch(markup, /常用工具/, '常用工具分组必须下线');
+
+	anchorClient.__testWriteHomeAnchors([]);
+	const anchorProps = findTreeProps(tree, props => props['data-vssaros-home-anchor-action'] === '1');
+	assert.ok(anchorProps && typeof anchorProps.onClick === 'function', '每个 item 必须有可点击锚点');
+	assert.equal(anchorProps.onKeyDown, undefined, 'anchor 不得重复绑定键盘事件（原生 click 即可）');
+	anchorProps.onClick({ detail: 0 });
+	assert.equal(anchorClient.__testReadHomeAnchors().length, 1, '键盘 / 触屏派发的 detail=0 click 也必须能固定');
+	anchorProps.onClick({ detail: 0 });
+	assert.equal(anchorClient.__testReadHomeAnchors().length, 0, '再次 click 必须取消固定');
+	anchorProps.onClick({ detail: 1 });
+	const anchors = anchorClient.__testReadHomeAnchors();
+	assert.equal(anchors.length, 1, '点击锚点必须把 item 固定到左侧栏');
+	assert.equal(anchors[0].kind, 'workbench', '锚点条目必须保留 item 类型');
+	const openAnchor = anchorClient.__testGetGlobal('__vssarosOpenHomeAnchor');
+	assert.equal(typeof openAnchor, 'function', '左侧栏锚点必须有打开入口');
+	openAnchor(anchors[0].key);
+	assert.deepStrictEqual(opened, [anchors[0].key], '点击左侧栏工作台锚点必须打开右栏 catalog 页');
+	openAnchor('tool:files');
+	assert.equal(toolOpened.some(seed => seed && seed.type === 'files'), true,
+		'点击左侧栏工具锚点必须打开对应的右栏工具 tab');
+	anchorProps.onClick({ detail: 1 });
+	assert.equal(anchorClient.__testReadHomeAnchors().length, 0, '再次点击锚点必须取消固定');
+	// localStorage 写入失败（Electron WebContentsView 常见）时，写入/读回必须同源，不能静默丢状态。
+	const previousStore = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+	globalThis.localStorage = {
+		getItem: () => null,
+		setItem: () => { throw new Error('SecurityError'); },
+	};
+	try {
+		anchorClient.__testWriteHomeAnchors([]);
+		assert.equal(anchorClient.__testToggleHomeAnchor({ key: 'stub-key', title: '桩', kind: 'workbench' }), true);
+		assert.deepStrictEqual(anchorClient.__testReadHomeAnchors().map(entry => entry.key), ['stub-key'],
+			'localStorage 写入失败时必须回退到内存且读写一致');
+	} finally {
+		if (previousStore) { Object.defineProperty(globalThis, 'localStorage', previousStore); }
+		else { delete globalThis.localStorage; }
+	}
+	service.dispose();
+});
+await t('统一 HomeItemRegistry：两个来源、一个投影、一个排序字段', () => {
+	const registryClient = loadClient();
+	const { service } = serviceOf(registryClient);
+	registryClient.__registerManifestPages(service);
+	service.register({ title: '自动化任务', repository: 'vssaros:scheduler' }, Comp);
+	const sidebar = {
+		getTabs: () => [
+			{ id: 'files', title: '文件', description: '浏览工作区文件' },
+			{ id: 'custom-tool', title: () => '自定义工具', description: '无需改名单' },
+			{ id: 'hidden-tool', hidden: true, title: '隐藏' },
+			{ id: 'bottom-tool', bottomOnly: true, title: '底部' },
+			{ id: 'vssaros-wb:page', vssarosOwner: 'vssaros-workbenches', title: '承载页' },
+		],
+	};
+	const registry = registryClient.createHomeItemRegistry(service, sidebar);
+	const start = registryClient.selectHomeItems(registry.snapshot(), 'start').map(item => item.key);
+	assert.ok(start.includes('manifest:/x/marketplace//vssaros-wb-marketplace'), '静态目录页必须来自 catalog 来源');
+	assert.ok(start.includes('vssaros/scheduler/default'), '运行时注册工作台必须进同一 registry');
+	assert.ok(start.includes('tool:files'), '工具 tab 必须来自 betterSidebar 来源');
+	assert.ok(start.includes('tool:custom-tool'), '新增工具无需改任何硬编码名单');
+	assert.equal(start.some(key => /hidden-tool|bottom-tool|vssaros-wb:page/.test(key)), false,
+		'hidden / bottomOnly / 宿主承载 tab 不得进开始页');
+	const custom = registry.get('tool:custom-tool');
+	assert.equal(custom.title, '自定义工具', '元数据必须由注册方描述符提供');
+	assert.equal(custom.description, '无需改名单', '描述不得退化成空占位');
+	assert.equal(custom.origin.registry, 'betterSidebar', '来源必须可追溯');
+	assert.equal(registryClient.homeItemKey('tool', 'x'), 'tool:x', '身份前缀必须由 registry 统一生成');
+	assert.equal(registryClient.isHostOwnedTab({ id: 'vssaros-wb:page' }), true);
+	assert.equal(registryClient.isHostOwnedTab({ id: 'files' }), false);
+	assert.deepStrictEqual(registryClient.migrateHomeItemOrder(
+		{ homeWorkbenchOrder: ['a'], homeToolOrder: ['files'] }, ['a', 'tool:files', 'b']),
+	['a', 'tool:files', 'b'], '双字段必须迁移成单字段并补齐新增项');
+	assert.deepStrictEqual(registryClient.migrateHomeItemOrder(
+		{ homeItemOrder: ['b'], homeToolOrder: ['files'] }, ['a', 'b']), ['b', 'a'],
+		'已有 homeItemOrder 优先，不被旧字段覆盖');
+	assert.deepStrictEqual(emptyState().homeItemOrder, [], '状态必须包含统一排序字段');
+	assert.throws(() => validateState({ ...emptyState(), homeItemOrder: ['a', 'a'] }), /排序键/,
+		'统一排序字段必须复用原有合法性校验');
+});
 await t('开始页：install-status 短轮询、目录自动发现文案与 key/身份下线', () => {
 	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
-	assert.match(source, /const pages = selectStartPages\(service\.getCatalogSnapshot\(\)\.pages\);/,
-		'开始页必须使用统一目录策略投影，而不是直接渲染完整 catalog');
+	assert.match(source, /getHomeItemRegistry\(service, betterSidebar\)/,
+		'开始页必须消费统一 HomeItemRegistry，而不是直接拼两份名单');
+	assert.match(source, /selectHomeItems\(allItems, 'start'\)/,
+		'开始页必须由单一投影函数按 surface 过滤');
+	assert.match(source, /migrateHomeItemOrder\(saved, itemKeys\)/,
+		'排序必须走统一 homeItemOrder 迁移');
+	assert.match(source, /const openHomeItem = \(item, surface = 'right-tab'\)/,
+		'所有 item 必须共用同一个打开入口');
 	assert.match(source, /module\.exports\.catalogDiagnosticsOf = catalogDiagnosticsOf;/,
 		'目录策略诊断纯函数必须导出');
 	assert.match(source, /globalThis\.__vssarosWorkbenchCatalogDiagnostics/,
@@ -616,8 +803,8 @@ await t('开始页工作台锚点：每个 item 都有稳定 DOM id 与一一对
 });
 await t('阶段0/1 统一目录策略：canonical/state/visibility/aliases 与投影纯函数', () => {
 	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
-	assert.match(source, /selectNativeTabPages\(service\.getCatalogSnapshot\(\)\.pages\)/,
-		'右栏适配器必须使用统一 native tab 投影');
+	assert.match(source, /selectHomeItems\(getHomeItemRegistry\(service, betterSidebar\)\.snapshot\(\), 'nativeTab'\)/,
+		'右栏适配器必须使用统一 HomeItemRegistry 的 nativeTab 投影');
 	assert.match(source, /canonicalConflictsOf\(this\.catalogSnapshot\.pages\)/,
 		'目录发布必须检测 active canonical 冲突');
 	client.__setSidebarLayoutV1(false);

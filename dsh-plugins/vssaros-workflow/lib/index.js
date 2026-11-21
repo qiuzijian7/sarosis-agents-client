@@ -56,6 +56,22 @@ async function probeWorkerCached() {
 }
 
 const ROUTE_PREFIX = '/x/workflow';
+
+const WEB_ROUTE_OWNERS_KEY = Symbol.for('vssaros.webRouteOwners');
+/** 双 plane 挂载时同一 prefix 只注册一次；effect 撤销时释放，HMR 仍可重新注册。 */
+function registerPageRouteOnce(page, route) {
+	const key = `${route.kind}:${route.path}`;
+	let owners;
+	try { owners = globalThis[WEB_ROUTE_OWNERS_KEY] ??= new Set(); } catch { return page.webServer.register(route); }
+	if (!(owners instanceof Set) || owners.has(key)) {
+		console.log(`[${name}] ${key} 已由另一层注册 ⇒ 跳过（避免 duplicate prefix route）`);
+		return undefined;
+	}
+	owners.add(key);
+	let dispose;
+	try { dispose = page.webServer.register(route); } catch (error) { owners.delete(key); throw error; }
+	return () => { try { dispose?.(); } finally { owners.delete(key); } };
+}
 /** 本插件在反向通道里的调用方标识（VsSaros 侧据此查"这个插件声明了哪些能力"）。 */
 const PLUGIN_ID = '@vssaros/dsh-workflow';
 /** 「在画布打开」的等待预算：主进程一趟 + 渲染侧一趟（开编辑器，不开浏览器、不等用户），默认够用。 */
@@ -1337,7 +1353,7 @@ export function apply(ctx, config = {}) {
 		//   驱动的引擎（真机症状：节点 a 失败 `Cannot read properties of null (reading 'run')`）。
 		//   页面路由只属于 host plane 实例 ⇒ 以"注册页面路由的那次"为准 ✓（`stateRef` 留给工具/引擎自用）。
 		pageStateRef.current = state;
-		return page.effect(() => page.webServer.register({
+		return page.effect(() => registerPageRouteOnce(page, {
 		kind: 'prefix',
 		path: ROUTE_PREFIX,
 		handler: async (req, res) => {

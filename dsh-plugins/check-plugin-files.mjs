@@ -35,6 +35,7 @@ const HOST_RESOLVED_ENTRIES = {
 	'dsh-ego-browser': ['@deepseek-ai/dsh-tools', '@deepseek-ai/schemastery'],
 	'dsh-vision-router': ['./abort-signal-compat.js', '../entry.js'],
 	'dsh-better-sidebar': ['from "ws"', '@deepseek-ai/schemastery'],
+	'dsh-deep-ptc-mode': ['@deepseek-ai/schemastery', './preset.json'],
 };
 
 function pluginDirs() {

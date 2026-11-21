@@ -21,6 +21,7 @@ import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS } from '../../common/dshHostRunOwnershi
 
 const PLUGIN = 'dsh-plugins/vssaros-bridge/lib/index.js';
 const SUPERVISOR = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupervisor.ts';
+const CHANNEL = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts';
 const PROTOCOL = 'src/vs/sessions/contrib/dshHarness/common/dshBridgeProtocol.ts';
 
 /** 读仓库内文件（与 `dshHostConfig.test.ts` 同一套定位法：dev 以仓库根为 cwd ✓）。 */
@@ -28,6 +29,11 @@ function read(relative: string): string {
 	const file = path.join(process.cwd(), relative);
 	assert.ok(fs.existsSync(file), `${relative} 不存在 ⇒ 定位仓库根失败（本测试假定以仓库根为 cwd 运行）`);
 	return fs.readFileSync(file, 'utf8');
+}
+
+/** 源码守卫排除注释，避免说明文字里的旧写法造成假红。 */
+function code(relative: string): string {
+	return read(relative).replace(/\/\*[\s\S]*?\*\//g, '').split(/\r?\n/).filter(line => !/^\s*\/\//.test(line)).join('\n');
 }
 
 suite('dshHarness / owner watchdog pairing (host ↔ bridge plugin)', () => {
@@ -67,16 +73,51 @@ suite('dshHarness / owner watchdog pairing (host ↔ bridge plugin)', () => {
 			'③ 判定成立后要自退（进程退出 = 内核放掉 `session.lock` ✓）');
 	});
 
-	test('★ 优雅分离必须在 keepAlive 分支里被标记（否则正常退出会被当成崩溃 ✗）', () => {
+	test('★ 优雅分离必须在 keepAlive 两条分支里都被标记（spawn / 接管 Host）', () => {
 		const source = read(SUPERVISOR);
 		const start = source.indexOf('if (this._keepAlive && child && child.exitCode === null)');
-		assert.ok(start >= 0, '找不到 `dispose()` 里的 keepAlive 分支 —— 结构变了，这条守卫要一起复审');
-		const branch = source.slice(start, source.indexOf('super.dispose();', start));
+		assert.ok(start >= 0, '找不到 `dispose()` 里 spawn Host 的 keepAlive 分支 —— 结构变了，这条守卫要一起复审');
+		const firstSuper = source.indexOf('super.dispose();', start);
+		const branch = source.slice(start, firstSuper);
 		assert.ok(branch.includes('this._markOwnershipDetachedSync();'),
 			'常驻分离前必须把记录标记成"已优雅分离"⇒ 不标记的话桥插件会把这次退出当崩溃、把刻意常驻的 Host 收掉 ✗');
+
+		const adopted = source.indexOf('if (this._keepAlive) {', firstSuper);
+		assert.ok(adopted > firstSuper, '找不到接管 Host（`_child` 为空）的 keepAlive 分支；退出时会把复用中的 Host 误判成崩溃 ✗');
+		const adoptedSuper = source.indexOf('super.dispose();', adopted);
+		const adoptedBranch = source.slice(adopted, adoptedSuper);
+		assert.ok(adoptedBranch.includes('this._markOwnershipDetachedSync();'), '接管 Host 退出时同样必须标记优雅分离');
+
 		// 反向对照：这个标记**不该**出现在"杀进程"那条路上（那里 Host 真的没了，标记只会掩盖事实 ✗）
-		const killPath = source.slice(source.indexOf('super.dispose();', branch ? start + branch.length : 0));
+		const killPath = source.slice(adoptedSuper);
 		assert.ok(!killPath.includes('_markOwnershipDetachedSync'),
 			'非 keepAlive（真杀 Host）那条路不许标记"优雅分离" ✗');
+	});
+
+	test('★ keepAlive 只由真正启动/接管 Host 的那次 options 决定', () => {
+		const src = code(SUPERVISOR);
+		const startAt = src.indexOf('start(options: IDshHostStartOptions = {})');
+		const doStartAt = src.indexOf('private async _doStart(options: IDshHostStartOptions)');
+		assert.ok(startAt > 0 && doStartAt > startAt, '找不到 start() / _doStart()');
+		assert.ok(!/this\._keepAlive\s*=/.test(src.slice(startAt, doStartAt)),
+			'运行/启动途中再来一次 start({}) 不许把预热时的 keepAlive:true 降成 false ✗');
+		assert.match(src.slice(doStartAt, doStartAt + 260), /this\._keepAlive = options\.keepAlive === true;/,
+			'新起 Host 时必须按本次 options 设置 keepAlive');
+		const adoptAt = src.indexOf('private async _adoptLease(');
+		assert.ok(adoptAt > 0, '找不到 _adoptLease()');
+		assert.match(src.slice(adoptAt, adoptAt + 360), /this\._keepAlive = options\.keepAlive === true;/,
+			'接管既有 Host 时同样要按本次 options 设置 keepAlive');
+		assert.match(src, /_adoptLease\(existing, generation, profile, dshHome, t0, options\)/);
+		assert.match(src, /_adoptLease\(leaseFromLock, generation, profile, dshHome, t0, options\)/);
+	});
+
+	test('★ B 壳 Bootstrap 空选项必须沿用预热/落盘选项并记住 keepAlive', () => {
+		const src = code(CHANNEL);
+		assert.match(src, /private _persistedStartOptions\(/, '必须有统一的持久化选项合成入口');
+		assert.match(src, /keepAlive: s\[DshHarnessSettings\.HostKeepAlive\] !== false/, 'keepAlive 必须按当前用户设置合成');
+		assert.match(src, /const opts: IDshHostStartOptions = this\._persistedStartOptions\(persisted, s\);/, '预热必须复用同一份选项');
+		assert.match(src, /const start = this\._bootstrapStartOptions\(args\.start\);/, 'Bootstrap 不许直接把空 args.start 交给 supervisor');
+		assert.match(src, /this\._rememberStart\(start\);/, '首次 B 启动也要落盘有效选项，供下次预热');
+		assert.match(src, /return this\._supervisor\.start\(start\);/, '必须用合成后的完整选项启动');
 	});
 });

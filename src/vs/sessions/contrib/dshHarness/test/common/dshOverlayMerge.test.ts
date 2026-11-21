@@ -22,6 +22,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const SUPERVISOR = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupervisor.ts';
+const HOST_CONFIG = 'src/vs/sessions/contrib/dshHarness/common/dshHostConfig.ts';
+const CLI = 'src/vs/sessions/contrib/dshHarness/common/dshCli.ts';
 
 function read(rel: string): string {
 	const abs = path.join(process.cwd(), rel);
@@ -30,7 +32,11 @@ function read(rel: string): string {
 }
 
 function code(rel: string): string {
-	return read(rel).split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join('\n');
+	return read(rel)
+		.replace(/\/\*[\s\S]*?\*\//g, '')
+		.split(/\r?\n/)
+		.filter(l => !/^\s*\/\//.test(l))
+		.join('\n');
 }
 
 suite('覆盖层合并成单个 --patch', () => {
@@ -49,8 +55,8 @@ suite('覆盖层合并成单个 --patch', () => {
 		const src = code(SUPERVISOR);
 		assert.match(src, /const mergedFile = join\(this\._opts\.runDir, `overlays-\$\{runId\}\.yml`\);/,
 			'合并文件名必须是 overlays-<runId>.yml（与单条文件区分）');
-		assert.match(src, /await fsp\.writeFile\(mergedFile, mergedParts\.join\('\\n'\), \{ mode: 0o600 \}\);/,
-			'合并内容按原顺序以换行拼接');
+		assert.match(src, /await fsp\.writeFile\(mergedFile, mergeHostOverlayTexts\(mergedParts\), \{ mode: 0o600 \}\);/,
+			'合并内容必须经 mergeHostOverlayTexts 统一 insert 块并去重');
 		assert.match(src, /overlays\.push\(mergedFile\);/, '合并文件要进 --patch 列表');
 		assert.match(src, /overlay 合并：\$\{mergedParts\.length\} 条 → 1 个 --patch/, '必须留一行日志（现场要能看出合并了几条）');
 		// 默认路径只有"合并文件"这一处 push；另有一处是**逃生开关**的逐条回退（必须能用）
@@ -65,5 +71,28 @@ suite('覆盖层合并成单个 --patch', () => {
 		assert.match(src, /mergedParts\.push\(mcpOverlay\.text\);/, 'MCP 的 YAML 文本必须并进 mergedParts');
 		assert.ok(!/overlays\.push\(mcpOverlayFile\)/.test(src), 'MCP 不许再单独 push（会让 --patch 变回 2 个）');
 		assert.match(src, /return \{ file: this\._mcpOverlayFile, text: mcpText \};/, '_writeMcpOverlay 要把文本交回');
+	});
+
+	test('4) 合并函数必须只产出一个顶层 insert 块并按 row id 去重', () => {
+		const src = code(HOST_CONFIG);
+		const at = src.indexOf('export function mergeHostOverlayTexts');
+		assert.ok(at > 0, '缺少 mergeHostOverlayTexts 纯函数');
+		const body = src.slice(at, at + 2600);
+		assert.match(body, /seenInsertIds/, '必须按 row id 去重');
+		assert.match(body, /output\.push\('- insert:'/, '所有 insert 子行必须收进唯一一个顶层块');
+		assert.match(body, /nonInsert\.push\(\.\.\.block\)/, '- id: 覆盖项必须原样保留');
+		assert.match(body, /if \(insertRows\.length\)/, '没有 insert 行时不许输出空块');
+	});
+
+	test('5) Office 覆盖层必须按官方 row id 覆盖，不许再 insert 第二个 dsh-office', () => {
+		const src = code(CLI);
+		const at = src.indexOf('export function renderOfficeOverlay');
+		assert.ok(at > 0, '找不到 renderOfficeOverlay');
+		const body = src.slice(at, at + 1800);
+		assert.match(body, /- id: skill-office/, '必须覆盖官方 skill-office 行');
+		assert.match(body, /- id: workspace-dependencies/, '必须覆盖官方 workspace-dependencies 行');
+		assert.match(body, /- id: vssaros-office-template/, '本仓模板插件仍按 id 覆盖');
+		assert.ok(!/-\s*insert:/.test(body), 'Office 覆盖层不许再有 - insert: 块');
+		assert.ok(!body.includes("name: '@deepseek-ai/dsh-skill-office'"), '不许再插入第二份官方 office 技能包');
 	});
 });

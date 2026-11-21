@@ -39,7 +39,7 @@ const MATRIX = {
   'vssaros-unreal': ['unreal_health', 'unreal_exec', 'unreal_build', 'unreal_dump', 'unreal_find_asset', 'unreal_wait', 'unreal_help'],
   'vssaros-web-content-import': ['content_import'],
   'vssaros-mcp': ['mcp_install', 'mcp_market_list', 'mcp_import', 'mcp_catalog', 'mcp_remove', 'mcp_secret'],  // 2026-11-10：+跨应用导入、远程目录、删除、凭据仓库
-  'vssaros-sessions': ['session_search'],  // 重构 4：session_search 工具（2026-10-16 起不再是零工具）
+  'vssaros-sessions': [],  // 方案 A：默认只保留官方 session_search；本仓插件不注册同名工具
   // 重构 1.3：foundation 自身（无工具，只断言激活/服务在场/干净 dispose）。
   'vssaros-foundation': [],
   // 重构 2.1：定时任务薄壳（官方 dsh-schedule 的包装；无自有工具，schedule 走可选注入）。

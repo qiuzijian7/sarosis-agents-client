@@ -57,6 +57,11 @@ const MUST_SAY = [
 	['投影一致性', '生成器与守卫校验口径'],
 	['workbench-directory.mjs', '单一目录真源'],
 	['generate-workbench-directory.mjs', '生成投影入口'],
+	['HomeItemRegistry', '开始页两个来源归一到一张表'],
+	['selectHomeItems', '单一可见性投影函数'],
+	['openHomeItem', '单一打开入口'],
+	['homeItemOrder', '统一排序字段'],
+	['vssarosOwner', '宿主承载 tab 按 origin 排除'],
 ];
 for (const [token, why] of MUST_SAY) {
 	if (!guide.includes(token)) { fail(`规范里缺「${token}」（${why}）`); }
@@ -368,6 +373,28 @@ if (!problems) { ok(`规范描述的 ${IMPLEMENTED.length} 项能力都能在实
 		if (name !== 'workbench-development-standard.md' && !guide.includes(name)) { fail(`规范 §0 文档地图里没列 ${name}`); }
 	}
 	if (!/## 0\. 文档地图/.test(guide)) { fail('规范缺「## 0. 文档地图」（Agent 会去读历史/计划文档当流程）'); }
+}
+
+// ── ④c 开始页统一注册表接线（2026-11-21，反向守卫：实现契约）──────────────
+// 规范正文 §4.2 已登记该架构（MUST_SAY ① 钉口径）；这里反向核对宿主实现，
+// 保证「文档写了」与「代码真有」双向一致。guideVersionOf 的内容哈希按规则随规范变化，
+// Agent 汇报一律以运行时 x-workbench-guide-version 为准，不在方案文档写死 sha。
+{
+	const before = problems;
+	const host = read('dsh-plugins/vssaros-workbenches/lib/client.js');
+	for (const [token, why] of [
+		['function createHomeItemRegistry(', '两个注册源必须归一到同一 registry'],
+		["selectHomeItems(allItems, 'start')", '开始页必须用单一投影函数'],
+		["const openHomeItem = (item, surface = 'right-tab')", '所有 item 必须共用一个打开入口'],
+		['migrateHomeItemOrder(saved, itemKeys)', '旧双排序字段必须惰性迁移'],
+		['HOME_ITEM_ORDER_FIELD', '排序必须落到单一字段'],
+	]) {
+		if (!host.includes(token)) { fail(`开始页注册框架缺「${token}」（${why}）`); }
+	}
+	if (/const items = \[\.\.\.wbItems, \.\.\.toolItems\]/.test(host)) {
+		fail('开始页不得再拼两份名单');
+	}
+	if (problems === before) { ok('开始页统一注册表接线齐全（registry / 投影 / 打开 / 排序各一份）'); }
 }
 
 // ── ⑤ 生成脚本本身可用（防"生成器坏了但没人发现"）──────────────────────

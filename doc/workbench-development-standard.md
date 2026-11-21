@@ -166,6 +166,20 @@ function apply(ctx) {
 
 改动真源后必须运行 `node dsh-plugins/scripts/generate-workbench-directory.mjs`，由 `generate-workbench-directory.mjs` 生成 nav、dashboard、skills、market、app 与 workbenches 客户端投影。`dsh-plugins/check-workbench-catalog.mjs` 校验生成区块 hash 与**投影一致性**：禁止在其它包再抄一份业务清单，也禁止回退到旧全局数组。route 白名单和深链由 `visibility.routeWhitelist` / `visibility.deepLink` 单独投影；「不显示卡片」不等于「删除页面本体」。
 
+## 4.2 开始页统一注册表（HomeItemRegistry）
+
+右侧「开始」页的「工作台」网格不是两份名单：目录真源生成的 catalog 页与 `dsh-better-sidebar` 的 tab 注册表是**两个来源、一种 item**。宿主 `vssaros-workbenches` 用 `createHomeItemRegistry()` 把两者归一成冻结的 `HomeItem`，必须遵守：
+
+- **两个 adapter**：`homeItemOfCatalogPage()`（读 `service.getCatalogSnapshot().pages`）与 `homeItemOfTabDescriptor()`（读 `betterSidebar.getTabs()`）。禁止在渲染层再拼 `wbItems + toolItems`，也禁止按字符串前缀猜身份。registry 缓存必须按来源签名自动失效，不能只靠组件订阅才看到新增项。
+- **统一身份**：`homeItemKey(kind, id)` 生成带命名空间的稳定 key；catalog 行沿用 `workbenchId/pageId`，工具 tab 用 `tool:` 前缀。工作台的 `canonicalId` / `aliases` / `replacedBy` 能力下沉为公共字段，工具同样可迁移旧存档。
+- **统一可见性**：`selectHomeItems(items, surface)` 是唯一投影函数，`surface` 取 `start / nativeTab / launcher / anchor`；`hidden / offline / retired / bottomOnly / available` 归一为 `availability + visibility`，不得在多个消费方各写一套过滤。右栏 tab 适配器消费同一个 `nativeTab` 投影（只取带 `page` 的 item）；左侧栏锚点渲染消费 `anchor` 投影——item 下线后自动隐藏按钮，存储不清、恢复后自动回来，不留打不开的死按钮。
+- **统一打开**：`openHomeItem(item, surface)` 按 `origin.registry` 分派右栏 catalog tab 或 tool tab；左侧栏锚点必须经 `registry.get(key)` 查表并带 `left-anchor`，不得依赖组件渲染闭包里的临时数组。`sidebarLayoutV1` 关闭时两类 item 统一降级到注册式工作台本体并如实提示，不能一类能开一类静默失败。
+- **统一排序**：`homeItemOrder` 是唯一排序字段，沿用 `state.json` 的 revision 乐观锁；`homeWorkbenchOrder` / `homeToolOrder` 只作惰性迁移来源。拖拽、键盘、上下移对所有 item 一律生效。
+- **元数据归注册方**：`title` / `description` 一律由 `TabDescriptor` 或目录行提供；宿主**不得维护按 tab id 硬编码的展示名单**（`TOOL_META` 已下线，附带删除已无消费方的 `moreOnly` / 快捷键死字段）。图标优先用 descriptor 的字符串 icon，vendored builtins 的 icon 是 React 组件时由 `guideIconOf()` 按 id/title 关键字推断，工作台目录行与工具 tab 共用这一份规则。宿主自己注册的承载 tab 必须打 `vssarosOwner` 标记，由 `isHostOwnedTab()` 按 origin 排除，而不是散落的字符串前缀。
+- **UI 所有权**：`sidebar.right.tab.guide` 按数字 priority 升序选举；VsSaros 自绘开始页以 `priority:-10` 唯一当选，shipped `NativeGuide` 仅作 fallback（vendored 包 `src/` / `lib/` 字节不改）。宿主动作（浏览更多插件、创建插件、锚点）由宿主注入，不依赖 shipped guide 自带的 `onBrowsePlugins` / `onCreatePlugin`。
+
+`dsh-plugins/check-home-item-registry.mjs` 把「一个 registry / 一个投影 / 一个打开 / 一个排序字段」钉成静态契约；`check-workbench-guide.mjs` 反向核对宿主实现。新增一个工具 tab 应无需修改任何硬编码名单即出现在开始页——这是判断框架是否收敛的验收判据。
+
 ## 5. 界面边界
 
 - **业务区按自身容器宽度响应**（`@container`，断点 320 / 520 / 760），**不要用 `@media`**：

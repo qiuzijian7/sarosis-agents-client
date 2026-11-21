@@ -192,6 +192,16 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			markdownDescription: localize('dshHarness.config.openDesktopOnStartup', "启动时直接打开 dsh 桌面窗口（默认开启）：工作台就绪后自动弹出那个独立窗口（形态见「弹出独立窗口」设置），只开一次。桌面窗口侧栏底部有「IDE」入口可以回到 VsSaros 主窗口。总开关关闭或聊天框引擎为 legacy 时不生效。"),
 		},
+		[DshHarnessSettings.DesktopOnlyStartup]: {
+			type: 'boolean',
+			default: true,
+			markdownDescription: localize('dshHarness.config.desktopOnlyStartup', "启动时完全不创建 IDE 主窗口，由主进程直接打开 dsh 桌面窗口（B 方案，默认开启）。关闭后回退到旧路径：先创建隐藏的 IDE 主窗口，再由工作台自动弹出桌面窗口。也可用环境变量 VSSAROS_DESKTOP_ONLY=0 临时回退。"),
+		},
+		[DshHarnessSettings.LegacySessionSearch]: {
+			type: 'boolean',
+			default: false,
+			markdownDescription: localize('dshHarness.config.legacySessionSearch', "默认只保留官方 dsh 的内容级 `session_search`。开启后回退到 VsSaros 自带的轻量实现（只搜会话标题/工作区路径），同时禁用官方 session-search group。也可用环境变量 VSSAROS_LEGACY_SESSION_SEARCH=1 临时覆盖；改动后需重启 Harness。"),
+		},
 		[DshHarnessSettings.SkipPluginInstall]: {
 			type: 'boolean',
 			default: false,

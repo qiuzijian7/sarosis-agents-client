@@ -268,7 +268,7 @@ function buildIdentity(root) {
 
 const STAGING_REPORT_REL = '.build/pack-reports/staging-build.json';
 const STAGING_VERIFIED_REL = '.build/pack-reports/staging-verified.json';
-const STAGING_SENTINELS = ['resources/app/out/main.js', 'resources/app/out/vs/sessions/sessions.desktop.main.js', 'resources/app/dsh-plugins/dsh-compat.json', 'resources/app/extensions/agent-studio/out/extension.js'];
+const STAGING_SENTINELS = ['resources/app/out/main.js', 'resources/app/out/vs/sessions/sessions.desktop.main.js', 'resources/app/out/vs/sessions/electron-browser/dshDesktop.html', 'resources/app/out/vs/sessions/electron-browser/dshDesktop.js', 'resources/app/out/vs/sessions/contrib/dshHarness/electron-main/dshDesktopWindowMainService.js', 'resources/app/dsh-plugins/dsh-compat.json', 'resources/app/extensions/agent-studio/out/extension.js'];
 
 export function invalidateStaging(repoRoot) {
 	for (const relative of [STAGING_REPORT_REL, STAGING_VERIFIED_REL, REPORT_REL, '.build/pack-reports/uploads.json', '.build/pack-reports/installer-comparison.json']) { fs.rmSync(path.join(repoRoot, relative), { force: true }); }

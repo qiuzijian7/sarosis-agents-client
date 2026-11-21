@@ -380,8 +380,8 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 	// 平台不适用 — 返回友好提示（web_search/web_extract 已有真实 handler，不在此注册 stub）
 	// ★ 2026-09-24（P1-5）：`process` 已有**真实实现**（`processTools.ts`：list/output/terminate/wait，
 	//   薄封装 vscode:execCode 的后台注册表）⇒ 从此占位表中移除（否则与真 handler 撞同名）。
-	// ★ 2026-10-16（重构 4）：`session_search` 已有**真实现**（dsh 侧 `@vssaros/dsh-sessions` 插件：
-	//   读投影缓存 + 全文匹配）⇒ 从此占位表中移除（否则与真 handler 撞同名，dsh 侧的被 stub 顶掉 ✗）。
+	// ★ 2026-10-16（重构 4）：`session_search` 已有**真实现**；2026-11-21（方案 A）起默认归官方
+	//   `@deepseek-ai/dsh-tool-session-query`（内容级搜索）⇒ 从此占位表中移除，避免 stub 顶掉真 handler ✗。
 
 	// ── execute_code：真实代码执行沙箱（主进程 spawn，非交互式，真实 exit code）─────
 	// 区别于 terminal（pty 交互 shell，1.5s idle 判完成、无可靠 exit code、无资源限制）：

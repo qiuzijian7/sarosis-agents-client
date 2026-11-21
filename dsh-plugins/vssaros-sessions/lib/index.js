@@ -33,12 +33,14 @@ import { readFirstPrompt, readUserMessages } from './core/sessionLog.js';
 
 export const name = 'vssaros-sessions';
 
-/** 没有工具、也不硬依赖任何服务（页面路由走可选注入）。 */
-// 重构 4（2026-10-16）：本插件现在有工具（session_search）⇒ 静态声明 tools（与 kanban 同口径：
-// tools 在任何模板都该可用 ✓；webServer/connection 仍走可选注入——它们只在 web 模板里有 ✓）。
+/** 页面路由走可选注入；tools 仅 legacy `session_search` 回退时需要。 */
+// 2026-11-21（方案 A）：默认只保留官方 `session_search`，本插件不注册任何工具；
+// 只有 `VSSAROS_LEGACY_SESSION_SEARCH=1` 应急回退时才注册轻量投影缓存搜索。
 export const inject = ['tools'];
 
 const ROUTE_PREFIX = '/x/sessions';
+/** 应急回退：由 supervisor 注入 Host env，默认 0。 */
+const LEGACY_SESSION_SEARCH = /^(1|true)$/i.test(String(process.env['VSSAROS_LEGACY_SESSION_SEARCH'] ?? '').trim());
 /** 一页最多列出的会话数（本地缓存读，够用）。 */
 const PAGE_LIMIT = 300;
 /** 「分组方式」的 cookie 名（页面脚本写、服务端读 ⇒ 下次直接开这页时保持上次选择）。 */
@@ -2126,53 +2128,70 @@ export function apply(ctx, config = {}) {
 		},
 	})));
 
-	// 重构 4（2026-10-16）：`session_search` 工具——全文检索历史会话（标题 / cwd / 投影文本）。
-	// legacy 侧那个是 stub（"还没实现"）；这里实现真的：读投影缓存 + 大小写不敏感匹配。
-	// 可选注入 `tools`（只在有工具服务的模板里注册；headless/tui 里没有 ⇒ 只是没这个工具 ✓）。
+	// 重构 4（2026-10-16）：轻量 `session_search` 回退实现——读投影缓存 + 匹配标题 / cwd。
+	// 2026-11-21（方案 A）起默认不注册；官方 `@deepseek-ai/dsh-tool-session-query` 提供内容级搜索。
+	// 只有 `VSSAROS_LEGACY_SESSION_SEARCH=1` 时才走下面这段（由 supervisor 注入 Host env）。
 	// 工具同步注册（与 kanban 同口径：ctx.effect 立即执行 ⇒ REAL-composition boot 后即读得到 ✓；
 	// 别用 inject 回调——它是异步的，boot 后立刻读会读不到 ✗，实测踩到）。
-	ctx.effect(() => ctx.tools.register({
-		name: 'session_search',
-		description: '搜索历史会话：按标题与工作区路径做大小写不敏感的全文匹配（投影缓存只有元数据，没有正文 ⇒ 不搜内容，如实说 ✓），返回匹配的会话列表（id / 标题 / 工作区 / 更新时间）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				query: { type: 'string', description: '搜索关键词（匹配标题 / 路径 / 内容）' },
-				limit: { type: 'number', description: '最多返回几条（默认 20，上限 100）' },
-			},
-			required: ['query'],
-		},
-		// 官方契约：工具必须声明 output { schema, render }（注册期就拒 ✗——REAL-composition 抓到的 ✓）。
-		output: {
-			schema: {
+	ctx.effect(() => {
+		// ★ 2026-11-21（方案 A）：默认只保留官方 `session_search`（内容级、SQLite FTS5），
+		//   本插件不注册同名工具 ⇒ 页面/路由/投影缓存等能力照常，零重名风险。
+		//   仅显式 `VSSAROS_LEGACY_SESSION_SEARCH=1` 时回退到下面的轻量元数据搜索。
+		if (!LEGACY_SESSION_SEARCH) {
+			console.log('[vssaros-sessions] 默认使用官方 session_search ⇒ 本插件不注册轻量同名工具');
+			return undefined;
+		}
+		// legacy 回退时官方 group 应已被 profile patch 禁用；若没禁掉，probe 到同名工具就让路，
+		// 避免 dsh 把整条 entry 判成失效（不是后者覆盖）。
+		let existingSessionSearch;
+		try { existingSessionSearch = ctx.tools.get?.('session_search'); } catch { existingSessionSearch = undefined; }
+		if (existingSessionSearch) {
+			console.log('[vssaros-sessions] session_search 已由其它模块注册 ⇒ 本插件让路（避免 duplicate tool）');
+			return undefined;
+		}
+		return ctx.tools.register({
+			name: 'session_search',
+			description: '搜索历史会话：按标题与工作区路径做大小写不敏感的全文匹配（投影缓存只有元数据，没有正文 ⇒ 不搜内容，如实说 ✓），返回匹配的会话列表（id / 标题 / 工作区 / 更新时间）。',
+			parameters: {
 				type: 'object',
 				properties: {
-					query: { type: 'string' },
-					count: { type: 'number' },
-					sessions: { type: 'array', items: { type: 'object', properties: {
-						sessionId: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, updatedAt: { type: 'string' },
-					} } },
+					query: { type: 'string', description: '搜索关键词（匹配标题 / 路径 / 内容）' },
+					limit: { type: 'number', description: '最多返回几条（默认 20，上限 100）' },
 				},
+				required: ['query'],
 			},
-			render: (_args, value) => [{ type: 'text', text: `找到 ${value.count} 条匹配「${value.query}」的会话` }],
-		},
-		async execute(args = {}) {
-			const query = String(args.query ?? '').trim();
-			if (!query) { throw new Error('query 必填（搜索关键词）'); }
-			const limit = Math.min(100, Math.max(1, Number(args.limit ?? 20)));
-			const { sessions } = await readSessionCaches(config, { limit: 300 });
-			const q = query.toLowerCase();
-			const hits = sessions
-				.filter(s => {
-					// 只匹配元数据（title/cwd）——投影缓存没有正文 ✓（描述里已如实写清）
-					const hay = [s.title, s.cwd].filter(Boolean).join('\n').toLowerCase();
-					return hay.includes(q);
-				})
-				.slice(0, limit)
-				.map(s => ({ sessionId: s.id, title: s.title ?? '', cwd: s.cwd ?? '', ...(s.updatedAt ? { updatedAt: s.updatedAt } : {}) }));
-			return { query, count: hits.length, sessions: hits };
-		},
-	}));
+			// 官方契约：工具必须声明 output { schema, render }（注册期就拒 ✗——REAL-composition 抓到的 ✓）。
+			output: {
+				schema: {
+					type: 'object',
+					properties: {
+						query: { type: 'string' },
+						count: { type: 'number' },
+						sessions: { type: 'array', items: { type: 'object', properties: {
+							sessionId: { type: 'string' }, title: { type: 'string' }, cwd: { type: 'string' }, updatedAt: { type: 'string' },
+						} } },
+					},
+				},
+				render: (_args, value) => [{ type: 'text', text: `找到 ${value.count} 条匹配「${value.query}」的会话` }],
+			},
+			async execute(args = {}) {
+				const query = String(args.query ?? '').trim();
+				if (!query) { throw new Error('query 必填（搜索关键词）'); }
+				const limit = Math.min(100, Math.max(1, Number(args.limit ?? 20)));
+				const { sessions } = await readSessionCaches(config, { limit: 300 });
+				const q = query.toLowerCase();
+				const hits = sessions
+					.filter(s => {
+						// 只匹配元数据（title/cwd）——投影缓存没有正文 ✓（描述里已如实写清）
+						const hay = [s.title, s.cwd].filter(Boolean).join('\n').toLowerCase();
+						return hay.includes(q);
+					})
+					.slice(0, limit)
+					.map(s => ({ sessionId: s.id, title: s.title ?? '', cwd: s.cwd ?? '', ...(s.updatedAt ? { updatedAt: s.updatedAt } : {}) }));
+				return { query, count: hits.length, sessions: hits };
+			},
+		});
+	});
 
 	// 诊断用：当前数据源可达性（不读盘、不拉服务，只报告注入状态）。
 	return { describe: () => ({ route: ROUTE_PREFIX, live: Boolean(state.sessions && state.projections) }) };

@@ -32,7 +32,7 @@ import { dshDesktopEditingKeys, isDshDesktopMenuAction, type DshDesktopMenuActio
 import { resolveViewUrl } from '../common/dshPluginPage.js';
 import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
-import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_THEME_SOURCE, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_UPGRADE, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageEvent, DshPageThemeSource, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshUpgradeState, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
+import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_THEME_SOURCE, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_UPGRADE, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageCommand, DshPageEvent, DshPageThemeSource, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshUpgradeState, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { backgroundForPageSurface, DshThemeTokens, IDshViewBackgrounds } from '../common/dshThemeBridge.js';
 import { IIdeViewSlotForTargeting } from '../common/dshIdeTargeting.js';
@@ -592,6 +592,8 @@ export class DshViewHost extends Disposable {
 	private readonly _views = new Map<string, IViewSlot>();
 	/** 认证 cookie 续期定时器（见 `_refreshAuth`；`setConnection` 重挂，断连时清掉）。 */
 	private _authTimer: ReturnType<typeof setInterval> | undefined;
+	/** P0-3：按分区 + origin/authUrl 合并 auth cookie 交换，避免预热与 _load 各做一次。 */
+	private readonly _authExchanges = new Map<Session, Map<string, Promise<boolean>>>();
 	/** 本连接内是否已成功续期过一次（`setConnection` 复位）——只用于"成功也留一行痕" ✓。 */
 	private _authRefreshed = false;
 	private readonly _watchedWindows = new Set<BrowserWindow>();
@@ -629,6 +631,12 @@ export class DshViewHost extends Disposable {
 
 	private readonly _onDidPageEvent = this._register(new Emitter<DshPageEvent>());
 	readonly onDidPageEvent: Event<DshPageEvent> = this._onDidPageEvent.event;
+	/** 可选：主进程直接处理的页面命令（组件状态/安装等需要返回值的命令）。 */
+	private _pageCommandHandler?: (command: DshPageCommand, viewId: string) => Promise<{ handled: boolean; result?: unknown }>;
+
+	setPageCommandHandler(handler: (command: DshPageCommand, viewId: string) => Promise<{ handled: boolean; result?: unknown }>): void {
+		this._pageCommandHandler = handler;
+	}
 
 	constructor(
 		private readonly _windowsMainService: IWindowsMainService,
@@ -826,9 +834,14 @@ export class DshViewHost extends Disposable {
 			this._authTimer = undefined;
 		}
 		this._authRefreshed = false;
+		if (changed) {
+			this._authExchanges.clear();
+		}
 		if (connection) {
 			this._authTimer = setInterval(() => void this._refreshAuth(), AUTH_REFRESH_INTERVAL_MS);
 			(this._authTimer as { unref?: () => void } | undefined)?.unref?.();
+			// P0-3：即使早 auth 事件没赶上，也在 setConnection 时先发起交换，_load 复用 in-flight。
+			this.prefetchAuth(connection);
 		}
 		if (!changed) {
 			return;
@@ -1225,6 +1238,56 @@ export class DshViewHost extends Disposable {
 			}
 		} catch (e) {
 			this._logService.warn(`[dshHarness] auth refresh failed: ${String((e as Error)?.message ?? e)}`);
+		}
+	}
+
+	/** P0-3：同一个分区 + 同一个 Host 的 cookie 交换只做一次；force 用于 401/白屏重试。 */
+	private _ensureAuth(ses: Session, conn: IDshHostConnection, force = false): Promise<boolean> {
+		const key = `${conn.origin}|${conn.authUrl}`;
+		let byKey = this._authExchanges.get(ses);
+		if (!byKey) {
+			byKey = new Map();
+			this._authExchanges.set(ses, byKey);
+		}
+		if (force) {
+			byKey.delete(key);
+		}
+		const existing = byKey.get(key);
+		if (existing) {
+			return existing;
+		}
+		const exchange = (async () => {
+			try {
+				await ses.fetch(conn.authUrl, { redirect: 'follow' });
+			} catch { /* 失败交给 resolveViewUrl 的 authUrl 兜底与 401 重试 ✓ */ }
+			const cookies = await ses.cookies.get({ url: conn.origin }).catch(() => []);
+			return cookies.some(c => c.name.startsWith('dsh-auth'));
+		})().finally(() => {
+			if (byKey.get(key) === exchange) {
+				byKey.delete(key);
+			}
+		});
+		byKey.set(key, exchange);
+		return exchange;
+	}
+
+	/** 当前可能承载 dsh 视图的全部分区（主分区 / desktop 独立分区 / 池 / 每个视图自带分区）。 */
+	private _authSessions(): readonly Session[] {
+		const out = new Set<Session>();
+		out.add(this.session);
+		if (this._desktopSession) { out.add(this._desktopSession); }
+		for (const ses of this._desktopPoolSessions.values()) { out.add(ses); }
+		for (const ses of this._chatPoolSessions.values()) { out.add(ses); }
+		for (const slot of this._views.values()) {
+			if (slot.session) { out.add(slot.session); }
+		}
+		return [...out];
+	}
+
+	/** P0-3：URL 行一解析出 authUrl 就预热 cookie；真正导航时复用同一个 in-flight Promise。 */
+	prefetchAuth(conn: IDshHostConnection): void {
+		for (const ses of this._authSessions()) {
+			void this._ensureAuth(ses, conn, false).catch(() => undefined);
 		}
 	}
 
@@ -1784,30 +1847,12 @@ export class DshViewHost extends Disposable {
 			this._showHostUnavailable(slot);
 			return;
 		}
-		// 这条链"要重新认证"（换 Host/401/白屏看门狗置了 `retriedAuth`）时，先用 `session.fetch(authUrl)`
-		// 把 cookie **可靠地**提交进分区（303 follow 会同步落 cookie，见 `_refreshAuth` 的实证注释），
-		// 再按"cookie 已在"选 URL。⚠ 不要再赌 `loadURL(authUrl)` 的 HTTP 重定向去给 webview 写 cookie ——
-		// 2026-10-13 用户报"聊天框空白"：Host 重启后那一步写了但没生效 ⇒ 永远 401 ⇒ 白屏（探针也复现）。
+		// 这条链"要重新认证"（换 Host/401/白屏看门狗置了 `retriedAuth`）时，由 `_ensureAuth` 强制重走
+		// `session.fetch(authUrl)` 把 cookie 可靠提交进分区；默认则复用早 auth 事件的 in-flight Promise。
 		// ⚠ 一律用**该视图自己的分区**（弹窗是独立分区，用主分区查 cookie 会误判"已登录"⇒ 401 ✗）
 		const viewSession = slot.session ?? this.session;
-		// ★★ 2026-10-20（量化「视图创建 → 会话在屏 5.6s」）：页面侧自测 `composer: 501ms`，
-		//   而主进程测到 5604ms ⇒ 差值 ~5.1s 全花在**页面导航之前**。
-		//   这段里唯一会 `await` 的就是下面两处 `session.fetch(authUrl)`（新分区首次加载必须先做
-		//   token 交换把 cookie 落进去）—— 给它计时，别再把"等 Host 回 cookie"混进"聊天框慢" ✗。
 		const tAuth = Date.now();
-		if (slot.retry.retriedAuth) {
-			await viewSession.fetch(conn.authUrl, { redirect: 'follow' })
-				.catch(() => { /* fetch 失败就交给下面的 loadURL（回退 authUrl）与有界重试兜底 */ });
-		}
-		let cookies = await viewSession.cookies.get({ url: conn.origin }).catch(() => []);
-		let hasAuth = cookies.some(c => c.name.startsWith('dsh-auth'));
-		// 首次加载到新分区（弹窗的独立分区）时它一个 cookie 都没有 ⇒ 用 authUrl 走一次 token 交换把 cookie 落进去，
-		// 之后每次加载都是"已登录"直连 origin，不重复跳转 ✓。
-		if (!hasAuth) {
-			await viewSession.fetch(conn.authUrl, { redirect: 'follow' }).catch(() => { /* 失败则下面的 loadURL 用 authUrl 兜底 */ });
-			cookies = await viewSession.cookies.get({ url: conn.origin }).catch(() => []);
-			hasAuth = cookies.some(c => c.name.startsWith('dsh-auth'));
-		}
+		const hasAuth = await this._ensureAuth(viewSession, conn, slot.retry.retriedAuth === true);
 		// ★ 2026-10-20：>500ms 就记一行 —— 正常应是几十毫秒，几秒说明 Host 当时忙/慢（见日志时序）。
 		if (Date.now() - tAuth > 500) {
 			this._logService.info(`[dshHarness] view ${slot.id} auth cookie exchange took ${Date.now() - tAuth} ms（hasAuth=${hasAuth}）— 这段发生在页面导航之前`);
@@ -2468,7 +2513,7 @@ export class DshViewHost extends Disposable {
 		});
 
 		// 页面桥：IPC 作用域限于该视图的 webContents；再校验来自顶层 frame 且 origin 等于当前 Host。
-		wc.ipc.handle(DSH_PAGE_IPC_INVOKE, (event, raw) => {
+		wc.ipc.handle(DSH_PAGE_IPC_INVOKE, async (event, raw) => {
 			if (!this._isTrustedSender(event)) {
 				throw new Error('vssarosDsh: untrusted sender');
 			}
@@ -2479,6 +2524,10 @@ export class DshViewHost extends Disposable {
 			}
 			if (command.method === 'ping') {
 				return 'pong';
+			}
+			const handled = await this._pageCommandHandler?.(command, slot.id);
+			if (handled?.handled) {
+				return handled.result;
 			}
 			this._onDidPageEvent.fire({ viewId: slot.id, kind: 'command', command });
 			return true;

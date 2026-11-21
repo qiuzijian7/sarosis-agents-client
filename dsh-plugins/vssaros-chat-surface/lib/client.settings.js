@@ -31,6 +31,7 @@ window.__ModuleLoader__.load({
 		};
 		function install(ctx, shell) {
 			const state = shell.state;
+			const bridge = shell.bridge;
 				const UTILITIES_SLOT = "conversation.session.header.utilities";
 				/** 菜单互斥用 id（见 client.js 的 createMenuCoordinator）。 */
 				const MENU_ID = "vssaros-settings";
@@ -67,6 +68,9 @@ window.__ModuleLoader__.load({
 					// 重命名会话（页面侧入口）：行内输入框，避免再依赖宿主 quick input（后者还需探查）。
 					const [renaming, setRenaming] = react.useState(false);
 					const [draft, setDraft] = react.useState("");
+					const [componentsOpen, setComponentsOpen] = react.useState(false);
+					const [components, setComponents] = react.useState([]);
+					const [componentsError, setComponentsError] = react.useState(null);
 					const rootRef = react.useRef(null);
 					react.useEffect(() => {
 						if (!open) { return; }
@@ -88,6 +92,44 @@ window.__ModuleLoader__.load({
 						shell.menus.closeOthers(MENU_ID);
 						return shell.menus.register(MENU_ID, () => setOpen(false));
 					}, [open]);
+					const loadComponents = () => {
+						if (!bridge || typeof bridge.componentsStatus !== "function") {
+							setComponentsError("当前宿主不支持组件管理（需要页面桥 29+）");
+							return Promise.resolve();
+						}
+						return Promise.resolve(bridge.componentsStatus()).then(
+							(list) => { setComponents(Array.isArray(list) ? list : []); setComponentsError(null); },
+							(e) => setComponentsError(String((e && e.message) || e)));
+					};
+					// 打开面板后轮询状态；安装是后台长任务，不能让菜单阻塞等待。
+					react.useEffect(() => {
+						if (!componentsOpen) { return; }
+						let stopped = false;
+						const refresh = () => { if (!stopped) { void loadComponents(); } };
+						refresh();
+						const timer = setInterval(refresh, 1200);
+						return () => { stopped = true; clearInterval(timer); };
+					}, [componentsOpen]);
+					const installComponent = (id, allowElevation) => {
+						if (!bridge || typeof bridge.installComponent !== "function") {
+							setComponentsError("当前宿主不支持组件安装（需要页面桥 29+）");
+							return;
+						}
+						setComponentsError(null);
+						Promise.resolve(bridge.installComponent(id, allowElevation === true)).then(
+							(list) => { setComponents(Array.isArray(list) ? list : []); },
+							(e) => setComponentsError(String((e && e.message) || e)));
+					};
+					const componentLabel = (item) => {
+						const value = item && item.state;
+						if (value === "ready") { return "已安装"; }
+						if (value === "bundled") { return "随包可用"; }
+						if (value === "installing") { return "安装中"; }
+						if (value === "error") { return "安装失败"; }
+						if (value === "needs-consent") { return "需要管理员授权"; }
+						if (value === "unavailable") { return "服务器不可用"; }
+						return "未安装";
+					};
 					const rerender = () => setTick(tick + 1);
 					// 提交重命名：复用 client.sessionLabel.js 暴露的同一份实现
 					// （内部调 ctx.sessions.rename + 成功后上报宿主 ⇒ 外层编辑器页签跟随更新）。
@@ -169,6 +211,8 @@ window.__ModuleLoader__.load({
 							}, shell.fitMenu ? shell.fitMenu(rootRef.current ? rootRef.current.getBoundingClientRect() : null) : {}),
 						},
 							react.createElement("div", { style: { fontSize: 10.5, letterSpacing: ".03em", color: "var(--dsw-alias-label-secondary, currentColor)", padding: "6px 8px 3px" } }, "聊天框设置"),
+							row("deps", "依赖与组件…", "官方媒体 / 随包 Office / HuggingFace Whisper", false,
+								() => { setOpen(false); setComponentsOpen(true); }),
 							row("skin", "换皮样式", skinOn() ? "已开启（品牌标/工具卡/皮肤规则）" : "已关闭（回到 dsh 官方外观）", skinOn(),
 								() => { setSkin(!skinOn()); rerender(); }),
 							row("usage", "用量页脚", usageOn() ? "助手气泡底部显示 耗时/tokens/积分" : "已隐藏", usageOn(),
@@ -208,6 +252,81 @@ window.__ModuleLoader__.load({
 								key: "note",
 								style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "2px 8px 6px" },
 							}, note) : null));
+					}
+					if (componentsOpen) {
+						const dependencyRows = components.length ? components : [{
+							id: "loading", label: "正在检测组件…", state: "missing", progress: 0,
+						}];
+						children.push(react.createElement("div", {
+							key: "components-overlay",
+							role: "presentation",
+							onMouseDown: (e) => { if (e.target === e.currentTarget) { setComponentsOpen(false); } },
+							style: {
+								position: "fixed", inset: 0, zIndex: 2000, display: "flex", alignItems: "center",
+								justifyContent: "center", padding: 16, background: "rgba(15,23,42,.46)",
+							},
+						},
+							react.createElement("div", {
+								role: "dialog", "aria-modal": "true", "aria-label": "依赖与组件",
+								onMouseDown: (e) => e.stopPropagation(),
+								style: {
+									width: "min(560px, calc(100vw - 32px))", maxHeight: "min(80vh, 680px)", overflow: "auto",
+									borderRadius: 14, padding: 16, background: "var(--dsw-alias-bg-layer-1, #fff)",
+									color: "var(--dsw-alias-label-primary, currentColor)",
+									border: "1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25))",
+									boxShadow: "0 20px 60px rgba(0,0,0,.28)",
+								},
+							},
+								react.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12 } },
+									react.createElement("div", null,
+										react.createElement("div", { style: { fontSize: 16, fontWeight: 700 } }, "依赖与组件"),
+										react.createElement("div", { style: { fontSize: 11.5, lineHeight: 1.5, opacity: .72, marginTop: 3 } }, "媒体走官方包管理器；Office 随安装包分发；本地语音模型从 HuggingFace 官方源下载。安装后仍可在这里重试。")),
+									react.createElement("button", {
+										type: "button", onClick: () => setComponentsOpen(false),
+										"aria-label": "关闭依赖与组件",
+										style: { ...ITEM, width: "auto", padding: "4px 8px", border: "1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25))", cursor: "pointer" },
+									}, "关闭")),
+								componentsError ? react.createElement("div", {
+									role: "alert",
+									style: { fontSize: 11.5, lineHeight: 1.5, marginBottom: 10, padding: "7px 9px", borderRadius: 8, color: "#b91c1c", background: "rgba(239,68,68,.1)" },
+								}, componentsError) : null,
+								react.createElement("div", { style: { display: "grid", gap: 8 } },
+									dependencyRows.map((item) => {
+										const stateText = componentLabel(item);
+										const installing = item.state === "installing";
+										const done = item.state === "ready" || item.state === "bundled";
+										const unavailable = item.state === "unavailable";
+										const progress = Math.max(0, Math.min(100, Number(item.progress) || 0));
+										const size = Number(item.size) > 0 ? `${(Number(item.size) / 1024 / 1024).toFixed(1)} MiB` : "";
+										return react.createElement("div", {
+											key: item.id, "data-vssaros-component": item.id,
+											style: {
+												padding: "10px 11px", borderRadius: 10,
+												border: "1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25))",
+												background: "var(--dsw-alias-bg-base, rgba(127,127,127,.04))",
+											},
+										},
+											react.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 } },
+												react.createElement("div", { style: { minWidth: 0 } },
+													react.createElement("div", { style: { fontSize: 12.5, fontWeight: 650 } }, item.label || item.id),
+													react.createElement("div", { style: { fontSize: 10.5, opacity: .72, marginTop: 2 } },
+														`${stateText}${size ? ` · ${size}` : ""}${item.version ? ` · ${item.version}` : ""}${item.source ? ` · ${item.source}` : ""}`)),
+												react.createElement("button", {
+													type: "button", disabled: installing || done || unavailable || item.id === "loading",
+													onClick: () => installComponent(item.id, item.state === "needs-consent"),
+													style: {
+														...ITEM, width: "auto", flex: "0 0 auto", padding: "5px 10px",
+														border: "1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25))",
+														cursor: installing || done || unavailable || item.id === "loading" ? "default" : "pointer",
+														opacity: installing || done || unavailable ? .65 : 1,
+													},
+													}, installing ? "安装中…" : done ? (item.state === "bundled" ? "随包可用" : "已安装") : unavailable ? "源不可用" : item.state === "needs-consent" ? "授权安装" : "安装")),
+											installing || item.state === "error" ? react.createElement("div", { style: { marginTop: 8 } },
+												react.createElement("div", { style: { height: 4, borderRadius: 999, overflow: "hidden", background: "rgba(127,127,127,.18)" } },
+													react.createElement("div", { style: { width: `${progress}%`, height: "100%", background: item.state === "error" ? "#dc2626" : "var(--dsw-alias-brand-primary, #4f46e5)", transition: "width .2s ease" } }))) : null,
+											item.error ? react.createElement("div", { role: "alert", style: { marginTop: 5, fontSize: 10.5, lineHeight: 1.45, color: "#b91c1c" } }, item.error) : null);
+									})),
+								react.createElement("div", { style: { marginTop: 11, fontSize: 10.5, lineHeight: 1.5, opacity: .68 } }, "下载会校验 SHA256 并原子落盘。媒体工具需要重启 dsh Host 才会进入技能 PATH；Office 随包运行时同样需要重启 Host。"))));
 					}
 					return react.createElement("span", { ref: rootRef, style: { position: "relative", display: "inline-flex" } }, ...children);
 				}

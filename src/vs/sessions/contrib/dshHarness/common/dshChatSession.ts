@@ -52,6 +52,11 @@ export function resolvePresetSessionId(chatId: string, presetId: string, state: 
 	return dshChatPresetSessionId(chatId, presetId);
 }
 
+// ★ 2026-11-21：按用户口径「老会话直接删除、不做兼容」，退役档归一化机制已整体移除。
+//   模式 id 的唯一真源是 `dsh-plugins/preset-sync.mjs` 的 MODE_PRESET_IDS（生成 8 份身份副本）；
+//   会话侧不再为已删除的 preset 提供别名、省略 agentPreset 或任何迁移分支。
+//   ⇒ 磁盘上仍存着幽灵 id 的老会话属于待清理数据：打开会失败，不做兜底。
+
 /**
  * **本页签内**新建会话的 id：`vssaros-chat-<chatId>--new-<nonce>`（2026-10-12 用户要求：
  * 聊天 header 的「＋ 新建会话」= 当前页签里再来一段新对话，**不是**新开一个 group 页签）。

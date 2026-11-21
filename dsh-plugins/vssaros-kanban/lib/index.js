@@ -34,6 +34,22 @@ export const inject = ['tools'];
 
 /** 页面前缀路由：不带尾斜杠（prefix 路由匹配 `p` 与 `p/<anything>`，见 dsh-host-webserver 类型）。 */
 const ROUTE_PREFIX = '/x/kanban';
+
+const WEB_ROUTE_OWNERS_KEY = Symbol.for('vssaros.webRouteOwners');
+/** 双 plane 挂载时同一 prefix 只注册一次；effect 撤销时释放，HMR 仍可重新注册。 */
+function registerPageRouteOnce(page, route) {
+	const key = `${route.kind}:${route.path}`;
+	let owners;
+	try { owners = globalThis[WEB_ROUTE_OWNERS_KEY] ??= new Set(); } catch { return page.webServer.register(route); }
+	if (!(owners instanceof Set) || owners.has(key)) {
+		console.log(`[${name}] ${key} 已由另一层注册 ⇒ 跳过（避免 duplicate prefix route）`);
+		return undefined;
+	}
+	owners.add(key);
+	let dispose;
+	try { dispose = page.webServer.register(route); } catch (error) { owners.delete(key); throw error; }
+	return () => { try { dispose?.(); } finally { owners.delete(key); } };
+}
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const LIMITS = { default: DEFAULT_LIMIT, max: MAX_LIMIT };
@@ -527,7 +543,7 @@ export function apply(ctx, config = {}) {
 	function bridgeOf() {
 		return bridge && typeof bridge.callIDE === 'function' ? bridge : undefined;
 	}
-	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
+	ctx.inject(['webServer', 'connection'], page => page.effect(() => registerPageRouteOnce(page, {
 		kind: 'prefix',
 		path: ROUTE_PREFIX,
 		handler: async (req, res) => {

@@ -85,7 +85,7 @@ import { clampPercent, isAppUpdatePhase, type AppUpdatePhase, type AppUpdateSour
  * 2026-10-26：`19 → 20`，新增 `importCodeWorkspace` —— 请 IDE 侧导入一个 `.code-workspace` 文件
  *   （选文件 → 解析 folders → 落一条多根工作区记录 → 各根注册进 dsh）。**只导入，不切窗口** ✓。
  */
-export const DSH_PAGE_BRIDGE_VERSION = 27;   // 2026-11-17：`26 → 27`，新增 `createWorktree` / `removeWorktree`（意图转发给 dsh Host 唯一 git 源；结果靠列表推送回页面）
+export const DSH_PAGE_BRIDGE_VERSION = 29;   // 2026-11-21：`28 → 29`，`installComponent` 支持用户显式授权管理员权限
 
 /** preload → 主进程的 IPC 通道（经 webContents.ipc，作用域限于该视图）。 */
 export const DSH_PAGE_IPC_INVOKE = 'vssaros:dsh:page';
@@ -645,8 +645,14 @@ export interface IDshPageBrowserRect {
 	readonly height: number;
 }
 
+export type DshComponentId = 'media' | 'office' | 'whisper';
+
 export type DshPageCommand =
 	| { readonly method: 'ping' }
+	/** 设置页的“依赖与组件”面板：读取媒体/Office/Whisper 状态。 */
+	| { readonly method: 'componentsStatus' }
+	/** 设置页的“依赖与组件”面板：启动一次后台安装（返回最新状态）。 */
+	| { readonly method: 'installComponent'; readonly id: DshComponentId; readonly allowElevation?: boolean }
 	| { readonly method: 'openFile'; readonly path: string; readonly startLine?: number; readonly endLine?: number }
 	| { readonly method: 'openMarkdown'; readonly text: string; readonly title?: string }
 	| { readonly method: 'reveal'; readonly path: string }
@@ -1231,6 +1237,12 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 	switch (r.method) {
 		case 'ping':
 			return { method: 'ping' };
+		case 'componentsStatus':
+			return { method: 'componentsStatus' };
+		case 'installComponent':
+			return r.id === 'media' || r.id === 'office' || r.id === 'whisper'
+				? { method: 'installComponent', id: r.id, ...(r.allowElevation === true ? { allowElevation: true } : {}) }
+				: undefined;
 		case 'openFile': {
 			if (!isPath(r.path) || !isAbsoluteFsPath(r.path)) {
 				return undefined;

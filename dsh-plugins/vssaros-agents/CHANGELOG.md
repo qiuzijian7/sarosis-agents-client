@@ -2,6 +2,12 @@
 
 2026-11-06 起，版本说明写在这里，不再追加到 package.json 的 description：插件管理器的 `list_bundles` 会把 description 原样交给模型，之前这段累计到 2 万多字。
 
+## 0.2.392（2026-11-21）
+
+- **P0-1 keepAlive 常驻**：`hostSelfWatch.js` 识别 owner 记录「未来 mtime = 优雅分离」，且只接受 `hostPid` 属于本 Host 的标记；`detachedUntil` 未过期时不因旧父进程退出而自退，过期/崩溃/别的 Host 仍按真孤儿回收。补 3 项行为测试（未来 mtime、看护放行、过期回收）。
+- **P0-2 preset 同步提速**：新增 `quickScanSignatureOf()`，只做 agent 根目录 + `.agent.md` 的 `mtimeMs/size` stat，不读正文；`syncPresets` 前置短路直接复用 `registrar.cache`，省掉重复的 6s 扫描、定义构造和 O(N²) 注册。签名不再含 `registeredKeys / eagerKeys / lazyFilled` 等运行期输出态；页面 GET 与删除后台同步走 100ms trailing debounce；lazy 补齐仍 `force` 真扫；卸载清定时器与缓存。
+- **启动诊断守卫**：`dshPresetPlane` / `run-agents-check` 更新到稳定签名、缓存、force 与 provider 组合的口径。
+
 ## 0.2.391（2026-11-16）
 
 - **发布收口 / 状态模型 / 可观测性**：新增只读 `GET /x/agents/api/rooms?diagnostics=1`，把运行生命周期、任务/验收生命周期、durable dispatch intent、存储租约与写错误分开投影；`schema=1` 独立于对外 `ROUND_SCHEMA=1`，不污染 progress / active / 工具结果。每个运行写穿稳定 `runId / attempt / cancelReason / trigger`；`followup` 前先落盘 `prepared` 派发意图，发送后转 `sent`，回合结束转 `settled`，取消转 `cancelled`，强杀重启把未确认意图收口为 `cut` 并明确「不自动重放」。`rebindRoom` 同步迁移 `runId` 与意图的 `roomId`。

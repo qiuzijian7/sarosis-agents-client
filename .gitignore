@@ -373,3 +373,9 @@ resources/.agents/skills/**/.usage.json
 
 # 飞书 SDK vendor 产物（10.5MB，用 npm run vendor 生成，不进仓库）
 dsh-plugins/vssaros-agents/lib/adapters/vendor/
+
+# 可选组件包（media/Office/Whisper）是构建产物，部署时上传服务器，不入库
+build/saros/update-server/downloads/
+
+# dsh 运行时本地状态（自动重建，不入库）
+.dsh/vssaros-memory/update-state.json

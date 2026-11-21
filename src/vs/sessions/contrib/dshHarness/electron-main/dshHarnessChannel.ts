@@ -27,7 +27,7 @@ import { DSH_BUILTIN_MODULES } from '../common/dshModuleContainers.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IAuxiliaryWindowsMainService } from '../../../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
+import { IWindowsMainService, OpenContext } from '../../../../platform/windows/electron-main/windows.js';
 // ★ 2026-10-31：platform 层的「安装更新之前」注册点（platform 不认识 dsh ⇒ 由这里注入"释放 dsh Host"）
 import { registerBeforeUpdateInstallHook } from '../../../../platform/update/electron-main/updateInstallHooks.js';
 import { DshBridgeMethod, DshBridgeReverseMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeCodeBuddyImportResult, IBridgeCodeBuddyStatus, IBridgeCreditRecordArgs, IBridgeCreditRecordResult, IBridgeCreditRouteResult, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgeLightAIImportResult, IBridgeLightAIStatus, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeReverseRequest, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofStatus, IBridgeTofSyncResult, IBridgeTofTicketResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateCodeBuddyImportArgs, validateCreditRouteArgs, validateInstallCancelArgs, validateLightAIImportArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs, validateTofSyncArgs, validateWorkspaceContextArgs } from '../common/dshBridgeProtocol.js';
@@ -35,7 +35,7 @@ import { DshCreditProxy, IDshCreditSample } from './dshCreditProxy.js';
 import { localPluginDir, toFileSpec } from '../common/dshCli.js';
 import { downloadAndVerify, removeDownloaded } from './dshMarketplaceInstaller.js';
 // ★ 2026-11-09 单版本模型：`dshCompat.js` 的版本发现/当前版本解析/安装目标选择整套下线。
-import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, IDshBootstrapArgs, IDshBundledPluginRow, IDshCreateViewArgs, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshViewBounds, sameStartOptions, surfaceTakesRoute } from '../common/dshHarness.js';
+import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, IDshBootstrapArgs, IDshBundledPluginRow, IDshCreateViewArgs, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshViewBounds, sameStartOptions, surfaceTakesRoute } from '../common/dshHarness.js';
 import { colorSchemeForPreference, parseThemePreference } from '../common/dshThemePreference.js';
 import { IdeRequestClaims } from '../common/dshIdeClaims.js';
 import { IIdeTargetPick, pickIdeTargetWindow } from '../common/dshIdeTargeting.js';
@@ -64,7 +64,9 @@ import { DshPluginActivationStore } from './dshPluginActivationStore.js';
 import { DshIdeRequestGate } from './dshIdeRequestGate.js';
 import { IDshViewBackgrounds, validateThemeTokens, validateViewBackgrounds } from '../common/dshThemeBridge.js';
 // ★ 2026-11-09：升级结果类型 / 远端兼容清单 / 升级闸门随多版本模型一起下线。
+import { DshComponentId, DshComponentManager } from './dshComponentManager.js';
 import { DshHostSupervisor } from './dshHostSupervisor.js';
+import { getActiveDshDesktopWindow } from './dshDesktopWindowMainService.js';
 import { FetchLike } from './dshNodeInstaller.js';
 import { DshRuntimeError, DshRuntimeManager, IResolvedNode } from './dshRuntimeManager.js';
 import { DshViewHost } from './dshViewHost.js';
@@ -81,6 +83,12 @@ export interface IDshHarnessChannelOptions {
 	readonly managedRoot?: string;
 	/** 仅测试使用：覆盖下载实现（默认 `electron.net.fetch`，走系统代理）。 */
 	readonly fetch?: FetchLike;
+	/** 更新服务器基址；缺省时只识别随包组件，不自动下载。 */
+	readonly updateUrl?: string;
+	/** 仅测试使用：关闭首启组件自动安装（默认开启）。 */
+	readonly componentAutoInstall?: boolean;
+	/** 是否允许需要管理员权限的 Linux 包管理器自动安装；默认 false。 */
+	readonly componentAllowElevation?: boolean;
 	/** 仅测试使用：覆盖随包兼容清单路径。 */
 	readonly compatBundledPath?: string;
 	/** 仅测试使用：覆盖**随包插件根**（默认 `<appPath>/dsh-plugins`；`vssaros-bridge` / 模块插件都在这一层）。 */
@@ -102,6 +110,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private readonly _runtime: DshRuntimeManager;
 	private readonly _supervisor: DshHostSupervisor;
 	private readonly _views: DshViewHost;
+	private readonly _components: DshComponentManager;
 	private readonly _pluginActivation: DshPluginActivationStore;
 	private readonly _fetch: FetchLike;
 	private readonly _onDidChangeStatus = this._register(new Emitter<IDshHostStatus>());
@@ -276,6 +285,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		// 随包 vendored 的第三方 `dsh-better-sidebar`（2026-11-19 起内置）：同一条"存在才装"路径。
 		// 它会接管宿主原生右栏 tab / 起始页，冲突面与权限口径见该目录 VENDOR.md。
 		const bundledBetterSidebar = join(this._bundledPluginsRoot, 'dsh-better-sidebar');
+		// 随包 vendored 的第三方 `dsh-deep-ptc-mode`（2026-11-21 起默认安装）：同一条"存在才装"路径。
+		// ⚠ 它只是多一个 Agent 预设，装上不等于启用；与官方 PTC 预设的派生关系见该目录 VENDOR.md。
+		const bundledDeepPtcMode = join(this._bundledPluginsRoot, 'dsh-deep-ptc-mode');
 		// work item 内核（2026-10-31）+ 无人值守循环（2026-10-30）：与上面几个同一条"存在才装"路径
 		// （都没有 `vssaros.module` ⇒ 不进模块自发现，必须显式登记伴生）。
 		// 顺序由 supervisor 的伴生清单决定（workitem 先于 loop）；这里只负责把目录找出来。
@@ -318,6 +330,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			egoBrowserPluginDir: existsSync(join(bundledEgoBrowser, 'package.json')) ? bundledEgoBrowser : undefined,
 			visionRouterPluginDir: existsSync(join(bundledVisionRouter, 'package.json')) ? bundledVisionRouter : undefined,
 			betterSidebarPluginDir: existsSync(join(bundledBetterSidebar, 'package.json')) ? bundledBetterSidebar : undefined,
+			deepPtcModePluginDir: existsSync(join(bundledDeepPtcMode, 'package.json')) ? bundledDeepPtcMode : undefined,
 			workItemPluginDir: existsSync(join(bundledWorkItem, 'package.json')) ? bundledWorkItem : undefined,
 			loopPluginDir: existsSync(join(bundledLoop, 'package.json')) ? bundledLoop : undefined,
 			modulePluginDirs,
@@ -340,6 +353,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			//     不再需要任何 `-dev` 特例 ✓（这也是 VS Code 自己的做法：`code` / `code-insiders` /
 			//     `code-oss-dev` 三份目录，每份里面结构完全相同）。
 			defaultDshHome: join(options.userDataPath, 'dsh-home'),
+			// 首启后台安装的 Office 组件（<userData>/components/office/current）；
+			// 随包 offline 构建仍由 supervisor 的 appRoot 候选兜底。
+			componentRoot: join(options.userDataPath, 'components'),
 			instanceId: `vssaros-${process.pid}-${generateUuid().slice(0, 8)}`,
 			log,
 			// 启动阶段进度透传到状态区（profile 初始化/伴生插件 i/n/Host 启动）。
@@ -357,6 +373,31 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					: this._ideGate.handle(request),
 		}));
 		this._views = this._register(new DshViewHost(windowsMainService, auxiliaryWindowsMainService, _logService, options.preloadPath));
+		// 可选组件：首启后台下载媒体/Office/Whisper；页面设置菜单通过页面桥读写状态。
+		this._components = this._register(new DshComponentManager({
+			userDataPath: options.userDataPath,
+			updateUrl: options.updateUrl,
+			fetch: this._fetch,
+			log,
+			appPath: app.getAppPath(),
+			resourcesPath: (process as unknown as { resourcesPath?: string }).resourcesPath,
+			// 开发版不自动下大包；设置页仍可手动安装。安装版首启自动补齐。
+			autoInstall: options.isBuilt && options.componentAutoInstall !== false,
+			// 官方媒体组件优先 winget/brew/apt；默认不静默提权。
+			officialProviders: true,
+			allowElevation: options.componentAllowElevation === true || process.env.VSSAROS_ALLOW_ELEVATION === '1',
+		}));
+		this._views.setPageCommandHandler(async command => {
+			if (command.method === 'componentsStatus') {
+				return { handled: true, result: await this._components.status() };
+			}
+			if (command.method === 'installComponent') {
+				await this._components.install(command.id as DshComponentId, { allowElevation: command.allowElevation === true });
+				return { handled: true, result: await this._components.status() };
+			}
+			return { handled: false };
+		});
+		void this._components.startAutoInstall();
 		this._workspaces = this._register(new DshWorkspaceSync(log));
 		this._register(windowsMainService.onDidDestroyWindow(w => this._workspaces.removeWindow(w.id)));
 		this._register(this._supervisor.onDidChangeStatus(status => {
@@ -365,6 +406,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		}));
 		// ★ 2026-10-20：mux 路由可用 ⇒ 让页面跳过 dsh 连接剩余的退避（见 DshViewHost.notifyMuxReady）。
 		this._register(this._supervisor.onMuxReady(e => this._views.notifyMuxReady(e.afterReadyMs)));
+		// P0-3：URL 行一出现就预热各视图分区的 dsh-auth cookie，不等 running / _load 串行交换。
+		this._register(this._supervisor.onEarlyAuth(conn => this._views.prefetchAuth(conn)));
 		this._pluginActivation = new DshPluginActivationStore(() => this._supervisor.profileDirectory(), log);
 		// ★ 2026-11-09 单版本模型：升级闸门（快照/切指针/健康检查失败回滚）、
 		//   远端兼容清单缓存、伴生插件 peer 预检整体下线 ——
@@ -426,21 +469,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			if (s['sessions.dshHarness.enabled'] === false || s['sessions.dshHarness.prewarm'] === false) {
 				return;
 			}
-			const pick = (key: string, fallback: string | undefined) => {
-				const v = s[key];
-				return typeof v === 'string' && v.trim() ? v.trim() : fallback;
-			};
-			const opts: IDshHostStartOptions = {
-				...persisted,
-				runtimePath: pick('sessions.dshHarness.runtimePath', persisted.runtimePath),
-				nodePath: pick('sessions.dshHarness.nodePath', persisted.nodePath),
-				dshHome: pick('sessions.dshHarness.dshHome', persisted.dshHome),
-				profile: pick('sessions.dshHarness.profile', persisted.profile),
-				// 抢先启动发生在渲染进程之前，读不到配置服务 ⇒ 与其它几项一样直接读 `User/settings.json`。
-				skipPluginInstall: s['sessions.dshHarness.skipPluginInstall'] === true,
-				// P3 默认开启；只有用户显式 false 才让预热 Host 回退旧布局。
-				sidebarLayoutV1: s['sessions.dshHarness.sidebarLayoutV1'] !== false,
-			};
+			const opts: IDshHostStartOptions = this._persistedStartOptions(persisted, s);
 			this._prewarmedWith = opts;
 			this._logService.info('[dshHarness] prewarming Host from the main process (parallel to workbench startup)');
 			const status = await this._supervisor.start(opts);
@@ -492,6 +521,58 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		} catch {
 			return {};
 		}
+	}
+
+	/**
+	 * 把上次落盘的启动选项与本次用户设置合成一份完整选项。
+	 *
+	 * B 方案轻量壳没有 IDE 工作区服务，只能发 `{ start: {} }`；若直接拿空选项去
+	 * `supervisor.start()`，会把主进程预热时已生效的 `keepAlive` / `workspaceRoot` /
+	 * `mcpConfigPath` 等覆盖成默认值，最常见后果是应用退出时杀掉常驻 Host ⇒ 下次启动
+	 * 又付 16–20s 冷启动 ✗。这里统一在主进程侧补齐。
+	 */
+	/**
+	 * 应急回退开关：环境变量优先，其次用户设置。默认 false ⇒ 只保留官方 session_search。
+	 * 该值会随 `IDshHostStartOptions` 传给 supervisor，再注入 Host 子进程的 env。
+	 */
+	private _legacySessionSearch(s: Record<string, unknown>): boolean {
+		const env = String(process.env['VSSAROS_LEGACY_SESSION_SEARCH'] ?? '').trim().toLowerCase();
+		if (env === '1' || env === 'true') { return true; }
+		if (env === '0' || env === 'false') { return false; }
+		return s[DshHarnessSettings.LegacySessionSearch] === true;
+	}
+
+	private _persistedStartOptions(persisted: IDshHostStartOptions | undefined, s: Record<string, unknown>): IDshHostStartOptions {
+		const pick = (key: DshHarnessSettings, fallback: string | undefined) => {
+			const v = s[key];
+			return typeof v === 'string' && v.trim() ? v.trim() : fallback;
+		};
+		const base = persisted ?? {};
+		return {
+			...base,
+			runtimePath: pick(DshHarnessSettings.RuntimePath, base.runtimePath),
+			nodePath: pick(DshHarnessSettings.NodePath, base.nodePath),
+			dshHome: pick(DshHarnessSettings.DshHome, base.dshHome),
+			profile: pick(DshHarnessSettings.Profile, base.profile),
+			skipPluginInstall: s[DshHarnessSettings.SkipPluginInstall] === true,
+			sidebarLayoutV1: s[DshHarnessSettings.SidebarLayoutV1] !== false,
+			keepAlive: s[DshHarnessSettings.HostKeepAlive] !== false,
+			legacySessionSearch: this._legacySessionSearch(s),
+		};
+	}
+
+	/** B 壳的空 `start` 不能覆盖预热选项；显式选项则只补缺的默认值。 */
+	private _bootstrapStartOptions(requested: IDshHostStartOptions): IDshHostStartOptions {
+		const s = this._readUserSettings();
+		const hasExplicitOptions = Object.values(requested).some(value => value !== undefined);
+		if (hasExplicitOptions) {
+			return {
+				...requested,
+				keepAlive: requested.keepAlive ?? (s[DshHarnessSettings.HostKeepAlive] !== false),
+				legacySessionSearch: requested.legacySessionSearch ?? this._legacySessionSearch(s),
+			};
+		}
+		return this._persistedStartOptions(this._prewarmedWith ?? this._readLastStart(), s);
 	}
 
 	/** 随包插件根（`<appPath>/dsh-plugins`）：伴生插件解析 + 「随包」段枚举同源。 */
@@ -765,10 +846,30 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		}).length;
 	}
 
-	/** 存活的**桌面窗口**数（承载 dsh 视图的辅助窗口；`excludeWindowId` = 正在关的那扇）。 */
+	/**
+	 * 所有仍存活的桌面 `BrowserWindow`。
+	 *
+	 * A 方案里它们由 view 槽的 `ownerWindowId` 找到；B 方案里 desktop 由
+	 * `DshDesktopWindowMainService` 直接创建、尚未建视图槽时不在 `_views` 里 ⇒ 必须两条源都算，
+	 * 否则关 IDE 会被误判成「没有桌面窗口」而退出整个应用 ✗。
+	 */
+	private _desktopBrowserWindows(excludeWindowId?: number): BrowserWindow[] {
+		const out: BrowserWindow[] = [];
+		const add = (win?: BrowserWindow) => {
+			if (win && !win.isDestroyed() && out.indexOf(win) < 0) {
+				out.push(win);
+			}
+		};
+		for (const win of this._views.desktopWindowsOtherThan(typeof excludeWindowId === 'number' ? excludeWindowId : -1)) {
+			add(win);
+		}
+		add(getActiveDshDesktopWindow());
+		return out;
+	}
+
+	/** 存活的**桌面窗口**数（`excludeWindowId` = 正在关的那扇 IDE）。 */
 	private _liveDesktopWindows(excludeWindowId?: number): number {
-		const list = this._views.desktopWindowsOtherThan(typeof excludeWindowId === 'number' ? excludeWindowId : -1);
-		return list.filter(w => !w.isDestroyed()).length;
+		return this._desktopBrowserWindows(excludeWindowId).length;
 	}
 
 	/**
@@ -779,7 +880,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	 */
 	private _watchDesktopWindowsAfterIdeClose(windowId: number, ideWin: BrowserWindow): void {
 		void ideWin;   // 只用于语义（IDE 那扇窗口）；判活走 facts，不看它
-		for (const desktop of this._views.desktopWindowsOtherThan(windowId)) {
+		for (const desktop of this._desktopBrowserWindows(windowId)) {
 			if (desktop.isDestroyed() || this._desktopCloseWatch.has(desktop)) {
 				continue;
 			}
@@ -1053,12 +1154,17 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	 */
 	private _bootstrap(args: IDshBootstrapArgs): Promise<IDshHostStatus> {
 		if (!this._bootstrapping) {
+			// B 壳只发空选项时，沿用主进程预热 / 上次落盘的完整选项；否则会把
+			// `keepAlive` 降成 false，应用退出即杀 Host，下次启动永远冷启动 ✗。
+			const start = this._bootstrapStartOptions(args.start);
+			this._prewarmedWith = undefined;
+			this._rememberStart(start);
 			this._bootstrapping = (async () => {
 				let node: IResolvedNode;
 				try {
-					node = await this._runtime.resolveNode(args.start.nodePath);
+					node = await this._runtime.resolveNode(start.nodePath);
 				} catch (e) {
-					if (!(e instanceof DshRuntimeError) || e.code !== 'node-missing' || args.start.nodePath?.trim()) {
+					if (!(e instanceof DshRuntimeError) || e.code !== 'node-missing' || start.nodePath?.trim()) {
 						throw e;
 					}
 					this._onDidProgress.fire('正在下载并校验托管 Node…');
@@ -1067,9 +1173,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					node = await this._runtime.resolveNode(undefined);
 				}
 				// 内置 dsh 必须随包存在；缺了让 `_requireBundled()` 的明确错误直接透出。
-				await this._runtime.resolveDsh(args.start.runtimePath, node);
+				await this._runtime.resolveDsh(start.runtimePath, node);
 				this._onDidProgress.fire('正在启动 Host…');
-				return this._supervisor.start(args.start);
+				return this._supervisor.start(start);
 			})().finally(() => this._bootstrapping = undefined);
 		}
 		return this._bootstrapping;
@@ -2074,6 +2180,17 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				}
 				this._desktopAutoOpenClaimed = true;
 				this._desktopAutoOpened.add(windowId);
+				return true;
+			}
+			case DshHarnessChannelCommand.OpenIdeWindow: {
+				// B 方案：启动时没有 IDE 主窗口；用户点 desktop 壳里的「IDE」时按需创建。
+				// `initialStartup: false` + desktop-only 模式下 `_wantsHiddenStart()` 返回 false ⇒ 可见。
+				await this._windowsMainService.openAgentsWindow({
+					context: OpenContext.DESKTOP,
+					cli: { _: [] },
+					initialStartup: false,
+					forceNewWindow: false,
+				});
 				return true;
 			}
 			case DshHarnessChannelCommand.ResetWindow: {

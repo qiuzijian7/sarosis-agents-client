@@ -8,8 +8,11 @@
  *   否则断言失败只是 reject 一个没人管的 Promise（静默通过，最坑的一种"假绿"）。
  */
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { pidAlive, startAppParentWatch } from '../lib/hostSelfWatch.js';
+import { HOST_OWNERSHIP_KEY, pidAlive, readHostOwnership, startAppParentWatch } from '../lib/hostSelfWatch.js';
 
 let pass = 0;
 const fails = [];
@@ -91,6 +94,59 @@ await check('中途恢复（父进程又可见）⇒ 计数清零，不退出', 
 	await sleep(480);
 	stop();
 	assert.equal(exited, false, '中间恢复过一次 ⇒ 不该退出');
+});
+
+await check('★ 未来 mtime 属于本 Host ⇒ 识别为优雅分离；过去/mismatch 不认', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'vssaros-host-self-watch-'));
+	const file = join(dir, 'owner.json');
+	const previous = globalThis[HOST_OWNERSHIP_KEY];
+	try {
+		writeFileSync(file, JSON.stringify({ format: 1, hostPid: 424242, appPid: 999999, instanceId: 'x', profile: 'p', startedAt: 1, files: [] }));
+		globalThis[HOST_OWNERSHIP_KEY] = { clientCount: 0, ownerRecordPath: file };
+		const future = new Date(Date.now() + 12 * 60 * 60 * 1000);
+		utimesSync(file, future, future);
+		const detached = readHostOwnership({ selfPid: 424242 });
+		assert.ok(detached?.detachedUntil && detached.detachedUntil > Date.now(), '未来 mtime 必须返回 detachedUntil');
+		assert.equal(detached?.appPid, undefined, 'appPid 已死时不应凭 pid 复用误判');
+		const past = new Date(Date.now() - 60_000);
+		utimesSync(file, past, past);
+		assert.equal(readHostOwnership({ selfPid: 424242 })?.detachedUntil, undefined, '过去 mtime 不是优雅分离');
+		writeFileSync(file, JSON.stringify({ format: 1, hostPid: 999, appPid: 999999, instanceId: 'x', profile: 'p', startedAt: 1, files: [] }));
+		utimesSync(file, future, future);
+		assert.equal(readHostOwnership({ selfPid: 424242 })?.detachedUntil, undefined, '别的 Host 的未来 mtime 不许认');
+	} finally {
+		if (previous === undefined) { delete globalThis[HOST_OWNERSHIP_KEY]; }
+		else { globalThis[HOST_OWNERSHIP_KEY] = previous; }
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+await check('★ keepAlive 优雅分离期间 ⇒ 父进程死了也不自退', async () => {
+	let exited = false;
+	const logs = [];
+	const stop = startAppParentWatch({
+		appPid: 424242, intervalMs: 120, log: (m) => logs.push(m),
+		exit: () => { exited = true; },
+		isAlive: () => false,
+		ownership: () => ({ inUse: false, detachedUntil: Date.now() + 60_000 }),
+	});
+	await sleep(420);
+	stop();
+	assert.equal(exited, false, 'detachedUntil 未过期时必须保住 Host');
+	assert.ok(logs.some((m) => /优雅分离/.test(m)), '应留一行 keepAlive 不自退的日志');
+});
+
+await check('★ detachedUntil 过期后 ⇒ 恢复真孤儿回收', async () => {
+	let code = null;
+	const stop = startAppParentWatch({
+		appPid: 424242, intervalMs: 120, log: () => { },
+		exit: (c) => { code = c; },
+		isAlive: () => false,
+		ownership: () => ({ inUse: false, detachedUntil: Date.now() - 1 }),
+	});
+	await sleep(420);
+	stop();
+	assert.equal(code, 0, '标记过期后仍要 exit(0)');
 });
 
 if (fails.length) {

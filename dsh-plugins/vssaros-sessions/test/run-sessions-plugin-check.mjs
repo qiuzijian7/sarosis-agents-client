@@ -741,6 +741,20 @@ console.log('── K. 磁贴视图（稿 C：2026-10-21 用户拍板，dsh desk
 	});
 }
 
+// ── ⑨ 方案 A：默认只保留官方 `session_search`，本仓仅在 legacy 开关下注册 ──
+{
+	const src = idxSrc.replace(/\/\*[\s\S]*?\*\//g, '').split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join('\n');
+	const at = src.indexOf("name: 'session_search'");
+	check('默认不注册轻量 session_search；legacy 回退仍必须 probe', () => {
+		assert.ok(at > 0, '找不到 legacy session_search 工具定义');
+		assert.match(src, /VSSAROS_LEGACY_SESSION_SEARCH/, '必须有显式 legacy 逃生开关');
+		const before = src.slice(Math.max(0, at - 1100), at);
+		assert.match(before, /if \(!LEGACY_SESSION_SEARCH\)/, '默认必须在注册前早退');
+		assert.match(before, /return undefined/, '默认不注册工具');
+		assert.match(before, /ctx\.tools\.get\?\.\('session_search'\)/, 'legacy 回退仍须 probe 同名工具');
+	});
+}
+
 fs.rmSync(dshHome, { recursive: true, force: true });
 console.log(fail.length ? `\n失败 ${fail.length} 项：${fail.join(' / ')}` : '\n全部通过 ✓');
 process.exit(fail.length ? 1 : 0);

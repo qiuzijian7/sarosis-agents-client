@@ -448,6 +448,32 @@ export class LifecycleMainService extends Disposable implements ILifecycleMainSe
 		await barrier.wait();
 	}
 
+	/**
+	 * 是否还有**非 offscreen** 的应用窗口存活。
+	 *
+	 * B 方案的 dsh desktop 是主进程直接创建的 `BrowserWindow`，不是 `CodeWindow`，
+	 * 不计入 `windowCounter`。最后一个 CodeWindow 关闭时若它还在，不能触发
+	 * `onWillShutdown → CodeApplication.dispose()`，否则 desktop 会被连带 dispose 掉 ✗。
+	 */
+	private hasSurvivingAppWindow(): boolean {
+		for (const win of electron.BrowserWindow.getAllWindows()) {
+			if (win.isDestroyed()) {
+				continue;
+			}
+			let offscreen = false;
+			try {
+				offscreen = !!win.webContents?.isOffscreen?.();
+			} catch {
+				// webContents 正在销毁时保守当作应用窗口：宁可保住 desktop，也别误 dispose ✗。
+				offscreen = false;
+			}
+			if (!offscreen) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	registerWindow(window: ICodeWindow): void {
 		const windowListeners = new DisposableStore();
 
@@ -500,7 +526,14 @@ export class LifecycleMainService extends Disposable implements ILifecycleMainSe
 			// we are on macOS where it is perfectly fine to close the last window and
 			// the application continues running (unless quit was actually requested)
 			if (this.windowCounter === 0 && (!isMacintosh || this._quitRequested)) {
-				this.fireOnWillShutdown(ShutdownReason.QUIT);
+				// ★ B 方案：desktop 是独立 BrowserWindow，不进 windowCounter；它还活着时
+				//   「最后一个 CodeWindow 关闭」只是关 IDE，不是关整个应用 ✗。
+				//   真退出（before-quit 已置 _quitRequested）仍照常走 shutdown ✓。
+				if (!this._quitRequested && this.hasSurvivingAppWindow()) {
+					this.logService.info('[ShutdownDiag] last CodeWindow closed but a non-CodeWindow app window remains; keeping application alive');
+				} else {
+					this.fireOnWillShutdown(ShutdownReason.QUIT);
+				}
 			}
 		}));
 	}

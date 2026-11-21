@@ -22,6 +22,7 @@ import { pathToFileURL } from 'node:url';
 
 const PLUGINS_REL = 'dsh-plugins';
 const AGENTS_REL = 'dsh-plugins/vssaros-agents';
+const AGENTS_LIB = 'dsh-plugins/vssaros-agents/lib/index.js';
 
 function repoRoot(): string | undefined {
 	return fs.existsSync(path.join(process.cwd(), PLUGINS_REL, 'preset-sync.mjs')) ? process.cwd() : undefined;
@@ -36,17 +37,16 @@ function rowNamesOf(rowsText: string): string[] {
  * 例外名单：这些模块**有意不写进 preset 行** —— 它们的工具由 **host plane** 注册、全局可见。
  *
  * 判据（写清理由，否则下一任会以为漏了 ✗）：
- *   · `@vssaros/dsh-sessions`：**有页面 + 路由**（不像纯工具插件），而 host 层已挂同一 id
- *     ⇒ preset 里再挂一次会让 preset 那次 `never started` ⇒ `session create failed`、会话打不开
- *     （2026-10-19 真机日志；见 `preset-vssaros.rows.yml` 里那段注释 ✓）。
- *     它的 `session_search` 工具由 host 行提供 ⇒ 会话里照样能用 ✓。
+ *   · `@vssaros/dsh-imagegen`：**有页面 + 路由**（画布工作台 `/x/imagegen/`），而 host 层已挂同一 id
+ *     ⇒ preset 里再挂一次会让 preset 那次 `never started` ⇒ 会话打不开；工具由 host 行提供 ✓。
+ *   · 2026-11-21 方案 A 后 `@vssaros/dsh-sessions` 默认零工具（`session_search` 归官方 group），
+ *     不再属于「工具面快照里注册了工具的模块」⇒ 不进这张表，也不进 preset rows。
  *
  * ⚠ 纯工具插件（`view.kind: none`，如 `@vssaros/dsh-pele` / `@vssaros/dsh-web-content-import`）
  *   **不许**进这个名单：它们重复注册只是幂等顶掉，漏进 rows 才是真 bug（`render_diagram` 就因此缺席过 ✗）。
  */
 const HOST_PLANE_ONLY_ROWS: ReadonlyMap<string, string> = new Map([
-	['@vssaros/dsh-sessions', '有页面+路由，preset 内二次挂载会 never started（2026-10-19 真机）'],
-	['@vssaros/dsh-imagegen', '有页面+路由（画布工作台 /x/imagegen/），同 sessions：preset 内二次挂载会 never started；工具由 host 行提供'],
+	['@vssaros/dsh-imagegen', '有页面+路由（画布工作台 /x/imagegen/），preset 内二次挂载会 never started；工具由 host 行提供'],
 ]);
 
 /**
@@ -169,13 +169,25 @@ suite('dsh preset plane（R13 ①：我们的 preset 生成物）', () => {
 		const text = fs.readFileSync(path.join(root!, AGENTS_REL, 'cordis.presets.yml'), 'utf8');
 		// 按顶层 patch 项切块（每块以行首 `- insert:` 开始）
 		const blocks = text.split(/\n(?=- insert:)/).filter(b => /^- insert:/.test(b));
-		assert.strictEqual(blocks.length, 2, `生成物应有 2 个 patch 项（native + ptc），实际 ${blocks.length} 个`);
+		// ★ 2026-11-21：生成物是 **恰好 2 个** patch 项（native / ptc；`vssaros-full` 已退役删除）。
+		//   按 preset id 认块保证 A/B 单变量可比；同时**钉住块数** —— 只按 id 认块时
+		//   第三档被重新加回来不会红（而生成器自比断言会跟着一起变，见质量复盘 P2-1）✗。
+		assert.strictEqual(blocks.length, 2, `生成物应恰好 2 个 patch 项，实际 ${blocks.length} 个（多出来的档位要先审 diff）`);
+		const idOf = (block: string): string => {
+			const m = block.match(/^[ \t]+- id: (preset-[\w-]+)[ \t]*$/m);
+			return m ? m[1] : '';
+		};
+		const byId = new Map(blocks.map(b => [idOf(b), b]));
+		for (const id of ['preset-vssaros-standard', 'preset-vssaros-ptc']) {
+			assert.ok(byId.has(id), `生成物应有 ${id} 这个 patch 项（实际 ${[...byId.keys()].join('/')}）`);
+		}
 		const idsOf = (block: string): string[] => [...block.matchAll(/^ {10}- id: (\S+)\s*$/gm)].map(m => m[1]);
 		const presentationOf = (block: string): unknown => {
 			const m = block.match(/^ {10}- id: tool-presentation[\s\S]*?^ {14}mode: (\S+)\s*$/m);
 			return m ? m[1] : undefined;
 		};
-		const [native, ptc] = blocks;
+		const native = byId.get('preset-vssaros-standard') ?? '';
+		const ptc = byId.get('preset-vssaros-ptc') ?? '';
 		const nativeIds = idsOf(native);
 		const ptcIds = idsOf(ptc);
 		assert.deepStrictEqual(presentationOf(native), undefined, 'native preset 不许带 `tool-presentation`（那会把它也变成 ptc ✗）');
@@ -276,5 +288,28 @@ suite('dsh preset plane（R13 ①：我们的 preset 生成物）', () => {
 			assert.ok((pkg.files ?? []).includes(f),
 				`files 必须覆盖 ${f}（否则装出来的包里没有它 ⇒ 生成物白做 ✗）：现在=${(pkg.files ?? []).join(', ')}`);
 		}
+	});
+
+	test('★ syncPresets 必须跨 apply 共享注册属主、前置稳定签名短路并去抖', function () {
+		const root = repoRoot();
+		if (!root) { this.skip(); }
+		const src = stripComments(fs.readFileSync(path.join(root!, AGENTS_LIB), 'utf8'));
+		assert.match(src, /function createRegistrar\(/, '缺少跨 apply 的注册属主工厂');
+		assert.match(src, /const state = createState\(existingAgentsSvc\?\.registrar\);/, '第二次 apply 必须复用既有服务的 registrar');
+		assert.match(src, /registrar: state\.registrar,/, 'vssarosAgents 服务必须把 registrar 暴露给后续 plane');
+		const quickAt = src.indexOf('const sourceSig = await quickScanSignatureOf(config);');
+		const scanAt = src.indexOf('const scan = await scanAgentsFromConfig(config, undefined);');
+		assert.ok(quickAt > 0 && scanAt > quickAt, '廉价稳定签名必须在全量扫描之前计算');
+		assert.match(src, /r\.sourceSig === sourceSig && cache && state\.registered\.size > 0/, '必须有前置稳定签名短路');
+		assert.match(src, /mark\('跳过（扫描签名未变）'\)/, '签名未变时必须明确记录跳过');
+		assert.match(src, /r\.cache = \{/, '成功轮必须缓存 scan/diagnostics/roster');
+		assert.match(src, /r\.dirty = false;/, '成功轮必须清 dirty；失败轮保持 dirty');
+		assert.ok(!/registeredKeys|eagerKeys\s*\?\s*\[|lazyFilled:/.test(src.slice(src.indexOf('const signature = sourceSig'), src.indexOf('const gate ='))),
+			'稳定签名不许再包含 registeredKeys / eagerKeys / lazyFilled 等运行期输出态');
+		assert.match(src, /const SYNC_DEBOUNCE_MS = 100;/, '页面/后台同步必须走有界 trailing debounce');
+		assert.match(src, /syncSerial\(state, state\.presets, config, \{ force: true \}\)/, 'lazy 补齐必须 force 绕过缓存');
+		assert.ok(!/await syncPresets\(state, state\.presets, config\)/.test(src),
+			'写操作后不许再裸调 syncPresets（会绕过 syncing 去重，起并发全量注册）');
+		assert.match(src, /await syncSerial\(state, state\.presets, config\)/, '写操作后的刷新必须走串行同步');
 	});
 });

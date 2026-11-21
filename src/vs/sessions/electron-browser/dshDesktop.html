@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8" />
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none';" />
+	<title>VsSaros — Desktop</title>
+	<style>
+		html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #1f1f1f; color: #cccccc; font-family: "Segoe UI", system-ui, sans-serif; }
+		#root { position: absolute; inset: 29px 0 0 0; }
+		#booting { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 0 24px; font-size: 13px; color: #9d9d9d; text-align: center; }
+		#open-ide { position: absolute; right: 146px; top: 0; width: 46px; height: 29px; border: 0; background: transparent; color: #cccccc; font: inherit; font-size: 12px; cursor: default; z-index: 2; }
+		#open-ide:hover { background: rgba(255, 255, 255, 0.1); }
+	</style>
+</head>
+<body>
+	<div id="root"></div>
+	<div id="booting">正在启动 dsh 桌面窗口…</div>
+	<button id="open-ide" type="button" title="打开 VsSaros IDE">IDE</button>
+	<script src="./dshDesktop.js" type="module"></script>
+</body>
+</html>

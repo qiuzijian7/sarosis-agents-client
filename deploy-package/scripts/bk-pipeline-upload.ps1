@@ -123,9 +123,17 @@ foreach ($pkg in $packages) {
     # 与更新服务器 MAX_UPLOAD_SIZE（默认 2 GiB）对齐：超限就地失败并给出可读原因，
     # 不再白传几百 MB 后只拿到 curl (55) Broken pipe。
     $maxUploadMB = 2048
-    if ($env:SAROS_MAX_UPLOAD_MB) { $maxUploadMB = [int]$env:SAROS_MAX_UPLOAD_MB }
+    if (-not [string]::IsNullOrWhiteSpace($env:SAROS_MAX_UPLOAD_MB)) {
+        $parsedLimit = 0
+        if ([int]::TryParse($env:SAROS_MAX_UPLOAD_MB.Trim(), [ref]$parsedLimit) -and $parsedLimit -gt 0) {
+            $maxUploadMB = $parsedLimit
+        } else {
+            Write-Host "  [WARN] Invalid SAROS_MAX_UPLOAD_MB; using ${maxUploadMB} MB" -ForegroundColor Yellow
+        }
+    }
+    $uploadLimitText = [string]$maxUploadMB
     if ($sizeMB -gt $maxUploadMB) {
-        Write-Host "  [ERROR] ${sizeMB} MB exceeds upload limit ${maxUploadMB} MB (server MAX_UPLOAD_SIZE / SAROS_MAX_UPLOAD_MB)" -ForegroundColor Red
+        Write-Host "  [ERROR] ${sizeMB} MB exceeds upload limit ${uploadLimitText} MB (server MAX_UPLOAD_SIZE / SAROS_MAX_UPLOAD_MB)" -ForegroundColor Red
         $failCount++
         continue
     }

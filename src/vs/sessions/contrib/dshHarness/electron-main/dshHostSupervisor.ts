@@ -37,10 +37,10 @@ import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMa
 import { isDshRowsBundleRegistered, isMcpRuntimeMountEnabled, parseMcpServers, renderMcpOverlay } from '../common/dshMcpConfig.js';
 import { auditBundledPluginVersions, isVersionNewer, renderBundledVersionAudit } from '../common/dshPluginVersionAudit.js';
 import { describeManualUpgrade, IThirdPartyPlugin, pickThirdPartyPlugins, upgradableSpecOf } from '../common/dshPluginUpgrade.js';
-import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
-import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
-import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_BROWSER_PLUGIN_NAME, DSH_VISION_ROUTER_PLUGIN_NAME, DSH_BETTER_SIDEBAR_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_OFFICE_TEMPLATE_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_LOOP_PLUGIN_NAME, DSH_PLUGIN_RESOURCES_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_FORGE_BUNDLE_PLUGIN_NAME, DSH_FORGE_CLIENT_UI_PLUGIN_NAME, DSH_FORGE_GITHUB_PLUGIN_NAME, DSH_FORGE_PLUGIN_NAME, DSH_FORGE_SESSION_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WORKTREE_RUNTIME_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, DSH_WORKITEM_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
-import { mergeMissingBundles, migrateOfficialWorktreeBundles, migrateRetiredEgoBundles, parseProfileBundles } from '../common/dshPluginActivation.js';
+import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, mergeHostOverlayTexts, renderHostOverlays } from '../common/dshHostConfig.js';
+import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName, parseHostRunOwnership, runIdOfHostRunOwnershipFile } from '../common/dshHostRunOwnership.js';
+import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_BROWSER_PLUGIN_NAME, DSH_VISION_ROUTER_PLUGIN_NAME, DSH_BETTER_SIDEBAR_PLUGIN_NAME, DSH_DEEP_PTC_MODE_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_OFFICE_TEMPLATE_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_LOOP_PLUGIN_NAME, DSH_PLUGIN_RESOURCES_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_FORGE_BUNDLE_PLUGIN_NAME, DSH_FORGE_CLIENT_UI_PLUGIN_NAME, DSH_FORGE_GITHUB_PLUGIN_NAME, DSH_FORGE_PLUGIN_NAME, DSH_FORGE_SESSION_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WORKTREE_RUNTIME_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, DSH_WORKITEM_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
+import { DSH_OFFICIAL_SESSION_SEARCH_BUNDLE, mergeMissingBundles, migrateOfficialWorktreeBundles, migrateRetiredEgoBundles, parseProfileBundles, syncOfficialSessionSearchRows } from '../common/dshPluginActivation.js';
 import { renderSessionIdentityPreload } from '../common/dshSessionIdentity.js';
 import { renderSessionSearchCompatPreload } from '../common/dshSessionSearchCompat.js';
 import { renderWorktreeLongPathsPreload } from '../common/dshWorktreeLongPaths.js';
@@ -143,6 +143,70 @@ function bundledMediaBinDir(): string | undefined {
 	}
 	const devCandidate = join(process.cwd(), 'build', 'saros', 'bin');
 	return existsSync(devCandidate) ? devCandidate : undefined;
+}
+
+/** 在指定根下有限深度找某个文件，返回所在目录。 */
+function findMediaBinDir(root: string, fileName: string, depth = 5): string | undefined {
+	if (depth < 0 || !existsSync(root)) { return undefined; }
+	let entries: { name: string; isFile(): boolean; isDirectory(): boolean }[];
+	try { entries = readdirSync(root, { withFileTypes: true }); } catch { return undefined; }
+	for (const entry of entries) {
+		const child = join(root, entry.name);
+		if (entry.isFile() && entry.name.toLowerCase() === fileName.toLowerCase()) { return root; }
+		if (entry.isDirectory()) {
+			const found = findMediaBinDir(child, fileName, depth - 1);
+			if (found) { return found; }
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Host 需要看到的媒体目录：
+ *   1. 首启组件安装的 `<userData>/components/media/current`（managed 包）；
+ *   2. 随包 resources/saros/bin；
+ *   3. winget 安装的 FFmpeg / yt-dlp 包目录（Gyan 的 bin 不在 WinGet\Links）；
+ *   4. Homebrew / 发行版默认目录。
+ *
+ * 只返回存在的目录；全部搜索失败时退回原来的 bundled 行为，绝不让 PATH 注入变成启动失败。
+ */
+function mediaBinDirsForHost(componentRoot: string | undefined): string[] {
+	const out: string[] = [];
+	const push = (dir: string | undefined): void => {
+		if (dir && existsSync(dir) && !out.some(existing => existing.toLowerCase() === dir.toLowerCase())) { out.push(dir); }
+	};
+	if (componentRoot) { push(join(componentRoot, 'media', 'current')); }
+	push(bundledMediaBinDir());
+
+	if (process.platform === 'win32') {
+		const localAppData = process.env.LOCALAPPDATA;
+		if (localAppData) {
+			push(join(localAppData, 'Microsoft', 'WinGet', 'Links'));
+			const packages = join(localAppData, 'Microsoft', 'WinGet', 'Packages');
+			if (existsSync(packages)) {
+				let entries: { name: string; isFile(): boolean; isDirectory(): boolean }[];
+				try { entries = readdirSync(packages, { withFileTypes: true }); } catch { entries = []; }
+				for (const entry of entries) {
+					if (!entry.isDirectory() || !/ffmpeg|yt-dlp/i.test(entry.name)) { continue; }
+					const root = join(packages, entry.name);
+					for (const file of ['ffmpeg.exe', 'yt-dlp.exe']) {
+						const found = findMediaBinDir(root, file);
+						if (found) { push(found); }
+					}
+				}
+			}
+			if (process.env.ProgramFiles) { push(join(process.env.ProgramFiles, 'ffmpeg', 'bin')); }
+		}
+	} else if (process.platform === 'darwin') {
+		push('/opt/homebrew/bin');
+		push('/usr/local/bin');
+		push('/opt/local/bin');
+	} else {
+		push('/usr/bin');
+		push('/usr/local/bin');
+		push('/snap/bin');
+	}
+	return out;
 }
 
 /** Host 冷启分段计时（`ready in` 的拆账；打点与量化误差说明见 `_awaitReady`）。 */
@@ -278,6 +342,18 @@ export interface IDshHostSupervisorOptions {
 	 */
 	readonly betterSidebarPluginDir?: string;
 	/**
+	 * 随包 **vendored 第三方 `dsh-deep-ptc-mode`** 目录
+	 * (`dsh-plugins/dsh-deep-ptc-mode/`；上游 `lishize20040802-rgb/dsh-deep-ptc-mode` v2.3.0，MIT)。
+	 *
+	 * 2026-11-21 起**默认安装**（用户要求）：与 archify / ego-browser / vision-router / better-sidebar
+	 * 同一条"存在才装"的伴生路径（没有 `vssaros.module`）。装不上不影响启动，只是模式菜单里少
+	 * 一个「深度 PTC 模式」。
+	 * ⚠ **安装不等于启用**：默认 preset 仍是 `vssaros-standard`（native），用户要新建会话并选中
+	 *   「深度 PTC 模式」才生效。上游从宿主官方 PTC 声明派生，与我们的 `vssaros-ptc` 模块组成
+	 *   不同 ⇒ 真机核对要点见该目录 `VENDOR.md`。
+	 */
+	readonly deepPtcModePluginDir?: string;
+	/**
 	 * **无人值守循环**目录（`dsh-plugins/vssaros-loop/`，2026-10-30）。
 	 * 与 workitem 同一条伴生路径；必须在 workitem **之后**装（它 `ctx.inject(['vssarosWorkItems'])` 等内核）。
 	 */
@@ -300,6 +376,8 @@ export interface IDshHostSupervisorOptions {
 	readonly expectedModulePlugins?: readonly string[];
 	/** 未显式配置 dshHome 时使用的目录；undefined 表示沿用 `$DSH_HOME` / dsh 默认 `~/.dsh`。 */
 	readonly defaultDshHome: string | undefined;
+	/** 用户可选组件根（`<userData>/components`）；Office 从 `<root>/office/current` 发现。 */
+	readonly componentRoot?: string;
 	readonly instanceId: string;
 	readonly log: (line: string) => void;
 	/** 启动阶段进度（给状态区做实时反馈）；缺省 = 只记日志。 */
@@ -367,6 +445,14 @@ export class DshHostSupervisor extends Disposable {
 	 */
 	private readonly _onMuxReady = this._register(new Emitter<{ readonly afterReadyMs: number; readonly probes: number; readonly status: number }>());
 	readonly onMuxReady: Event<{ readonly afterReadyMs: number; readonly probes: number; readonly status: number }> = this._onMuxReady.event;
+	/** P0-3：URL 行一解析出 origin/authUrl 就通知视图层预热 cookie，不等 running。 */
+	private readonly _onEarlyAuth = this._register(new Emitter<{ readonly origin: string; readonly authUrl: string }>());
+	readonly onEarlyAuth: Event<{ readonly origin: string; readonly authUrl: string }> = this._onEarlyAuth.event;
+	/** P0-3：starting 期间提前探到的 mux 结果，running 后再置位/广播。 */
+	private _muxProbePending: { readonly generation: number; readonly afterReadyMs: number; readonly probes: number; readonly status: number } | undefined;
+	private _muxProbeStarted = false;
+	private _muxReadyPublished = false;
+	private _readyAt = 0;
 
 	private _status: IDshHostStatus = { state: 'stopped', bridge: 'none' };
 	private _child: ChildProcess | undefined;
@@ -641,6 +727,9 @@ export class DshHostSupervisor extends Disposable {
 			return fail(`解析运行时失败：${String((e as Error)?.message ?? e)}`);
 		}
 		const env = sanitizedEnv(dshHome ? { DSH_HOME: dshHome } : {});
+		// ★ 2026-11-21：spec 安装也必须锁到 pin 的 pnpm（此前只有启动路径注入了 shim，
+		//   于是「启动装随包插件」与「页面里装第三方插件」用两个版本交替重算 profile 依赖树）。
+		injectBundledPnpm(env, node.path, this._appRoot(), line => this._appendLog(line));
 		const profileDir = this._profileDir(profile, env);
 		const manifest = join(profileDir, 'node_modules', ...pkgName.split('/'), 'package.json');
 		const previousVersion = this._readPkgVersion(manifest);
@@ -654,6 +743,13 @@ export class DshHostSupervisor extends Disposable {
 			// 超时 5 分钟：这条没有商城那条的取消能力，不能照抄 900s（否则卡住时用户只能干等）；
 			// 组合包首次装依赖一般 1-2 分钟量级，够用 ✓。
 			const out = await this._runDsh(node, buildPluginAddArgs(dsh.bin, profile, cleanSpec), env, 300_000);
+			// ★★ 2026-11-21：pnpm 重物化整棵依赖树会把随包 `file:` 插件的旧 `.pnpm` 目录换掉
+			//   ⇒ 仍在跑的 Host 按旧路径 import ⇒ `30 entries did not activate / ENOENT lib/index.js`。
+			//   启动前 / 批量安装后都有同一套自愈，spec 安装这条此前没有 ⇒ 装完立刻体检补回。
+			const problems = await this._repairProfileAfterInstall(dsh, profile, env, `spec ${cleanSpec}`);
+			if (problems.length) {
+				this._appendLog(`⚠ ${cleanSpec} 装完仍有 ${problems.length} 个随包插件入口缺失 ⇒ 下次启动会自动重装；界面异常请重启 VsSaros`);
+			}
 			const after = this._readPkgVersion(manifest);
 			if (!after) {
 				// 失败要**留全原因**（与 `_ensurePlugin` 同口径：头 + 尾，避免 400 把关键行截掉）
@@ -691,6 +787,7 @@ export class DshHostSupervisor extends Disposable {
 			return { name, ok: false, bundledVersion, changed: false, error: `解析运行时失败：${String((e as Error)?.message ?? e)}` };
 		}
 		const env = sanitizedEnv(dshHome ? { DSH_HOME: dshHome } : {});
+		injectBundledPnpm(env, node.path, this._appRoot(), line => this._appendLog(line));
 		const profileDir = this._profileDir(profile, env);
 		const manifest = (p: string) => join(profileDir, 'node_modules', ...p.split('/'), 'package.json');
 		const previousVersion = this._readPkgVersion(manifest(name));
@@ -700,6 +797,10 @@ export class DshHostSupervisor extends Disposable {
 			await this._repairSeededStoreMetadata(profileDir);
 			this._appendLog(`${label} install: ${name}@${bundledVersion || '?'} (was ${previousVersion ?? 'absent'})`);
 			const after = await this._ensurePlugin(name, dir, node, dsh, profile, env, label);
+			const problems = await this._repairProfileAfterInstall(dsh, profile, env, label);
+			if (problems.length) {
+				this._appendLog(`⚠ ${label} 装完仍有 ${problems.length} 个随包插件入口缺失 ⇒ 下次启动会自动重装`);
+			}
 			const ok = !!bundledVersion && after === bundledVersion;
 			const changed = ok && previousVersion !== bundledVersion;
 			// ★ 版本真变了 ⇒ 任何**已经在跑**的 Host（含 `host.json` 里那个由别的实例拉起的）内存里都是旧代码，
@@ -723,6 +824,89 @@ export class DshHostSupervisor extends Disposable {
 		} catch (e) {
 			return { ...base, ok: false, changed: false, error: String((e as Error)?.message ?? e) };
 		}
+	}
+
+	/**
+	 * **装完插件后**立刻体检并自愈 profile（★ 2026-11-21 真机）。
+	 *
+	 * 现场：页面里装 `billion-context` ⇒ `dsh plugin add` 内部的 pnpm 重物化整棵依赖树
+	 * （`Packages: +129 -44`，所有随包 `file:` 插件的 `@deepseek-ai/dsh` peer 后缀重算）
+	 * ⇒ 每个 `.pnpm/@vssaros+…@<hash>` 目录被删旧建新 ⇒ 仍在跑的 Host 按旧路径 import
+	 * ⇒ `30 entries did not activate`，30 条全是 `ENOENT …/lib/index.js`。
+	 *
+	 * 启动前（`:1782`）与批量安装后（`:1318`）早有同一套自愈，但**运行时安装**（spec /
+	 * 本地目录）这条路径此前没有 ⇒ 装一个插件就弄坏一批，只能靠下次启动补救。
+	 * ⇒ 复用同一组函数（不另造一套判定），装完立即补回；返回仍缺的入口供调用方提示重启。
+	 */
+	private async _repairProfileAfterInstall(dsh: IResolvedDsh, profile: string, env: NodeJS.ProcessEnv, label: string): Promise<string[]> {
+		const nmDir = join(this._profileDir(profile, env), 'node_modules');
+		const bundledRoot = this._bundledPluginsRoot();
+		const problems: string[] = [];
+		try {
+			if (bundledRoot) {
+				const repaired = await repairBundledPluginFiles(bundledRoot, nmDir, line => this._appendLog(line));
+				if (repaired.length) {
+					this._appendLog(`deps-repair（${label} 装后）: 补回 ${repaired.length} 个随包插件自带文件`);
+				}
+			}
+			const deps = await repairProfileDeps(nmDir, line => this._appendLog(line));
+			if (deps.repaired.length) {
+				this._appendLog(`deps-repair（${label} 装后）: 补齐 ${deps.repaired.length} 个缺失文件（扫了 ${deps.scanned} 个嵌套副本）`);
+			}
+			await this._repairBrokenProfileLinks(dsh, profile, env);
+			const missing = this._missingBundledPluginEntries(bundledRoot, nmDir);
+			if (missing.length) {
+				problems.push(...missing);
+				this._appendLog(`⚠ ${label} 装后仍有 ${missing.length} 个随包插件入口缺失 ⇒ 需重启 Host：${missing.slice(0, 6).join('、')}`);
+			}
+		} catch (e) {
+			// 不阻断安装结果：补不回来的让 Host 的错误（或下次启动的批量安装）自己显形 ✓
+			this._appendLog(`deps-repair（${label} 装后）失败（忽略）：${String((e as Error)?.message ?? e).slice(0, 200)}`);
+		}
+		return problems;
+	}
+
+	/** 逐包核对 `package.json.main`（缺省 `lib/index.js`）在已装副本里是否真在 —— Host 能不能 import 的判据。 */
+	private _missingBundledPluginEntries(bundledRoot: string | undefined, nmDir: string): string[] {
+		const missing: string[] = [];
+		if (!bundledRoot) {
+			return missing;
+		}
+		let entries;
+		try {
+			entries = readdirSync(bundledRoot, { withFileTypes: true });
+		} catch {
+			return missing;
+		}
+		for (const entry of entries) {
+			if (!entry.isDirectory()) {
+				continue;
+			}
+			let pkg: { name?: unknown; main?: unknown } | undefined;
+			try {
+				pkg = JSON.parse(readFileSync(join(bundledRoot, entry.name, 'package.json'), 'utf8'));
+			} catch {
+				continue;   // 读不动 package.json 的目录不是插件
+			}
+			if (typeof pkg?.name !== 'string') {
+				continue;
+			}
+			const dest = join(nmDir, ...pkg.name.split('/'));
+			if (!existsSync(join(dest, 'package.json'))) {
+				continue;   // 没装的交给安装流程，不越权
+			}
+			const main = typeof pkg.main === 'string' && pkg.main ? pkg.main.replace(/^\.\//, '') : 'lib/index.js';
+			if (!existsSync(join(dest, ...main.split('/')))) {
+				missing.push(`${pkg.name}（${main}）`);
+			}
+		}
+		return missing;
+	}
+
+	/** app 根：由随包插件目录反推（`<app>/dsh-plugins` ⇒ `<app>`），供 dev 侧定位 `node_modules/pnpm`。 */
+	private _appRoot(): string | undefined {
+		const pluginsRoot = this._bundledPluginsRoot();
+		return pluginsRoot ? dirname(pluginsRoot) : undefined;
 	}
 
 	/**
@@ -917,7 +1101,9 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	start(options: IDshHostStartOptions = {}): Promise<IDshHostStatus> {
-		this._keepAlive = options.keepAlive === true;
+		// `_keepAlive` 只在真正新起/接管 Host 时由那次 `options` 决定（见 `_doStart` / `_adoptLease`）。
+		// 运行中或启动途中再来一次 `start({})` 不许把预热时的 `keepAlive: true` 降成 false ✗
+		// （B 壳 Bootstrap 曾用空选项触发：应用退出杀 Host ⇒ 每次启动都冷启动 16–20s）。
 		// ⚠ 例外：插件换过版本就不许复用（见 `_pluginsStale`）——"前端新、后端旧"必须靠换进程消掉。
 		if (this._status.state === 'running' && !this._pluginsStale) {
 			// 在跑就**原样复用**，新选项不生效：换工作区 / 技能目录 / MCP 都要重启 Host 才更新。
@@ -926,9 +1112,19 @@ export class DshHostSupervisor extends Disposable {
 			// 但**必须在日志里留一句**：否则"卡片写到了旧工作区""技能没生效"这类问题只剩现象，
 			// 日志里连"为什么不生效"都查不到——`sameStartOptions` 就是判这个的（有单测）。
 			if (this._requestedOptions && !sameStartOptions(this._requestedOptions, options)) {
-				this._appendLog('start: options differ from the last start request (workspace / skills / MCP set changed) — not restarting, the running Host keeps the old ones; restart to apply');
+				// 官方/legacy session_search 是 Host env + profile patch 的组合差异，旧进程无法热切换；
+				// 这一项例外必须重启，其余仍按"不打断在跑会话"的旧口径延后生效。
+				const legacyChanged = (this._requestedOptions.legacySessionSearch === true) !== (options.legacySessionSearch === true);
+				if (legacyChanged) {
+					this._pluginsStale = true;
+					this._appendLog('start: session_search mode changed (official ↔ legacy) — restarting the Host so env and profile patch take effect');
+				} else {
+					this._appendLog('start: options differ from the last start request (workspace / skills / MCP set changed) — not restarting, the running Host keeps the old ones; restart to apply');
+				}
 			}
-			return Promise.resolve(this._status);
+			if (!this._pluginsStale) {
+				return Promise.resolve(this._status);
+			}
 		}
 		if (!this._starting) {
 			this._starting = (async () => {
@@ -981,11 +1177,16 @@ export class DshHostSupervisor extends Disposable {
 
 	private async _doStart(options: IDshHostStartOptions): Promise<IDshHostStatus> {
 		this._requestedOptions = options;
+		this._keepAlive = options.keepAlive === true;
 		const generation = ++this._generation;
 		const t0 = Date.now();
 		const { profile, dshHome } = this._resolveProfileAndHome(options);
 		// 新 Host ⇒ mux 路由要重新注册 ⇒ 先当"没就绪"（复用路径另有一处置 true）。
 		this._muxReady = false;
+		this._muxProbePending = undefined;
+		this._muxProbeStarted = false;
+		this._muxReadyPublished = false;
+		this._readyAt = 0;
 		this._setStatus({ state: 'starting', bridge: 'none', profile, dshHome });
 
 		try {
@@ -1008,6 +1209,9 @@ export class DshHostSupervisor extends Disposable {
 			const env = sanitizedEnv({
 				...(dshHome ? { DSH_HOME: dshHome } : {}),
 				...(dataRootEnv ? { VSSAROS_DATA_ROOT: dataRootEnv } : {}),
+				// ★ 2026-11-21（方案 A）：默认 0 ⇒ 本仓 vssaros-sessions 不注册 session_search；
+				//   只有显式回退时置 1，并同步禁用官方 group，避免同名工具重复注册。
+				VSSAROS_LEGACY_SESSION_SEARCH: options.legacySessionSearch === true ? '1' : '0',
 				// ★ 2026-10-22：Host 运行时版本 ⇒ `@vssaros/dsh-market` 装第三方工作台前用它做兼容判定
 				//   （与 Host 启动时跳过不兼容插件**同一个判据、同一个版本**；没有它就只能用 app-boot 自报的版本）。
 				...(dsh.version ? { VSSAROS_DSH_RUNTIME_VERSION: dsh.version } : {}),
@@ -1025,7 +1229,9 @@ export class DshHostSupervisor extends Disposable {
 			//   · 但它支撑**运行时**能力：在页面里装第三方插件/技能、`dsh plugin add` 等。
 			//   ⚠ shim 用 `node.path`（Host 自己的解释器）跑，不用 Electron 顶替 ——
 			//     实测 Electron 跑 `pnpm install` 会在并发安装阶段崩（见 `injectBundledPnpm` 的注释）。
-			injectBundledPnpm(env, node.path);
+			// ★ 2026-11-21：传 app 根 + 日志 ⇒ PATH 上不是 pin 版本时也强制锁到随包那份
+			//   （启动装插件与运行时装插件若各用一个 pnpm 版本，会交替重算整棵 profile 依赖树）。
+			injectBundledPnpm(env, node.path, this._appRoot(), line => this._appendLog(line));
 			// ★ 2026-10-15：把**随包媒体二进制目录**（ffmpeg / ffprobe / yt-dlp / whisper…，打包管线
 			//   `build/saros/strip-before-pack.mjs` 的 ensureOptionalBin 段）注入 Host 的 PATH ⇒
 			//   dsh 会话里的 shell 工具（execute_code / bash / pwsh）能直接用**裸命令名**解析它们。
@@ -1035,20 +1241,23 @@ export class DshHostSupervisor extends Disposable {
 			//   想用自己的版本 ⇒ 设 `FFMPEG_PATH` / `YTDLP_PATH`（IDE 侧媒体工具认得它们，Host 原样继承 ✓）。
 			//   ⚠ Windows 的 PATH 键大小写不固定（`Path` / `PATH` 都有）⇒ 必须**按现有键的原样大小写**改，
 			//   否则子进程会同时拿到两个键、行为未定义 ✗。
-			const mediaBinDir = bundledMediaBinDir();
-			if (mediaBinDir) {
+			const mediaBinDirs = mediaBinDirsForHost(this._opts.componentRoot);
+			if (mediaBinDirs.length > 0) {
 				const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
-				env[pathKey] = `${mediaBinDir}${delimiter}${env[pathKey] ?? ''}`;
+				env[pathKey] = `${mediaBinDirs.join(delimiter)}${delimiter}${env[pathKey] ?? ''}`;
 				// ★ 同一个目录还得给**环境变量**一份：PATH 只管"裸命令名 → exe"（shell 那侧 ✓），
 				//   而插件自己的解析链（如 `vssaros-web-content-import` 的 `resolveBinary` /
 				//   `resolveWhisperModel`）读的是 `config.binDir` / `VSSAROS_BIN_DIR` —— 不注这个，
 				//   whisper **模型**（`<binDir>/../models/ggml-base.bin`）照样找不到（PATH 里没有模型文件 ✗，
 				//   2026-10-15 真机现场：exe 起来了、模型落空 ⇒ ASR 段报"找不到 whisper 模型"）。
+				//   VSSAROS_BIN_DIR 优先选含 whisper-cli 的目录，保证 `<binDir>/../models` 仍指向随包模型清单。
 				//   ⚠ 不覆盖用户显式设过的值（override 优先 ✓，与 `mediaBinaries.ts` 的顺序一致）。
+				const whisperBinDir = mediaBinDirs.find(dir =>
+					existsSync(join(dir, 'whisper-cli.exe')) || existsSync(join(dir, 'whisper-cli')));
 				if (!env.VSSAROS_BIN_DIR?.trim()) {
-					env.VSSAROS_BIN_DIR = mediaBinDir;
+					env.VSSAROS_BIN_DIR = whisperBinDir ?? mediaBinDirs[0];
 				}
-				this._appendLog(`media bin dir prepended to Host PATH: ${mediaBinDir}${env.VSSAROS_BIN_DIR === mediaBinDir ? '（VSSAROS_BIN_DIR 同步注入 ✓）' : ''}`);
+				this._appendLog(`media bin dirs prepended to Host PATH: ${mediaBinDirs.join(delimiter)}${env.VSSAROS_BIN_DIR ? `（VSSAROS_BIN_DIR=${env.VSSAROS_BIN_DIR}）` : ''}`);
 			}
 			// **仅诊断用的注入口**（生产永不设置 `VSSAROS_DSH_HOST_PRELOAD`）：把 preload 挂到 Host 进程上，
 			// 用于"加载期插桩"——本机对依赖产物（`node_modules/`、`poc/dsh-p0/.runtime/`）的写入会被
@@ -1075,6 +1284,10 @@ export class DshHostSupervisor extends Disposable {
 				// 控制桥管道 ⇒ VsSaros 侧 `DshBridgeClient.connect` 60s 超时（ENOENT）⇒ **Host 退出 code 1**。
 				// 2026-10-11 实测根因：App 侧 profile 缺它、探针侧有它（README 4.79）。
 				[DSH_WEB_APP_BUNDLE_NAME, resolveSiblingPackage(dsh.bin, DSH_WEB_APP_BUNDLE_NAME), 'web-app bundle'],
+				// ★ 2026-11-21（方案 A）：默认只保留官方内容级 `session_search`。这个 bundle 自带
+				//   `optional-session-search` group，必须从当前 runtime 显式装进 profile，否则
+				//   「仅保留官方」会变成「没有任何 session_search」✗。
+				[DSH_OFFICIAL_SESSION_SEARCH_BUNDLE, resolveSiblingPackage(dsh.bin, DSH_OFFICIAL_SESSION_SEARCH_BUNDLE), 'official session search'],
 				// ★★ 2026-11-02（真机事故：会话里"没有 office-docx 这些技能"）：
 				//   Office 的 7 个技能由**官方 `@deepseek-ai/dsh-skill-office`** 提供，我们的覆盖层只是
 				//   `- insert:` 一行引用它的**包名**。但 cordis 是从 **profile 的 node_modules** 解析包名的 ——
@@ -1127,6 +1340,10 @@ export class DshHostSupervisor extends Disposable {
 			// 同一条"存在才装、装不上不影响启动"的路。产品构建期已把 32 个运行时依赖烘进种子；
 			// dev 全新 profile 里 pnpm 解析它们需要一次网络（见 VENDOR.md）。
 			[DSH_BETTER_SIDEBAR_PLUGIN_NAME, this._opts.betterSidebarPluginDir, 'better sidebar plugin'],
+			// **随包内置的第三方 `dsh-deep-ptc-mode`**（2026-11-21 用户要求"默认安装"）：
+			// 同一条"存在才装、装不上不影响启动"的路（本地暂存目录 ⇒ 零网络）。它不是模块插件，
+			// 装不上只是模式菜单里少一项「深度 PTC 模式」；装上也不改变默认 preset（仍是 native）。
+			[DSH_DEEP_PTC_MODE_PLUGIN_NAME, this._opts.deepPtcModePluginDir, 'deep ptc mode plugin'],
 			[DSH_WORKITEM_PLUGIN_NAME, this._opts.workItemPluginDir, 'work item kernel'],
 				// 无人值守循环（2026-10-30）：同上一条伴生路径，排在工作项内核之后。
 				[DSH_LOOP_PLUGIN_NAME, this._opts.loopPluginDir, 'unattended loop module'],
@@ -1393,7 +1610,7 @@ export class DshHostSupervisor extends Disposable {
 					this._appendLog(`not reusing the running Host: ${blocker}`);
 				} else {
 					const unreachable = await leases.probe(existing);
-					if (!unreachable && await this._adoptLease(existing, generation, profile, dshHome, t0)) {
+					if (!unreachable && await this._adoptLease(existing, generation, profile, dshHome, t0, options)) {
 						return this._status;
 					}
 					if (unreachable) {
@@ -1414,7 +1631,7 @@ export class DshHostSupervisor extends Disposable {
 				// 锁竞争里那个 Host 同样可能是旧代码（别的实例拉起它时还没装上新插件）⇒ 同样不接管 ✓。
 				// ⚠ 刚判过"桥连不上"的同一个 Host 不再试第二次（否则白等 10s 桥超时，结果一样）。
 				if (leaseFromLock && leaseFromLock.pid !== this._bridgelessLeasePid && !pluginsWereStale && !staleHostByPluginFiles(leaseFromLock, newestPluginFile) && !hostLeaseBlocker(leaseFromLock, want) && !(await leases.probe(leaseFromLock))) {
-					if (await this._adoptLease(leaseFromLock, generation, profile, dshHome, t0)) {
+					if (await this._adoptLease(leaseFromLock, generation, profile, dshHome, t0, options)) {
 						return this._status;
 					}
 				}
@@ -1515,9 +1732,11 @@ export class DshHostSupervisor extends Disposable {
 					const src = options.agentsBuiltinSrc?.trim();
 					if (!src) { return undefined; }
 					const appRoot = dirname(dirname(dirname(src)));
-					return ['office-runtime', join('.build', 'office-runtime')]
-						.map(rel => join(appRoot, rel))
-						.find(dir => existsSync(join(dir, 'primary-runtime', 'runtime.json')) && existsSync(join(dir, 'office-skills')));
+					return [
+						...(this._opts.componentRoot ? [join(this._opts.componentRoot, 'office', 'current')] : []),
+						join(appRoot, 'office-runtime'),
+						join(appRoot, '.build', 'office-runtime'),
+					].find(dir => existsSync(join(dir, 'primary-runtime', 'runtime.json')) && existsSync(join(dir, 'office-skills')));
 				})();
 				// LibreOffice Kit 的 CLI 与 `dsh` 包同级：
 				//   <runtime>/node_modules/@deepseek-ai/dsh/lib/bin.js → ../../libreoffice-kit/lib/cli.js
@@ -1644,6 +1863,9 @@ export class DshHostSupervisor extends Disposable {
 				//   它们的语义本来就是"一个文件里可以有多段 `- insert:` / 逐行 config"（我们按 kind 拆文件
 				//   只是历史习惯 + 便于人工查看），而每条 `--patch` 都要 dsh 单独读盘 + 解析 ⇒ 启动期
 				//   10 份 YAML 的解析开销和"顺序不可控"的排查成本都是白付。
+				//   ⚠ 2026-11-21：简单 `join('\n')` 会在一个文件里留下多个顶层 `- insert:`
+				//     （loader 只认第一个 / 同一官方包可能被挂两遍）⇒ 改走 `mergeHostOverlayTexts`
+				//     统一 insert 块 + row id 去重 ✓。
 				//   ⚠ 单条文件**仍然照写**（run 目录里能逐条看，排查时不用解合并文件）；
 				//     只有 `--patch` 参数改成传合并后的那一个 ✓。
 				if (mergedParts.length) {
@@ -1655,7 +1877,7 @@ export class DshHostSupervisor extends Disposable {
 					if (mergeOverlays) {
 						await fsp.mkdir(this._opts.runDir, { recursive: true });
 						const mergedFile = join(this._opts.runDir, `overlays-${runId}.yml`);
-						await fsp.writeFile(mergedFile, mergedParts.join('\n'), { mode: 0o600 });
+						await fsp.writeFile(mergedFile, mergeHostOverlayTexts(mergedParts), { mode: 0o600 });
 						overlays.push(mergedFile);
 						this._overlayFile = mergedFile;   // 清理口：run 结束时删这一个即可（其余单条由 cleanup 兜底）
 						this._appendLog(`overlay 合并：${mergedParts.length} 条 → 1 个 --patch（${mergedFile}）`);
@@ -1761,6 +1983,11 @@ export class DshHostSupervisor extends Disposable {
 				}
 				this._child = child;
 				this._appendLog(`spawned pid ${child.pid}: node ${args.map(a => a === dsh.bin ? '<dsh>' : a).join(' ')}${hostLogFile ? ` (log → ${hostLogFile})` : ''}`);
+				// P0-3：请求端口已知时从 spawn 起就并行探 mux，结果暂存，running 后再发布。
+				if (hostPort !== 0 && !this._muxProbeStarted) {
+					this._muxProbeStarted = true;
+					void this._probeMuxAfterReady(`http://127.0.0.1:${hostPort}`, generation, true);
+				}
 
 				const connection = await this._awaitReady(child, generation, pipe, token, hostLogFile);
 				this._throwIfStale(generation);
@@ -1800,6 +2027,7 @@ export class DshHostSupervisor extends Disposable {
 					startedAt: Date.now(),
 					startupMs: Date.now() - t0,
 				});
+				this._readyAt = Date.now();
 				// 分段拆账（2026-10-15）：首启慢排查要能直接看出慢在"spawn→首行输出"还是"首行→ready"。
 			const bootSplit = connection.timing?.spawnToFirstOutputMs !== undefined
 				? `（spawn→首行输出=${connection.timing.spawnToFirstOutputMs}ms，首行→ready=${connection.timing.firstOutputToReadyMs}ms）`
@@ -1829,8 +2057,12 @@ export class DshHostSupervisor extends Disposable {
 				}
 			}
 
-				// ★ 2026-10-20：量「ready → mux 路由可用」这段（不阻塞 start 返回）。
-				void this._probeMuxAfterReady(connection.origin, generation);
+				// ★ 2026-10-20 / P0-3：mux 探针已在 spawn/URL 行阶段并行跑过；这里只发布结果，
+				// 未提前启动时才退回 ready 后探测（不阻塞 start 返回）。
+				if (!this._flushPendingMuxReady(generation) && !this._muxProbeStarted) {
+					this._muxProbeStarted = true;
+					void this._probeMuxAfterReady(connection.origin, generation, false);
+				}
 				// 新起的 Host 读的就是磁盘当前代码 ⇒ 标记使命完成 ✓。
 				// ⚠ 只能清在**这里**（真的 spawn 成功之后）：2026-10-12 实测把它清在"进 lock 之前"时，
 				// 并发的第二次 start 会把标记读成 false ⇒ 又去接管旧进程 ✗（日志：`reusing the Host started by pid 80344`）。
@@ -1953,7 +2185,9 @@ export class DshHostSupervisor extends Disposable {
 	 * 复用另一个实例拉起的 Host（方案 7.5）：不 spawn 子进程，直接采纳租约里的连接信息；
 	 * 有控制桥管道时照常连接并 `client.register`（vssaros-bridge 支持多客户端）。
 	 */
-	private async _adoptLease(lease: IDshHostLease, generation: number, profile: string, dshHome: string | undefined, t0: number): Promise<boolean> {
+	private async _adoptLease(lease: IDshHostLease, generation: number, profile: string, dshHome: string | undefined, t0: number, options: IDshHostStartOptions): Promise<boolean> {
+		// 接管的 Host 没有 `_child`，退出时仍按本次 `keepAlive` 决定保留/标记优雅分离 ✓。
+		this._keepAlive = options.keepAlive === true;
 		// ★ 2026-10-16：**接管前先写下自己那份拥有者记录**（顺序要紧 ✗ —— 两个用途都要求它在
 		//   `client.register` 之前就位）：
 		//   ① 给回收器一个"这个 Host 有人正在用"的证据：原拥有者 A 优雅分离后它那份记录里 `appPid`
@@ -2097,25 +2331,40 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	/**
-	 * **优雅分离**：把记录 mtime 推到空闲 TTL 之后，向桥插件表达"这次分离是优雅的、没人要求它自退" ✓。
+	 * **优雅分离**：把同一 Host 的全部 owner 记录 mtime 推到空闲 TTL 之后。
 	 *
-	 * 为什么用 mtime 而不是读-改-写一个 `detachedAt` 字段 ✗：本方法跑在 `dispose()` 的**同步**路径上，
-	 * 而本仓有"同步文件写被内核挂住 ⇒ 主进程零 CPU 假死"的事故史（同一指纹 4 次）⇒ 这里只做**一次
-	 * `utimes` 系统调用**，不读文件、不做 JSON 往返、不引入窗口 ✓。
-	 * ⚠ 其它读取者都不看 mtime：回收器只看 `startedAt`/`appPid` ✓；判"陈旧"的只有桥插件看门狗 ✓。
-	 * ⚠ 后续窗口**接管**这个 Host 时会经 `client.register` 换成**它自己那份**记录 ⇒ 不受这里的未来
-	 *   mtime 影响 ✓（这正是"载体必须是握手"的原因）。
+	 * 2026-11-21（P0-1）：原来只标记 `this._ownershipFile`，而桥/agents 看护可能经握手选中
+	 * 接管者写下的另一份 owner 记录；同时 `vssaros-agents` 的父进程看护此前也不认这个标记 ⇒
+	 * keepAlive Host 仍会自退。现在按 `hostPid` 扫一遍 runDir 逐份标记，且未来 mtime 由两套
+	 * 看护共同识别。仍然不写 JSON 内容：只读小文件做归属过滤，再对每个文件做一次 `utimes` ✓。
 	 */
 	private _markOwnershipDetachedSync(): void {
 		this._stopOwnershipHeartbeat();
-		const file = this._ownershipFile;
-		if (!file) {
-			return;
+		const until = new Date(Date.now() + DSH_HOST_IDLE_TTL_MS);
+		const hostPid = this._status.pid ?? this._child?.pid;
+		const files = new Set<string>();
+		if (this._ownershipFile) {
+			files.add(this._ownershipFile);
 		}
 		try {
-			const until = new Date(Date.now() + DSH_HOST_IDLE_TTL_MS);
-			utimesSync(file, until, until);
-		} catch { /* best effort：写不成最多是"常驻 Host 提前自退"，不该影响退出 ✓ */ }
+			for (const name of readdirSync(this._opts.runDir)) {
+				if (!runIdOfHostRunOwnershipFile(name)) {
+					continue;
+				}
+				const abs = join(this._opts.runDir, name);
+				try {
+					const record = parseHostRunOwnership(readFileSync(abs, 'utf8'));
+					if (record && typeof hostPid === 'number' && record.hostPid === hostPid) {
+						files.add(abs);
+					}
+				} catch { /* 坏记录不动：最多少标记一份，不影响退出 ✓ */ }
+			}
+		} catch { /* runDir 还没建/读不动 ⇒ 至少标记当前这份 ✓ */ }
+		for (const file of files) {
+			try {
+				utimesSync(file, until, until);
+			} catch { /* best effort：写不成最多是"常驻 Host 提前自退"，不该影响退出 ✓ */ }
+		}
 	}
 
 	/** 复用中的桥断开：拥有者可能刚重启/升级了 Host（租约会换新）→ 轮询等新租约并重挂；超时视为 Host 已停。 */
@@ -2133,7 +2382,7 @@ export class DshHostSupervisor extends Disposable {
 				const current = this._connection;
 				if (lease && current && (lease.origin !== current.origin || lease.pid !== this._status.pid) && !(await store.probe(lease))) {
 					this._appendLog(`the owner restarted the Host at ${lease.origin}; re-adopting`);
-					await this._adoptLease(lease, generation, this._status.profile ?? DSH_DEFAULT_PROFILE, this._status.dshHome, Date.now());
+					await this._adoptLease(lease, generation, this._status.profile ?? DSH_DEFAULT_PROFILE, this._status.dshHome, Date.now(), this._requestedOptions ?? { keepAlive: this._keepAlive });
 					return;
 				}
 				if (Date.now() > deadline) {
@@ -2460,6 +2709,32 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	/**
+	 * **官方 / legacy `session_search` 二选一的 profile 同步**（2026-11-21，方案 A）。
+	 *
+	 * 默认清理旧修复写下的 `optional-session-search disabled` 覆盖，恢复官方内容级搜索；
+	 * legacy 回退则禁用官方 group，让本仓轻量实现接管。不删 bundle、不动 runtime。
+	 */
+	private async _syncOfficialSessionSearchRows(pkgFile: string, bundles: readonly string[], legacySessionSearch: boolean): Promise<void> {
+		const patchFile = join(dirname(pkgFile), 'cordis.patch.yml');
+		try {
+			const before = await fsp.readFile(patchFile, 'utf8').catch(() => '');
+			const { text, changed } = syncOfficialSessionSearchRows(before, bundles, legacySessionSearch);
+			if (!changed) {
+				return;
+			}
+			await fsp.writeFile(patchFile, text, { encoding: 'utf8', mode: 0o600 });
+			// profile 组合变了：任何已在跑的 keepAlive Host 都不能复用（它内存里还是旧组合）。
+			this._pluginsStale = true;
+			this._appendLog(legacySessionSearch
+				? 'profile row: 禁用官方 optional-session-search（legacy session_search 回退）'
+				: 'profile row: 启用官方 optional-session-search（清理旧 disabled 覆盖）');
+		} catch (e) {
+			// 不阻断启动：插件侧还会在 legacy 模式下 probe 同名工具，避免整条 entry 失效。
+			this._appendLog('⚠ 同步官方 session-search 行失败（继续启动，插件侧 probe 兜底）：' + String((e as Error)?.message ?? e).slice(0, 200));
+		}
+	}
+
+	/**
 	 * **把随包插件补登记进 profile 的 `dsh.profile.bundles`**（2026-10-30，外部机器 P0）。
 	 *
 	 * ★ 为什么必须有这一步：dsh **只组合 `dsh.profile.bundles` 里列出的包**，不在列表里的即使
@@ -2506,6 +2781,11 @@ export class DshHostSupervisor extends Disposable {
 					.map(([name]) => name)
 					.filter(name => existsSync(join(pluginProfileDir, 'node_modules', ...name.split('/'), 'package.json')));
 			}
+			// ★ 方案 A：官方 session-search bundle 是默认 `session_search` 的唯一来源，必须进组合。
+			//   种子可能来自旧构建、用户也可能手工移出过 ⇒ 这里按必装项补齐（插件已在上面的伴生清单里装好）。
+			if (!desired.includes(DSH_OFFICIAL_SESSION_SEARCH_BUNDLE)) {
+				desired.push(DSH_OFFICIAL_SESSION_SEARCH_BUNDLE);
+			}
 			const current = parseProfileBundles(json);
 			const merged = mergeMissingBundles(json, desired);
 			// ★ 2026-11-17：官方 Forge 组合与独立 tool-worktree 互斥 ⇒ 旧 profile 一次性迁移。
@@ -2534,6 +2814,10 @@ export class DshHostSupervisor extends Disposable {
 				+ (migrated.removed.length ? ` / 迁移移除 ${migrated.removed.join(', ')}` : '')
 				+ `；bridge ${this._profileBundlesStats.bridgeListed ? '已登记' : '**未登记**'}`
 				+ `（profile: ${pluginProfileDir}）`);
+			// 方案 A：默认启用官方 group；legacy 回退则禁用它。即使 bundles 没变化也要跑
+			// （老 profile 的 cordis.patch.yml 可能还残留上一轮修复写下的 disabled 覆盖）。
+			const legacySessionSearch = this._requestedOptions?.legacySessionSearch === true;
+			await this._syncOfficialSessionSearchRows(pkgFile, finalBundles, legacySessionSearch);
 			if (!merged.changed && !migrated.removed.length) {
 				return;
 			}
@@ -2544,6 +2828,8 @@ export class DshHostSupervisor extends Disposable {
 			const tmp = pkgFile + '.tmp-' + process.pid;
 			await fsp.writeFile(tmp, JSON.stringify(json, null, 2), 'utf8');
 			await fsp.rename(tmp, pkgFile);
+			// profile 组合变化后不能复用旧 keepAlive Host（它内存里还是旧 bundle 集合）。
+			this._pluginsStale = true;
 			this._appendLog(`profile bundles: 补登记 ${merged.added.length} 个插件（${merged.added.slice(0, 6).join(', ')}${merged.added.length > 6 ? ' …' : ''}）`
 				+ ' —— 它们原来"装了但没启用"，dsh 不会加载 ⇒ 界面会退回原生形态');
 		} catch (e) {
@@ -2886,33 +3172,58 @@ export class DshHostSupervisor extends Disposable {
 		return after;
 	}
 
+	/** running 后发布 starting 阶段暂存的结果；返回是否已经发布。 */
+	private _flushPendingMuxReady(generation: number): boolean {
+		const pending = this._muxProbePending;
+		if (!pending || pending.generation !== generation) {
+			return false;
+		}
+		this._publishMuxReady({ ...pending, afterReadyMs: 0 });
+		return true;
+	}
+
 	/**
-	 * Host ready 之后每 200 ms 探一次 mux 路由，第一次可用就记一行日志并发 `onMuxReady`。
-	 * 最多探 60 s；期间 Host 换代 / 停止就放弃。只加日志 + 一个事件，不改启动流程。
-	 *
-	 * 日志口径：`mux route available +N ms after Host ready`。N≈0 说明 ready 那一刻路由就已经在了，
-	 * 也就是说页面的重连阶梯**不是**"路由未注册"导致的，要换方向查。
+	 * 发布 mux 就绪：starting 期间提前探到的结果会先暂存，running 后才允许置位/广播，
+	 * 避免 `_setStatus` 把 starting 的 `muxReady` 抹掉、事件写在 about:blank 上丢失。
 	 */
-	private async _probeMuxAfterReady(origin: string, generation: number): Promise<void> {
+	private _publishMuxReady(result: { readonly generation: number; readonly afterReadyMs: number; readonly probes: number; readonly status: number }): void {
+		if (this._muxReadyPublished || result.generation !== this._generation || this._status.state !== 'running') {
+			return;
+		}
+		this._muxReadyPublished = true;
+		this._muxReady = true;
+		this._setStatus({ ...this._status });
+		this._appendLog(`mux route available +${result.afterReadyMs} ms after Host ready（probe #${result.probes}，HTTP ${result.status}）${result.probes === 1 ? ' —— ready 时已可用：页面重连阶梯不是路由未注册导致' : ''}`);
+		this._onMuxReady.fire({ afterReadyMs: result.afterReadyMs, probes: result.probes, status: result.status });
+	}
+
+	/**
+	 * 每 200 ms 探一次 mux 路由，第一次可用就发布 `onMuxReady`。
+	 * P0-3：`early=true` 时允许在 starting 阶段并行探测，结果暂存到 `_muxProbePending`；
+	 * 仍最多探 60 s，Host 换代立即放弃。
+	 */
+	private async _probeMuxAfterReady(origin: string, generation: number, early = false): Promise<void> {
 		const t0 = Date.now();
 		for (let i = 1; Date.now() - t0 < 60_000; i++) {
-			if (generation !== this._generation || this._status.state !== 'running') {
+			if (generation !== this._generation || (!early && this._status.state !== 'running')) {
 				return;
 			}
 			const status = await probeMuxRouteOnce(origin, 1500);
 			if (status !== undefined) {
-				const after = Date.now() - t0;
-				this._appendLog(`mux route available +${after} ms after Host ready（probe #${i}，HTTP ${status}）${i === 1 ? ' —— ready 时已可用：页面重连阶梯不是路由未注册导致' : ''}`);
-				// ★ 2026-10-29：把"路由已注册"写进状态 ⇒ 渲染进程能在 `session.start` 之前**等它**，
-				//   而不是照旧失败一次、退避 4s/12s、再弹一条假的"启动失败"黄条。
-				this._muxReady = true;
-				this._setStatus({ ...this._status });
-				this._onMuxReady.fire({ afterReadyMs: after, probes: i, status });
+				const afterReadyMs = this._readyAt ? Math.max(0, Date.now() - this._readyAt) : 0;
+				const result = { generation, afterReadyMs, probes: i, status };
+				if (this._status.state !== 'running') {
+					this._muxProbePending = result;
+					return;
+				}
+				this._publishMuxReady(result);
 				return;
 			}
 			await new Promise(r => setTimeout(r, 200));
 		}
-		this._appendLog('mux route still unavailable 60 s after Host ready（页面实时事件只能靠退避重试）');
+		if (this._status.state === 'running') {
+			this._appendLog('mux route still unavailable 60 s after Host ready（页面实时事件只能靠退避重试）');
+		}
 	}
 
 	private _awaitReady(child: ChildProcess, generation: number, pipe: string | undefined, token: string | undefined, hostLogFile?: string): Promise<IDshHostConnection & { hello?: IBridgeHello; timing?: IDshHostBootTiming }> {
@@ -3023,6 +3334,13 @@ export class DshHostSupervisor extends Disposable {
 				const parsed = parseAuthUrl(output);
 				if (parsed) {
 					urlFromLog = parsed;
+					// P0-3：URL 行比 running 早；立刻让视图层预热各分区的 dsh-auth cookie，
+					// 并在 spawn 没拿到固定端口时用真实 origin 补起 mux 探针。
+					this._onEarlyAuth.fire({ origin: parsed.origin, authUrl: parsed.authUrl });
+					if (!this._muxProbeStarted) {
+						this._muxProbeStarted = true;
+						void this._probeMuxAfterReady(parsed.origin, this._generation, true);
+					}
 					if (!pipe) {
 						finish(() => resolve(withTiming(parsed)), true);
 					} else {
@@ -3348,6 +3666,15 @@ export class DshHostSupervisor extends Disposable {
 			//   做法与"为什么用 mtime 而不是写字段"见 `_markOwnershipDetachedSync` ✓。
 			this._markOwnershipDetachedSync();
 			this._appendLog(`keepAlive: Host pid ${child.pid} keeps running after IDE exit (idle TTL applies)`);
+			this._leaseStore?.releaseStartLockSync();
+			super.dispose();
+			return;
+		}
+		if (this._keepAlive) {
+			// 接管既有 Host 时 `_child` 为空，但当前实例的拥有者记录同样要标成优雅分离，
+			// 否则桥看门狗会把"接管者退出"当成宿主崩溃，把下一次启动要复用的 Host 收掉 ✗。
+			this._markOwnershipDetachedSync();
+			this._appendLog('keepAlive: reused Host keeps running after IDE exit (idle TTL applies)');
 			this._leaseStore?.releaseStartLockSync();
 			super.dispose();
 			return;

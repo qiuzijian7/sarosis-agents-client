@@ -46,7 +46,7 @@ export function emptyState() {
 	return {
 		version: 1, added: [], pinned: [], favorites: [], active: null,
 		sessionBindings: {}, recentSessions: {}, notes: {}, hiddenWorkspaces: {},
-		homeWorkbenchOrder: [], homeToolOrder: [],
+		homeWorkbenchOrder: [], homeToolOrder: [], homeItemOrder: [],
 	};
 }
 
@@ -58,8 +58,9 @@ export function validateState(value, previous) {
 			fail(`${key} 里的工作台身份不合法。`);
 		}
 	}
-	for (const key of ['homeWorkbenchOrder', 'homeToolOrder']) {
-		const order = value[key];
+	// 旧 state.json 可能还没有 homeItemOrder（惰性迁移在客户端完成），缺失按空数组处理。
+	for (const key of ['homeWorkbenchOrder', 'homeToolOrder', 'homeItemOrder']) {
+		const order = value[key] ?? [];
 		if (!Array.isArray(order) || order.length > 2000 || !order.every(validHomeOrderKey)
 			|| new Set(order).size !== order.length) {
 			fail(`${key} 里的主页排序键不合法。`);

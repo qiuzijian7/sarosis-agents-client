@@ -12,7 +12,7 @@
  */
 
 import assert from 'assert';
-import { IDshMcpServerSpec, mcpRowId, parseMcpServers, renderMcpOverlay } from '../../common/dshMcpConfig.js';
+import { IDshMcpServerSpec, MCP_REMOTE_STARTUP_TIMEOUT_MS, mcpRowId, parseMcpServers, renderMcpOverlay } from '../../common/dshMcpConfig.js';
 
 function configOf(text: string, env: Record<string, string> = {}) {
 	return parseMcpServers(text, env);
@@ -125,6 +125,9 @@ suite('dshHarness / MCP 配置 → 覆盖层', () => {
 		assert.ok(yml.includes("transport: 'streamable-http'"));
 		assert.ok(yml.includes("url: 'https://x/mcp'"));
 		assert.ok(yml.includes("Authorization: 'Bearer t'"));
+		assert.ok(yml.includes(`startupTimeoutMs: ${MCP_REMOTE_STARTUP_TIMEOUT_MS}`), '远程 HTTP MCP 必须有启动连接预算');
+		assert.ok(yml.includes('failOnStartupError: false'), '远程 MCP 启动失败不许阻断 Host ready');
+		assert.strictEqual((yml.match(/startupTimeoutMs:/g) ?? []).length, 1, '短预算只给 HTTP 行，stdio 不受影响');
 		// 回归保护（真机实测踩过）：多个顶层 `- insert:` 只会被认第一个，后面的服务器的行会**静默消失**
 		assert.strictEqual((yml.match(/^- insert:/gm) ?? []).length, 1, '只能有一个顶层 insert 块');
 		assert.strictEqual(mcpRowId('weird-name_1'), 'mcp-weird-name_1');

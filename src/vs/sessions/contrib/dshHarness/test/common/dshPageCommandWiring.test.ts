@@ -73,11 +73,8 @@ const PLUGIN_PAGE_SOURCES = [
 	//   `bridge.openFile(…)`（局部别名）与 `window.vssarosDsh.openFile(…)`（直写全局 ✓）。
 	//   采集面因此**按两种形态**扫（见 ③ 里的两段正则 ✓）—— 只认一种写法就会整族假阴性 ✓。
 	'dsh-plugins/vssaros-kb/lib/index.js',
-	// 2026-10-19 加：**媒体库页**（`/x/media/`）—— 置顶「打开页面」调
-	//   `bridge.openModulePage(location.pathname)`（在编辑区打开同一个插件页，与 dashboard /
-	//   codebase / skills 同款）。⚠ 该文件同时是**宿主侧插件模块**：里面的 `state.bridge.callIDE(…)`
-	//   不是页面桥（已在 `NOT_PAGE_BRIDGE_CALLS` 里登记）⇒ 采集不会误判 ✓。
-	'dsh-plugins/vssaros-media/lib/index.js',
+	// 2026-11-21：vssaros-media 的页面桥调用已随视频工具退役（文件只剩宿主侧 `state.bridge.callIDE`
+	// 注释/非页面桥），不再登记为页面来源；若重新引入页面按钮，再把文件加回来。
 ];
 /** 命令 id 的其它可能注册处（扩展那半只在这里；`out/**` 被 gitignore ⇒ 必须显式进扫描面 ✓）。 */
 const COMMAND_ROOTS = ['src', 'extensions/agent-studio/src', 'extensions/agent-studio/out'];
@@ -102,6 +99,8 @@ const NOT_PAGE_BRIDGE_CALLS = new Set(['callIDE']);
 
 const HANDLED_ELSEWHERE: Record<string, string> = {
 	ping: 'Host 侧答（页面桥的存活探测）；页面侧另由 `client.hideBridgePing.js` 遮蔽官方指示器 ⇒ 不需要 IDE 处理器 ✓',
+	componentsStatus: '主进程 `DshViewHost.setPageCommandHandler` 直接调用 `DshComponentManager.status()` 并返回值（不是渲染进程 _handle）✓',
+	installComponent: '主进程 `DshViewHost.setPageCommandHandler` 启动 `DshComponentManager.install()` 并返回最新状态（不是渲染进程 _handle）✓',
 };
 
 /**
@@ -359,7 +358,7 @@ suite('聊天页按钮 → IDE 接线（协议 / preload / 处理器 / 命令 id
 			'聊天宿主必须有统一的"切换失败"出口（否则真因只留在 renderer.log 里，用户看不见 ✗）');
 		assert.ok(/_notifications\.notify\(/.test(chatHost),
 			'失败出口里必须**真的弹通知**（`_notifications.notify(`）—— 只写日志等于用户看不见 ✗');
-		const catches = [...chatHost.matchAll(/private _switch(?:Worktree|Workspace)\([\s\S]{0,600}?\.catch\(([^)]*)\)/g)].map(m => m[1]);
+		const catches = [...chatHost.matchAll(/private _switch(?:Worktree|Workspace)\([\s\S]{0,1500}?\.catch\(([^)]*)\)/g)].map(m => m[1]);
 		assert.ok(catches.length >= 2,
 			`只扫到 ${catches.length} 个切换类方法的 catch ⇒ 采集面缩水（方法改名/改写了吗？）✗`);
 		for (const c of catches) {

@@ -261,7 +261,19 @@
 	回滚 = <code>git revert</code>（改动全在 <code>dsh-plugins/</code> 与 <code>poc/</code> ✓）。<code>p3-30</code> 应在那时转绿并登记进 <code>run-all.mjs</code> ✓。<br>
 	<strong>两条新测到的语义（做 ② 时必须用上）</strong> ✓：① <code>--patch</code> <strong>只替换 <code>config</code></strong> ✓，
 	<strong>行级兄弟键（<code>disabled</code> / <code>name</code>）不会被冲掉</strong> ✓（实测：<code>disabled: true</code> 能活过 app 的 dataRoot 覆盖层 ✓）；
-	② <strong>外部补丁打不到 preset 内部的行</strong> ✓ ⇒ 那里是"免疫区" ✓（所以开关只能放在 preset 行里 ✓）。
+	② <strong>外部补丁打不到 preset 内部的行</strong> ✓ ⇒ 那里是"免疫区" ✓（所以开关只能放在 preset 行里 ✓）。<br>
+	<strong>★ 2026-11-21 复盘结论：③ 永久不落地，登记为「已接受的永久残差」</strong>
+	（以前标"静态待命"会让人以为还欠一次实现）：<br>
+	· 代码侧的 <code>hostHalf: true</code> opt-in 在 10 个模块插件里<strong>早已完备</strong>
+	（<code>config.hostHalf === true</code> ⇒ 该次挂载不注册工具），缺的只是把开关写进 host 行 <code>config</code>；<br>
+	· 但 ① 用户显式选官方 <code>minimal</code> / <code>cordis</code>（VsSaros 菜单里 <code>visible:true</code>）时，
+	那些 preset <strong>没有</strong> <code>@vssaros/*</code> 行 ⇒ host 行一旦让出工具，<code>codebase_*</code> / memory / kb / kanban
+	会<strong>整段消失</strong>（比 §8① 的"掩不到"残差更糟）；② <code>--patch</code> 整份替换 <code>config</code>，
+	开关写在 host 行会被 <code>renderDataRootOverlay</code> 等覆盖层每次启动抹掉，要活下来得同步改 IDE 侧 4 个渲染函数与对账守卫；<br>
+	· ③ 真正会炸的重复挂载是 <code>ctx.provide</code> 二次注册服务，已由
+	<code>test/common/dshPresetPlane.test.ts</code> 的幂等守卫钉住；工具重复注册是静默顶掉、不抛错。<br>
+	⇒ <strong>维持现状</strong>（host 行照常注册 + 幂等守卫兜住），并把 <code>denyTools</code> 掩不到官方档的残差
+	写进 <code>vssaros-chat-surface/package.json</code> 里 minimal / cordis 的可见说明。
 </div>
 <div class="box warnbox">
 	<strong>② 装配期一次性（报告 R3，固有约束）</strong> ✗：组合行是静态的 ⇒ 改配置基本要**重启 Host**；

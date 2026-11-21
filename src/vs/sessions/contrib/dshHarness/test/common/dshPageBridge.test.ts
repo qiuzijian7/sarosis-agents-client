@@ -28,6 +28,14 @@ suite('dshHarness / page bridge', () => {
 		assert.deepStrictEqual(cmd, { method: 'openFile', path: 'C:\\repo\\a.ts', startLine: 3, endLine: 5 });
 	});
 
+	test('installComponent only accepts known ids and an explicit boolean elevation flag', () => {
+		assert.deepStrictEqual(validatePageCommand({ method: 'installComponent', id: 'media', allowElevation: true, extra: 1 }),
+			{ method: 'installComponent', id: 'media', allowElevation: true });
+		assert.deepStrictEqual(validatePageCommand({ method: 'installComponent', id: 'office', allowElevation: 'yes' }),
+			{ method: 'installComponent', id: 'office' });
+		assert.equal(validatePageCommand({ method: 'installComponent', id: 'ffmpeg' }), undefined);
+	});
+
 	test('openFile / reveal require absolute paths and sane ranges', () => {
 		for (const bad of ['a.ts', './a.ts', '../etc/passwd', 'file:///etc/passwd', 'https://x/a', '', 'C:\\a\0b']) {
 			assert.strictEqual(validatePageCommand({ method: 'openFile', path: bad }), undefined, bad);
@@ -606,7 +614,8 @@ suite('dshHarness / 窗口模式下点「登录」不得切到 IDE 模式', () =
 	test('反向对照：真的要 IDE 出界面的命令必须留在名单外', () => {
 		// 这两条**确实**要 IDE 的设置编辑器 / 反馈面板 ⇒ 落在名单外（窗口模式下点它们，理应把 IDE 拉出来）。
 		assert.ok(!DSH_PAGE_COMMANDS_WITHOUT_IDE_UI.has('openSettings'), '打开 IDE 设置页需要 IDE 出界面');
-		assert.ok(!DSH_PAGE_COMMANDS_WITHOUT_IDE_UI.has('openFeedback'), '打开 IDE 反馈面板需要 IDE 出界面');
+		// 反馈是独立窗口（IFeedbackWindowService），不需要 IDE 主窗口露面；协议里的 2026-10-31 注释已说明。
+		assert.ok(DSH_PAGE_COMMANDS_WITHOUT_IDE_UI.has('openFeedback'), '独立反馈窗口不应拉起 IDE 主窗口');
 		// 'focusIde' 是"回 IDE"本体：由它自己的分支处理，不该再触发一次"先还原" ✓。
 		assert.ok(DSH_PAGE_COMMANDS_WITHOUT_IDE_UI.has('focusIde'), 'focusIde 不在名单外再还原一次');
 	});

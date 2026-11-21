@@ -44,6 +44,10 @@ suite('dshHarness / startup options equality', () => {
 		assert.ok(!sameStartOptions(base, { ...base, workspaceRoot: '/ws/other' }), '工作区根换了就必须重启才生效');
 		assert.ok(!sameStartOptions(base, { ...base, mcpConfigPath: undefined }));
 		assert.ok(!sameStartOptions(base, { ...base, keepAlive: false }));
+		assert.ok(!sameStartOptions(base, { ...base, legacySessionSearch: true }),
+			'切换官方/legacy session_search 会改 profile patch 与 Host env，必须重启');
+		assert.ok(sameStartOptions(base, { ...base, legacySessionSearch: false }),
+			'默认 false 与 undefined 同义，不能误判为不同');
 	});
 
 	test('skill dirs compare by order and content', () => {

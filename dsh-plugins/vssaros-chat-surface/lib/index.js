@@ -36,6 +36,80 @@ const SESSION_ID_RE = /^session-[A-Za-z0-9][A-Za-z0-9_-]{6,}$/;
 const BODY_LIMIT = 4096;
 
 /**
+ * 模式目录端点（2026-11-21）：把「哪些 preset 是模式、属于哪一组、显示什么名字」
+ * 从页面代码移到**各插件 package.json 的 `vssarosModePresets` 声明**，由 Host 汇总下发。
+ * 这条路由挂在 dsh 自己的 `webServer` 上 ⇒ dsh desktop / 全窗（没有 VsSaros 控制桥）同样同源可用 ✓。
+ */
+export const MODE_LIST_PATH = `${ROUTE_PREFIX}/api/modes-list`;
+
+/** 本包自己的声明（基线）：`lib/index.js` 的上一级就是包根 ⇒ 直接读，不依赖模块解析。 */
+async function ownModeDeclarations() {
+	try {
+		const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+		return Array.isArray(pkg.vssarosModePresets) ? pkg.vssarosModePresets : [];
+	} catch { return []; }
+}
+
+/**
+ * 汇总模式声明：先读本包基线，再遍历当前 profile 的 `dsh.profile.bundles`，
+ * 逐个读 `node_modules/<name>/package.json` 的顶层 `vssarosModePresets`。
+ * ⚠ 只依赖 Node 内建 + 可选 ctx 服务 ⇒ 不静态 import Host 包（离线 import 守卫要能加载本入口）。
+ * ⚠ 单包读失败只跳过它，不让整条目录失效；同名 id 先到先得（本包基线优先）。
+ */
+/** 只接受合法 npm 包名（可带 scope）；拒绝 `..` / 绝对路径 / 反斜杠 / 空串 ⇒ 防 `join` 路径穿越。 */
+const safePackageName = (name) => {
+	const s = typeof name === 'string' ? name.trim() : '';
+	if (!s || s.length > 214 || s.startsWith('.') || s.includes('..') || s.includes('\\') || s.startsWith('/')) { return undefined; }
+	if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/iu.test(s)) { return undefined; }
+	return s;
+};
+
+export async function collectModePresets(ctx) {
+	const out = [];
+	const seen = new Set();
+	const push = (declared, packageName) => {
+		if (!Array.isArray(declared)) { return; }
+		for (const row of declared) {
+			if (!row || typeof row.id !== 'string' || !row.id.trim() || seen.has(row.id)) { continue; }
+			seen.add(row.id);
+			// 无原型对象：声明来自外部包的 package.json，不能让 `__proto__` 之类键污染目录项。
+			const entry = Object.assign(Object.create(null), row, { packageName });
+			// 规范化缺省语义，避免 catalog 里 `group` 缺失时前端渲染出裸标题 "other"。
+			if (typeof entry.group !== 'string' || !entry.group.trim()) { entry.group = 'other'; }
+			entry.visible = entry.visible !== false;
+			out.push(entry);
+		}
+	};
+	push(await ownModeDeclarations(), '@vssaros/dsh-chat-surface');
+	const get = typeof ctx.get === 'function' ? (name) => ctx.get(name) : () => undefined;
+	const profile = get('profileContext');
+	if (!profile || !profile.dir) { return out; }
+	let names = [];
+	const pm = get('pluginManager');
+	try {
+		const bundles = pm && typeof pm.listBundles === 'function' ? await pm.listBundles() : null;
+		if (Array.isArray(bundles)) {
+			names = bundles.filter(b => b && b.installed && b.enabled).map(b => safePackageName(b.name)).filter(Boolean);
+		}
+	} catch { /* 退回声明清单 */ }
+	if (!names.length) {
+		try {
+			const manifest = JSON.parse(await readFile(join(profile.dir, 'package.json'), 'utf8'));
+			const declared = manifest && manifest.dsh && manifest.dsh.profile && manifest.dsh.profile.bundles;
+			if (Array.isArray(declared)) { names = declared.map(safePackageName).filter(Boolean); }
+		} catch { /* 读不到 ⇒ 只返回基线 */ }
+	}
+	for (const name of names) {
+		try {
+			const pkgPath = join(profile.dir, 'node_modules', ...String(name).split('/'), 'package.json');
+			const pkg = JSON.parse(await readFile(pkgPath, 'utf8'));
+			push(pkg.vssarosModePresets, name);
+		} catch { /* 单个包读不到不影响其它包 */ }
+	}
+	return out;
+}
+
+/**
  * DSH_HOME：`config.dshHome` → `env.DSH_HOME` → `~/.dsh`（与 `vssaros-sessions/lib/store.js` 同一条链，
  * 但本插件**不**依赖 `@vssaros/dsh-foundation`：那是可选服务，缺席时也要能删）。
  */
@@ -206,6 +280,13 @@ export function apply(ctx, config) {
 				return;
 			}
 			const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+			// ⓪ 只读：模式目录。页面自绘模式菜单不再内置任何 preset id，全部由这里下发的声明决定。
+			if (url.pathname === MODE_LIST_PATH) {
+				if (req.method !== 'GET') { json(405, { ok: false, error: '只接受 GET' }); return; }
+				try { json(200, { ok: true, modes: await collectModePresets(ctx) }); }
+				catch (e) { json(500, { ok: false, error: String((e && e.message) || e) }); }
+				return;
+			}
 			// ① 只读：准备**默认工作区**的目录（2026-11-02 用户要求「当前工作区里要有默认工作区」）。
 			//
 			//   为什么需要宿主：官方的 `workspaces.initializeDefault()` 只在**首次使用**（一个工作区都没有）

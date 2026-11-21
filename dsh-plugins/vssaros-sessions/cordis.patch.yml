@@ -9,7 +9,8 @@
 # 活 Session、`sessionProjections.stateOf(session, unit)` → 该单元当前值，**live 优先且逐字段**）。
 # 两条服务都走可选注入：缺任一条只少一路 live，**不影响冷读主路径**。
 #
-# 只读插件：不注册任何工具、不声明 `owns`（不写任何文件）。
+# 只读插件：默认不注册任何工具（`session_search` 由官方 `@deepseek-ai/dsh-tool-session-query` 提供）；
+# 仅 `VSSAROS_LEGACY_SESSION_SEARCH=1` 应急回退时才注册轻量同名工具。不声明 `owns`（不写任何文件）。
 # `config.dshHome` 留空时按环境变量 `DSH_HOME`（VsSaros 启动 Host 时就会设）→ `~/.dsh`。
 - insert:
     - id: vssaros-sessions

@@ -1,0 +1,172 @@
+{
+  "name": "dsh-deep-ptc-mode",
+  "version": "2.3.1",
+  "description": "Deep PTC for DeepSeek Harness: interruptible jobs, selectable shells, interactive conversation cards with a precise model view, a task brief that files your goals and constraints, versioned project cards, a sortable side panel, on-demand tools and skills, and a virtual DSH for testing plugins.",
+  "type": "module",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "agent-preset",
+    "ptc",
+    "agent-team",
+    "subagent",
+    "clarification",
+    "task-brief",
+    "context-engineering",
+    "background-jobs",
+    "plugin-compatibility",
+    "preset-compatibility",
+    "dsh-ops",
+    "creative-mode",
+    "virtual-dsh",
+    "tool-cooperation",
+    "official-ptc-fallback",
+    "ssh",
+    "side-panel"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "lishize20040802-rgb",
+    "email": "lishize20040802@gmail.com",
+    "url": "https://github.com/lishize20040802-rgb"
+  },
+  "contributors": [
+    {
+      "name": "Freezecatmeow",
+      "url": "https://github.com/Freezecatmeow"
+    },
+    {
+      "name": "GYT-Lucas",
+      "url": "https://github.com/GYT-Lucas"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lishize20040802-rgb/dsh-deep-ptc-mode.git"
+  },
+  "homepage": "https://github.com/lishize20040802-rgb/dsh-deep-ptc-mode#readme",
+  "bugs": {
+    "url": "https://github.com/lishize20040802-rgb/dsh-deep-ptc-mode/issues"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "lib",
+    "!lib/skills/**",
+    "locale",
+    "compatibility.json",
+    "README.md",
+    "README.zh.md",
+    "CHANGELOG.md",
+    "assets/icon.png",
+    "TEST_REPORT.md",
+    "COMPATIBILITY.md"
+  ],
+  "engines": {
+    "node": ">=24",
+    "dsh": ">=0.2.2-rc.1"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-commands"
+      ]
+    }
+  },
+  "main": "lib/index.mjs",
+  "exports": {
+    ".": "./lib/index.mjs",
+    "./executor": "./lib/executor.mjs",
+    "./terminal": "./lib/terminal.mjs",
+    "./jobs-tool": "./lib/jobs-tool.mjs",
+    "./ask-user": "./lib/ask-user.mjs",
+    "./guard": "./lib/guard.mjs",
+    "./tool-compatibility": "./lib/tool-compatibility.mjs",
+    "./tool-overrides": "./lib/tool-overrides.mjs",
+    "./preset-compat": "./lib/preset-compat.mjs",
+    "./skill-context": "./lib/skill-context.mjs",
+    "./environment": "./lib/environment.mjs",
+    "./lab": "./lib/lab.mjs",
+    "./bundled-skills": "./lib/bundled-skills.mjs",
+    "./project-tool": "./lib/project-tool.mjs",
+    "./question-tool": "./lib/question-tool.mjs",
+    "./brief-tool": "./lib/brief-tool.mjs",
+    "./virtual-dsh-tool": "./lib/virtual-dsh-tool.mjs",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --test",
+    "build:client": "node scripts/build-client.mjs",
+    "check": "node scripts/build-client.mjs --check && node scripts/check.mjs",
+    "check:upstream": "node scripts/check.mjs --upstream",
+    "check:parity": "node scripts/check-parity.mjs",
+    "prepack": "npm run check && npm test",
+    "sync:snapshot": "node scripts/sync-snapshot.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-base": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-locale": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-commands": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-web-app": ">=0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-renderer": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-slots": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-web-app": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-base": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-commands": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "js-yaml": "4.3.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "3.19.0",
+    "react": "18.3.1",
+    "react-test-renderer": "18.3.1"
+  },
+  "vssarosModePresets": [
+    {
+      "id": "deep-ptc",
+      "group": "third-party",
+      "label": "深度 PTC 模式",
+      "desc": "基于官方 PTC 派生：可插话后台任务、按需工具与 Skill；建议新建会话后选择。",
+      "visible": true
+    }
+  ]
+}

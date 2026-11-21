@@ -44,7 +44,9 @@ suite('每次启动前都要体检 profile 依赖树', () => {
 	test('1) 启动前必须调 repairProfileDeps，且在 spawn 之前', () => {
 		const src = stripComments(read(SUPERVISOR));
 
-		const at = src.indexOf('const args = buildHostArgs(');
+		// ⚠ 启动参数早已变成 `['--import', …, ...buildHostArgs(...)]`：旧锚点 `const args = buildHostArgs(`
+		//   在源码里不存在 ⇒ at=-1 会让 indexOf 从文件开头找，误把「装完插件后」那处自愈当成启动前那处。
+		const at = src.indexOf('...buildHostArgs(');
 		assert.ok(at > 0, '找不到 spawn 之前的那行（buildHostArgs）');
 
 		// ⚠ 从 buildHostArgs 之后开始找（前面还有"装完插件后"那一处调用，不能被它顶掉）
@@ -58,7 +60,9 @@ suite('每次启动前都要体检 profile 依赖树', () => {
 
 	test('2) 自愈失败不许阻断启动', () => {
 		const src = stripComments(read(SUPERVISOR));
-		const at = src.indexOf('const args = buildHostArgs(');
+		// ⚠ 启动参数早已变成 `['--import', …, ...buildHostArgs(...)]`：旧锚点 `const args = buildHostArgs(`
+		//   在源码里不存在 ⇒ at=-1 会让 indexOf 从文件开头找，误把「装完插件后」那处自愈当成启动前那处。
+		const at = src.indexOf('...buildHostArgs(');
 		const iRepair = src.indexOf('repairProfileDeps(', at);
 		assert.ok(iRepair > 0, '找不到启动前的自愈调用');
 		const seg = src.slice(iRepair, iRepair + 900);

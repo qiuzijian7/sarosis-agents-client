@@ -42,6 +42,11 @@ export const DSH_UNDISABLABLE_BUNDLES: readonly string[] = [
 	'@vssaros/dsh-worktree',
 ];
 
+/** 0.2.2-rc.2 官方实验会话搜索 bundle：会挂 `optional-tool-session-query` 并注册 `session_search`。 */
+export const DSH_OFFICIAL_SESSION_SEARCH_BUNDLE = '@deepseek-ai/dsh-experimental-session-search';
+/** 该 bundle 的顶层 group row；禁用它即可连带关掉组内的 sqlite / tool 两行。 */
+export const DSH_OFFICIAL_SESSION_SEARCH_ROW_ID = 'optional-session-search';
+
 /**
  * **一次性组合迁移**（官方升级指南 v0.2.2-alpha.2 / forge-worktree-entry）：
  * forge-bundle 与独立 `tool-worktree` 同时进 bundles 时，两份 `cordis.patch.yml` 会插出重复的
@@ -418,6 +423,29 @@ export function setRowDisabledOverride(patchText: unknown, rowId: string, enable
 		next.splice(disabledAt, 1);
 	}
 	return { text: next.join(eol), changed: true };
+}
+
+/**
+ * **官方 / legacy `session_search` 二选一**（2026-11-21，方案 A）。
+ *
+ * 默认 `legacySessionSearch=false`：清理历史修复写下的 `optional-session-search disabled` 覆盖，
+ * 让官方 `@deepseek-ai/dsh-tool-session-query` 的内容级 `session_search` 生效；本仓
+ * `vssaros-sessions` 默认不注册同名工具。
+ *
+ * 应急回退 `legacySessionSearch=true`：反过来禁用官方 group，避免与本仓轻量实现重名
+ * （dsh 同名工具不是覆盖，而是整条 entry 失效）。不删 bundle、不动 runtime、不改用户数据。
+ */
+export function syncOfficialSessionSearchRows(
+	patchText: unknown,
+	bundles: readonly string[],
+	legacySessionSearch: boolean,
+): { readonly text: string; readonly changed: boolean } {
+	const source = typeof patchText === 'string' ? patchText : '';
+	if (!bundles.some(bundle => bundle.trim() === DSH_OFFICIAL_SESSION_SEARCH_BUNDLE)) {
+		return { text: source, changed: false };
+	}
+	// setRowDisabledOverride(enabled=true) 会删掉旧 `disabled` 覆盖；enabled=false 会写入覆盖。
+	return setRowDisabledOverride(source, DSH_OFFICIAL_SESSION_SEARCH_ROW_ID, !legacySessionSearch);
 }
 
 /** profile package.json 的落盘格式：2 空格缩进 + 末尾换行（与 dsh 自己写的形态一致）。 */

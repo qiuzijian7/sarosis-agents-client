@@ -22,8 +22,8 @@
 //   · 标准分栏（customFrame=false）P1 暂按整页渲染（右栏承载在 P2 做，方案 §4.3）。
 // 构建标记：在页面 console 里输入 __vssarosWorkbenchBuild 即可知道窗口加载的是哪个版本
 // ⚠ bump package.json 版本时必须同步本行 —— check-assistant-collapse.mjs 会判红（2026-11-10 收口）。
-// 0.3.55（2026-11-19）：单一目录补齐注册式知识库 hidden 行，修复开始页重复「知识库」卡。
-globalThis.__vssarosWorkbenchBuild = '0.3.55';
+// 0.3.70（2026-11-21）：图钉已固定态加 is-pinned 可见样式 + 对勾图标，点击同步切换。
+globalThis.__vssarosWorkbenchBuild = '0.3.70';
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-workbenches',
 	factory: (require) => {
@@ -198,8 +198,262 @@ window.__ModuleLoader__.load({
 		}
 		const HOME_WB_ORDER_FIELD = 'homeWorkbenchOrder';
 		const HOME_TOOL_ORDER_FIELD = 'homeToolOrder';
+		/** 统一排序字段：所有开始页 item（工作台 + 工具）共用一份顺序。 */
+		const HOME_ITEM_ORDER_FIELD = 'homeItemOrder';
 		const HOME_IMAGE_TAB_TYPE = 'vssaros:image-reference';
 		const CREATE_PLUGIN_PROMPT = '创建一个带右侧栏入口的 DSH 插件。';
+		/** 「浏览更多插件」的目标身份：目录真源里商城页的 canonicalId，也是注册式商城工作台 id。 */
+		const MARKET_WORKBENCH_ID = 'vssaros/marketplace';
+		/**
+		 * 开始页「锚点」= 把 item 固定到左侧栏（2026-11-21）。
+		 * 左侧栏是官方 DOM（[data-sidebar-left]），没有可用的 keyed 内容槽 ⇒ 同源 DOM 注入 +
+		 * localStorage 持久化 + MutationObserver 重贴（与 chat-surface 隐藏官方行同一套自愈手法）。
+		 * 点击卡片锚点切换；点击左侧栏里的 item 打开右栏页签；右键取消固定。
+		 */
+		const HOME_ANCHOR_STORAGE_KEY = 'vssaros.home.anchors';
+		const HOME_ANCHOR_BOX_ID = 'vssaros-home-anchor-list';
+		let homeAnchorMemory = [];
+		let homeAnchorStoreDisabled = false;
+		/**
+		 * localStorage 在 Electron WebContentsView 里可能 setItem 抛 SecurityError。
+		 * 一旦失败就**永久禁用**：否则写进内存、读却仍走 localStorage(null) ⇒ 状态当场丢失，
+		 * 表现为「点 anchor 没反应」。读写必须同源。
+		 */
+		function homeAnchorStorage() {
+			if (homeAnchorStoreDisabled) { return null; }
+			try { return typeof localStorage !== 'undefined' ? localStorage : null; }
+			catch { homeAnchorStoreDisabled = true; return null; }
+		}
+		function readHomeAnchors() {
+			const store = homeAnchorStorage();
+			let raw = null;
+			if (store) {
+				try { raw = store.getItem(HOME_ANCHOR_STORAGE_KEY); }
+				catch { homeAnchorStoreDisabled = true; return homeAnchorMemory.slice(); }
+			} else { return homeAnchorMemory.slice(); }
+			let list = [];
+			try { list = JSON.parse(raw || '[]'); } catch { list = []; }
+			if (!Array.isArray(list)) { return []; }
+			return list.filter(item => item && typeof item.key === 'string' && item.key.length < 200)
+				.slice(0, 24).map(item => ({
+					key: item.key,
+					title: String(item.title || item.key).slice(0, 80),
+					description: String(item.description || '').slice(0, 120),
+					icon: String(item.icon || '').slice(0, 40),
+					kind: String(item.kind || 'workbench'),
+				}));
+		}
+		function writeHomeAnchors(list) {
+			homeAnchorMemory = list.slice();
+			const store = homeAnchorStorage();
+			if (!store) { return; }
+			try { store.setItem(HOME_ANCHOR_STORAGE_KEY, JSON.stringify(list)); }
+			catch { homeAnchorStoreDisabled = true; }
+		}
+		function homeAnchorDescriptor(item) {
+			return {
+				key: String(item.key || item.itemKey || ''), title: String(item.title || ''),
+				description: String(item.description || ''), icon: String(item.icon || ''),
+				kind: String(item.kind || 'workbench'),
+			};
+		}
+		function isHomeAnchored(key) { return readHomeAnchors().some(entry => entry.key === key); }
+		function toggleHomeAnchor(item) {
+			const descriptor = homeAnchorDescriptor(item);
+			if (!descriptor.key) { return false; }
+			const list = readHomeAnchors();
+			const at = list.findIndex(entry => entry.key === descriptor.key);
+			if (at >= 0) { list.splice(at, 1); }
+			else { list.push(descriptor); }
+			writeHomeAnchors(list);
+			try { renderHomeAnchors(); } catch { /* 侧栏 DOM 未就绪时由 bridge 定时重贴兜底 */ }
+			return at < 0;
+		}
+		/** 左侧栏容器不能只认 [data-sidebar-left]（真机可能不在该子树）；找不到就挂 body 浮层。 */
+		function homeAnchorHost() {
+			const width = (typeof window !== 'undefined' && window.innerWidth) || 1200;
+			// 官方侧栏真实根是 [data-slot="sidebar"]（preload-dshView 的 CHAT_ONLY_CSS 用同一钩子）。
+			for (const selector of ['[data-slot="sidebar"]', '[data-sidebar-left]', '[data-sidebar]', 'aside[data-sidebar]', '.sidebar-left']) {
+				try {
+					const el = document.querySelector(selector);
+					if (!el || typeof el.appendChild !== 'function') { continue; }
+					// 官方钩子 `display:contents` ⇒ rect 为 0，但子树就是真实左栏；无条件信任它。
+					if (selector === '[data-slot="sidebar"]') { return el; }
+					// 其它候选只认真正位于左半屏、有尺寸的容器；否则宁可用 body 浮层。
+					const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+					if (rect && (rect.width === 0 || rect.height === 0 || rect.left > width * 0.5)) { continue; }
+					return el;
+				} catch { /* 选择器 / 几何 API 不受支持 */ }
+			}
+			return document.body && typeof document.body.appendChild === 'function' ? document.body : null;
+		}
+		/**
+		 * 锚点列表必须落在左栏上部（官方三行原来的位置），而不是 append 到
+		 * `[data-slot="sidebar"]`（display:contents）末尾 —— 那会把列表塞到整个侧栏内容之后，
+		 * 左栏外层又是 overflow:hidden，用户点图钉后看不见新 item，误判「点击无反应」。
+		 */
+		function homeAnchorSlot(host, floating) {
+			if (floating) { return { parent: host, before: null }; }
+			try {
+				// 「新会话」按钮之后 = 官方三行原来的位置；插到左栏根的普通 flex 流里（y≈104）一定可见。
+				// 不能插到 scrollArea 的 nav 之后：实测那个容器会把普通流子元素推到
+				// overflow:hidden 的底部（y=733），用户点图钉后根本看不见新 item。
+				const newSession = Array.from(host.querySelectorAll('button'))
+					.find(b => /新会话|New session|新建会话/i.test(String(b.textContent || '')));
+				if (newSession && newSession.parentNode && typeof newSession.parentNode.insertBefore === 'function') {
+					return { parent: newSession.parentNode, before: newSession.nextSibling };
+				}
+				const inner = host.firstElementChild || host;
+				if (inner && typeof inner.insertBefore === 'function') {
+					return { parent: inner, before: inner.firstChild || null };
+				}
+			} catch { /* 老宿主没有 querySelector */ }
+			return { parent: host, before: host.firstChild || null };
+		}
+		function renderHomeAnchors() {
+			if (typeof document === 'undefined' || typeof document.querySelector !== 'function'
+				|| typeof document.createElement !== 'function') { return; }
+			const host = homeAnchorHost();
+			if (!host) { return; }
+			const floating = host === document.body;
+			const slot = homeAnchorSlot(host, floating);
+			const stored = readHomeAnchors();
+			// anchor surface：只在 registry 里明确查到且已下线时才隐藏；查不到的（刚固定 / 未就绪）一律保留。
+			const registry = globalThis.__vssarosHomeItemRegistry;
+			const list = registry && typeof registry.get === 'function'
+				? stored.filter(entry => {
+					const item = registry.get(entry.key);
+					return !item || selectHomeItems([item], 'anchor').length === 1;
+				})
+				: stored;
+			const signature = JSON.stringify(list);
+			let box = typeof document.getElementById === 'function' ? document.getElementById(HOME_ANCHOR_BOX_ID) : null;
+			// official.nextSibling 可能就是 box 自己（已插好）⇒ 避免 insertBefore(box, box) 抛错。
+			const before = slot.before === box ? (box && box.nextSibling) : slot.before;
+			// React 重渲染会重建侧栏子节点；清单没变且位置正确 ⇒ 不重绘（否则自激 MutationObserver）。
+			const inPlace = box && box.parentNode === slot.parent && box.nextSibling === before;
+			if (!box) {
+				box = document.createElement('div');
+				box.id = HOME_ANCHOR_BOX_ID;
+				box.setAttribute('data-vssaros-home-anchors', '1');
+			}
+			// 容器可能在「body 浮层 ↔ 左栏内嵌」之间迁移：每次都要同步样式。
+			// 否则旧 box 会一直带着 position:fixed;bottom:8px 钉在窗口左下角（实测 y=733），
+			// 即使 DOM 已插到左栏上部，视觉上仍看不到点图钉后新增的 item。
+			// 找不到真实左栏容器时才用固定浮层兜底。
+			box.style.cssText = floating
+				? 'position:fixed;left:8px;bottom:8px;z-index:80;max-width:220px;display:flex;flex-direction:column;gap:4px;padding:8px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.25));border-radius:10px;background:var(--dsw-alias-bg-layer-1,#1f1f1f);box-shadow:0 6px 20px rgba(0,0,0,.25);'
+				: 'display:flex;flex:0 0 auto;flex-direction:column;gap:4px;padding:6px 8px 8px;border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.25));';
+			if (inPlace && box.getAttribute('data-vssaros-anchor-signature') === signature) {
+				box.style.display = list.length ? 'flex' : 'none';
+				return;
+			}
+			// insertBefore 会自动把 box 从旧父节点摘下，不会留下重复的空容器。
+			slot.parent.insertBefore(box, before);
+			box.setAttribute('data-vssaros-anchor-signature', signature);
+			const children = [];
+			if (list.length) {
+				const caption = document.createElement('div');
+				caption.textContent = '锚点';
+				caption.style.cssText = 'font-size:10px;color:var(--dsw-alias-label-tertiary,#888);padding:2px 6px;';
+				children.push(caption);
+			}
+			for (const item of list) {
+				const button = document.createElement('button');
+				button.type = 'button';
+				button.setAttribute('data-vssaros-home-anchor-item', item.key);
+				button.setAttribute('aria-label', '打开 ' + item.title);
+				button.title = item.title + '（右键：取消固定）';
+				button.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;min-height:30px;padding:4px 8px;border:0;border-radius:6px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;';
+				const ico = document.createElement('span');
+				// 存储里的 icon 是 SVG 形状名（book/brain…），直接当文本会显示成「book知识库」。
+				ico.textContent = '◈';
+				ico.style.cssText = 'width:16px;text-align:center;flex:0 0 auto;';
+				const text = document.createElement('span');
+				text.textContent = item.title;
+				text.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+				button.appendChild(ico);
+				button.appendChild(text);
+				button.addEventListener('click', () => {
+					const open = globalThis.__vssarosOpenHomeAnchor;
+					// left-anchor：从左侧栏打开时走统一降级策略（V1 关闭/右栏未就绪 ⇒ 注册式工作台本体）。
+					if (typeof open === 'function') { open(item.key, 'left-anchor'); }
+				});
+				button.addEventListener('contextmenu', ev => {
+					try { ev.preventDefault(); } catch { /* 老宿主没有事件对象方法 */ }
+					toggleHomeAnchor({ itemKey: item.key, title: item.title, description: item.description, icon: item.icon, kind: item.kind });
+				});
+				children.push(button);
+			}
+			if (typeof box.replaceChildren === 'function') { box.replaceChildren(...children); }
+			else { box.textContent = ''; for (const child of children) { box.appendChild(child); } }
+			box.style.display = list.length ? 'flex' : 'none';
+		}
+		/**
+		 * 左栏 item 由 anchor 决定 ⇒ 官方三行必须在宿主侧兜底隐藏。
+		 * chat-surface 侧也有一份，但它的 install 幂等标记在「Host 重启但 window 未重建」时
+		 * 会挡住重新执行；workbenches 入口每次页面加载都会跑，这里补一道双保险。
+		 */
+		function hideOfficialSidebarRowsForAnchors() {
+			if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') { return; }
+			const labels = ['插件', 'Plugins', '自动化任务', 'Automation tasks', 'Automated tasks', '更多', 'More'];
+			try {
+				if (typeof document.getElementById === 'function' && !document.getElementById('vssaros-hidden-left-rows')
+					&& typeof document.createElement === 'function') {
+					const style = document.createElement('style');
+					style.id = 'vssaros-hidden-left-rows';
+					style.textContent = labels.map(label => '[data-slot="sidebar"] button[aria-label="' + label + '"]').join(',')
+						+ '{display:none!important}';
+					const host = document.head || document.documentElement || document.body;
+					if (host && typeof host.appendChild === 'function') { host.appendChild(style); }
+				}
+			} catch { /* 样式注入失败不影响行隐藏 */ }
+			try {
+				const buttons = document.querySelectorAll('button[aria-label]');
+				for (let i = 0; i < buttons.length; i += 1) {
+					const btn = buttons[i];
+					const label = String(btn.getAttribute('aria-label') || '').trim();
+					if (labels.indexOf(label) < 0 || btn.getAttribute('data-vssaros-hidden') === '1') { continue; }
+					btn.setAttribute('data-vssaros-hidden', '1');
+					btn.style.display = 'none';
+				}
+			} catch { /* DOM 未就绪时由 observer / 兜底定时器补 */ }
+		}
+		let homeAnchorObserverInstalled = false;
+		function ensureHomeAnchorObserver() {
+			if (homeAnchorObserverInstalled || typeof MutationObserver !== 'function') { return; }
+			try {
+				let queued = 0;
+				const target = homeAnchorHost() || document.body;
+				if (target) {
+					new MutationObserver(() => {
+						if (queued) { return; }
+						queued = setTimeout(() => {
+						queued = 0;
+						hideOfficialSidebarRowsForAnchors();
+						renderHomeAnchors();
+					}, 200);
+					}).observe(target, { childList: true, subtree: true });
+					homeAnchorObserverInstalled = true;
+				}
+			} catch { /* 观察失败不影响开始页 */ }
+		}
+		function installHomeAnchorBridge() {
+			if (typeof window === 'undefined' || typeof document === 'undefined' || typeof document.querySelector !== 'function') { return; }
+			hideOfficialSidebarRowsForAnchors();
+			renderHomeAnchors();
+			// 幂等只用于 storage 监听；渲染与 observer 每次都重试，避免首帧 DOM 未就绪后永久失效。
+			if (!globalThis.__vssarosHomeAnchorBridgeInstalled) {
+				globalThis.__vssarosHomeAnchorBridgeInstalled = true;
+				try {
+					window.addEventListener('storage', ev => { if (!ev || ev.key === HOME_ANCHOR_STORAGE_KEY) { renderHomeAnchors(); } });
+				} catch { /* 老宿主 */ }
+			}
+			ensureHomeAnchorObserver();
+			const repaint = () => { hideOfficialSidebarRowsForAnchors(); renderHomeAnchors(); };
+			setTimeout(repaint, 400);
+			setTimeout(repaint, 1500);
+		}
 		const INSTALL_STATUS_URL = '/api/vssaros-workbenches/install-status';
 		const INSTALL_STATUS_POLL_MS = 30000;
 		/**
@@ -492,6 +746,8 @@ window.__ModuleLoader__.load({
 			plugin: () => [h('path', { key: 'p', d: 'M4 4h5V2a3 3 0 0 1 6 0v2h5v5h2a3 3 0 0 1 0 6h-2v5h-5v-2a3 3 0 0 0-6 0v2H4v-5H2a3 3 0 0 1 0-6h2Z' })],
 			settings: () => [h('path', { key: 'p', d: 'm8 3-1 3-3 1 1 4-1 3 3 1 1 5h7l1-5 4-1-1-3 1-4-4-1-1-3H8Z' }), h('circle', { key: 'c', cx: 12, cy: 11, r: 3 })],
 			grip: () => [h('circle', { key: 'a', cx: 8, cy: 5, r: 1 }), h('circle', { key: 'b', cx: 16, cy: 5, r: 1 }), h('circle', { key: 'c', cx: 8, cy: 12, r: 1 }), h('circle', { key: 'd', cx: 16, cy: 12, r: 1 }), h('circle', { key: 'e', cx: 8, cy: 19, r: 1 }), h('circle', { key: 'f', cx: 16, cy: 19, r: 1 })],
+			pin: () => [h('path', { key: 'p', d: 'M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v7' })],
+			check: () => [h('path', { key: 'p', d: 'M4 12l5 5L20 6' })],
 			arrow: () => [h('path', { key: 'p', d: 'M12 19V5m-6 6 6-6 6 6' })],
 			x: () => [h('path', { key: 'p', d: 'm6 6 12 12M6 18 18 6' })],
 		};
@@ -504,32 +760,32 @@ window.__ModuleLoader__.load({
 				strokeLinecap: 'round', strokeLinejoin: 'round',
 			}, shape());
 		}
-		const TOOL_META = {
-			files: { icon: 'folder', title: '工作区文件', description: '浏览会话工作区中的文件', key: 'Ctrl + Alt + P' },
-			git: { icon: 'git', title: '代码审查和变更', description: '查看代码变更与本会话的变更请求' },
-			changes: { icon: 'git', title: '代码审查和变更', description: '查看代码变更与本会话的变更请求' },
-			terminal: { icon: 'terminal', title: '新建终端', description: '在会话工作区运行命令', key: 'Ctrl + `' },
-			browser: { icon: 'globe', title: '浏览器', description: '右侧打开网页，与 Agent 查看同一页面' },
-			'subagent-tool': { icon: 'bot', title: '任务管理', description: '查看子代理拓扑与后台任务', moreOnly: true },
-			subagent: { icon: 'bot', title: '任务管理', description: '查看子代理拓扑与后台任务', moreOnly: true },
-			'sidechat-tool': { icon: 'chat', title: '侧边对话', description: '在主会话旁打开独立讨论线程', moreOnly: true },
-			sidechat: { icon: 'chat', title: '侧边对话', description: '在主会话旁打开独立讨论线程', moreOnly: true },
-		};
-		function iconNameOf(page) {
-			const raw = String(page && page.icon || '').trim();
+		/**
+		 * 一份关键字规则（不是按 id 的名单）：工作台目录行与 Better Sidebar tab 共用图标推断。
+		 * 注册方 descriptor 自带字符串 icon 时优先用；vendored builtins 的 icon 是 React 组件，
+		 * 无法直接映射到本仓 SVG 名 ⇒ 按 id/title 关键字推断，新增工具无需改任何名单。
+		 */
+		function guideIconOf(source) {
+			const raw = typeof (source && source.icon) === 'string' ? source.icon.trim() : '';
 			if (GUIDE_ICON_SHAPES[raw]) { return raw; }
-			const hay = [page && page.pageId, page && page.title, page && page.workbenchId, page && page.route]
+			const hay = [source && source.id, source && source.pageId, source && source.title,
+				source && source.workbenchId, source && source.route]
 				.filter(Boolean).join(' ').toLowerCase();
 			if (/kb|知识/.test(hay)) { return 'book'; }
 			if (/memory|记忆/.test(hay)) { return 'brain'; }
+			if (/file|folder|explorer|文件|工作区/.test(hay)) { return 'folder'; }
+			if (/git|change|变更|审查/.test(hay)) { return 'git'; }
+			if (/terminal|shell|终端/.test(hay)) { return 'terminal'; }
+			if (/browser|globe|网页|浏览器/.test(hay)) { return 'globe'; }
+			if (/sidechat|chat|对话/.test(hay)) { return 'chat'; }
 			if (/code|代码/.test(hay)) { return 'code'; }
 			if (/media|媒体|image|图片/.test(hay)) { return 'media'; }
 			if (/market|商城/.test(hay)) { return 'shop'; }
-			if (/session|history|历史|scheduler|任务|自动化/.test(hay)) { return 'clock'; }
-			if (/superagent|agent|bot|团队/.test(hay)) { return 'bot'; }
-			if (/analysis|数据|records|数据表/.test(hay)) { return 'grid'; }
+			if (/session|history|历史|scheduler|自动化/.test(hay)) { return 'clock'; }
+			if (/superagent|agent|bot|subagent|任务|团队/.test(hay)) { return 'bot'; }
 			return 'grid';
 		}
+		function iconNameOf(page) { return guideIconOf(page); }
 		function sourceLabelOf(page) {
 			const labels = { registered: '注册式', legacy: '内置清单', external: '外部插件', route: '路由式', component: '组件式' };
 			const kind = labels[page.sourceKind] || (page.kind === 'route' ? '路由式' : page.kind === 'component' ? '组件式' : '注册式');
@@ -538,23 +794,162 @@ window.__ModuleLoader__.load({
 		function isNewPage(page) {
 			return page.pageId !== 'default' && ['registered', 'external'].includes(page.sourceKind);
 		}
+		/** 单个 TabDescriptor → 工具视图：标题/描述全部来自注册方，图标走共用关键字规则。 */
+		function toolViewOf(descriptor) {
+			const title = typeof descriptor.title === 'function' ? descriptor.title()
+				: String(descriptor.title || descriptor.id);
+			const description = typeof descriptor.description === 'function'
+				? descriptor.description() : String(descriptor.description || '');
+			return Object.freeze({
+				id: descriptor.id, kind: 'tool', title, description,
+				icon: guideIconOf({ id: descriptor.id, title, icon: descriptor.icon }),
+			});
+		}
+		/** 兼容旧调用方（守卫/测试钉住）：仍按 hidden/bottomOnly/宿主自注册前缀过滤。 */
 		function toolEntriesOf(betterSidebar) {
 			const tabs = betterSidebar && typeof betterSidebar.getTabs === 'function' ? betterSidebar.getTabs() : [];
 			return tabs.filter(descriptor => descriptor && typeof descriptor.id === 'string'
-				&& descriptor.hidden !== true && descriptor.bottomOnly !== true
-				&& !descriptor.id.startsWith('vssaros-wb:') && descriptor.id !== HOME_IMAGE_TAB_TYPE)
-				.map(descriptor => {
-					const meta = TOOL_META[descriptor.id] || {};
-					const title = typeof descriptor.title === 'function' ? descriptor.title() : String(descriptor.title || meta.title || descriptor.id);
-					const description = typeof descriptor.description === 'function'
-						? descriptor.description() : String(descriptor.description || meta.description || '');
-					return {
-						id: descriptor.id, kind: 'tool', title, description,
-						icon: meta.icon || (typeof descriptor.icon === 'string' && GUIDE_ICON_SHAPES[descriptor.icon] ? descriptor.icon : 'grid'),
-						key: String(descriptor.key || descriptor.shortcut || meta.key || ''),
-						moreOnly: descriptor.moreOnly === true || meta.moreOnly === true,
-					};
-				});
+				&& descriptor.hidden !== true && descriptor.bottomOnly !== true && !isHostOwnedTab(descriptor))
+				.map(toolViewOf);
+		}
+		/**
+		 * 统一开始页 item 注册层（2026-11-21 架构收口）。
+		 * 工作台页（catalog）与 Better Sidebar tab 是「来源不同、形状相同」的 item：
+		 * 两个 adapter 归一成 HomeItem，registry 统一身份、可见性、去热与查表；渲染层不再拼前缀。
+		 */
+		const HOME_ITEM_KIND_CATALOG = 'workbench';
+		const HOME_ITEM_KIND_TAB = 'tool';
+		const HOME_ITEM_SOURCE_CATALOG = 'catalog';
+		const HOME_ITEM_SOURCE_TABS = 'betterSidebar';
+		const HOME_ITEM_OWNER = 'vssaros-workbenches';
+		/** catalogKey 自带 workbenchId/pageId 命名空间；tab id 需要显式 tool: 前缀。 */
+		function homeItemKey(kind, id) {
+			return kind === HOME_ITEM_KIND_TAB ? 'tool:' + String(id) : String(id);
+		}
+		/** 宿主自己注册的承载 tab（catalog adapter / 图片资源）不是开始页工具。 */
+		function isHostOwnedTab(descriptor) {
+			if (!descriptor) { return true; }
+			const id = String(descriptor.id || '');
+			return descriptor.vssarosOwner === HOME_ITEM_OWNER
+				|| id.startsWith('vssaros-wb:') || id === HOME_IMAGE_TAB_TYPE;
+		}
+		function homeItemVisibility(start, nativeTab, launcher) {
+			return Object.freeze({ start, nativeTab, launcher, anchor: start });
+		}
+		function homeItemOfCatalogPage(page) {
+			const start = selectStartPages([page]).length === 1;
+			const nativeTab = selectNativeTabPages([page]).length === 1;
+			const launcher = selectLauncherPages([page]).length === 1;
+			const key = homeItemKey(HOME_ITEM_KIND_CATALOG, page.key);
+			return Object.freeze({
+				key, itemKey: key, kind: HOME_ITEM_KIND_CATALOG,
+				title: String(page.title || page.key), description: String(page.description || '工作台页面'),
+				icon: iconNameOf(page), source: sourceLabelOf(page),
+				availability: start || nativeTab || launcher ? 'ready' : 'hidden',
+				visibility: homeItemVisibility(start, nativeTab, launcher),
+				origin: Object.freeze({ registry: HOME_ITEM_SOURCE_CATALOG, descriptorId: String(page.key) }),
+				aliases: Object.freeze([...(Array.isArray(page.aliases) ? page.aliases : [])]),
+				replacedBy: String(page.replacedBy || ''),
+				catalogKey: String(page.key), tabId: '', workbenchId: String(page.workbenchId || ''),
+				page, tool: null,
+			});
+		}
+		function homeItemOfTabDescriptor(descriptor) {
+			const tool = toolViewOf(descriptor);
+			const enabled = descriptor.hidden !== true && descriptor.bottomOnly !== true;
+			const key = homeItemKey(HOME_ITEM_KIND_TAB, tool.id);
+			return Object.freeze({
+				key, itemKey: key, kind: HOME_ITEM_KIND_TAB,
+				title: tool.title, description: tool.description, icon: tool.icon,
+				source: descriptor.source || '工具',
+				availability: enabled ? 'ready' : 'hidden',
+				visibility: homeItemVisibility(enabled, enabled, enabled),
+				origin: Object.freeze({ registry: HOME_ITEM_SOURCE_TABS, descriptorId: tool.id }),
+				aliases: Object.freeze([]), replacedBy: '',
+				catalogKey: '', tabId: tool.id, workbenchId: '',
+				page: null, tool: Object.freeze(tool),
+			});
+		}
+		/** 一个投影函数：surface = start | nativeTab | launcher | anchor。 */
+		function selectHomeItems(items, surface = 'start') {
+			const field = ({ start: 'start', nativeTab: 'nativeTab', launcher: 'launcher', anchor: 'anchor' })[surface] || 'start';
+			return (Array.isArray(items) ? items : []).filter(item => item
+				&& item.availability === 'ready' && item.visibility && item.visibility[field] !== false);
+		}
+		/**
+		 * HomeItemRegistry：两个来源合成一张冻结表，缓存 + 细粒度失效；
+		 * get(key) 供左侧栏锚点与统一打开入口使用，不再依赖渲染闭包里的 items。
+		 */
+		function createHomeItemRegistry(service, betterSidebar) {
+			let cached = null;
+			const sources = () => {
+				const snap = service && typeof service.getCatalogSnapshot === 'function'
+					? service.getCatalogSnapshot() : null;
+				const pages = snap && Array.isArray(snap.pages) ? snap.pages : [];
+				const tabs = betterSidebar && typeof betterSidebar.getTabs === 'function' ? betterSidebar.getTabs() : [];
+				// catalog 快照每次 publish 都是新对象 ⇒ 用引用判变化；tab 注册表用轻量字段戳判变化。
+				// 这样即使组件还没跑 useEffect 订阅、或 adapter 单独 sync，也不会读到过期表。
+				const tabsStamp = tabs.map(descriptor => descriptor && [
+					descriptor.id, descriptor.hidden === true, descriptor.bottomOnly === true,
+					descriptor.vssarosOwner || '', typeof descriptor.title === 'function' ? '' : descriptor.title,
+				].join(':')).join('|');
+				return { snap, pages, tabs, tabsStamp };
+			};
+			const build = ({ pages, tabs }) => {
+				const byKey = new Map();
+				for (const page of pages) {
+					if (!page || typeof page.key !== 'string') { continue; }
+					const item = homeItemOfCatalogPage(page);
+					if (!byKey.has(item.key)) { byKey.set(item.key, item); }
+				}
+				for (const descriptor of tabs) {
+					if (!descriptor || typeof descriptor.id !== 'string' || isHostOwnedTab(descriptor)) { continue; }
+					const item = homeItemOfTabDescriptor(descriptor);
+					if (!byKey.has(item.key)) { byKey.set(item.key, item); }
+				}
+				return { items: Object.freeze([...byKey.values()]), byKey };
+			};
+			const ensure = () => {
+				const src = sources();
+				if (!cached || cached.snap !== src.snap || cached.tabsStamp !== src.tabsStamp) {
+					cached = Object.freeze({ ...build(src), snap: src.snap, tabsStamp: src.tabsStamp });
+				}
+				return cached;
+			};
+			return Object.freeze({
+				snapshot() { return ensure().items; },
+				get(key) { return ensure().byKey.get(key) || null; },
+				invalidate() { cached = null; return ensure().items; },
+				subscribe(listener) {
+					const notify = () => { cached = null; if (typeof listener === 'function') { listener(); } };
+					const offs = [];
+					try { if (service && typeof service.subscribeCatalog === 'function') { offs.push(service.subscribeCatalog(notify)); } } catch { /* 已释放 */ }
+					try { if (betterSidebar && typeof betterSidebar.subscribe === 'function') { offs.push(betterSidebar.subscribe(notify)); } } catch { /* 已释放 */ }
+					return () => { for (const off of offs) { try { if (typeof off === 'function') { off(); } } catch { /* 已释放 */ } } };
+				},
+			});
+		}
+		let homeItemRegistryOwner = null;
+		function getHomeItemRegistry(service, betterSidebar) {
+			if (homeItemRegistryOwner && homeItemRegistryOwner.service === service
+				&& homeItemRegistryOwner.betterSidebar === betterSidebar) { return homeItemRegistryOwner.registry; }
+			const registry = createHomeItemRegistry(service, betterSidebar);
+			homeItemRegistryOwner = { service, betterSidebar, registry };
+			return registry;
+		}
+		/** 双排序字段 → 单 homeItemOrder 的惰性迁移：不改旧 state.json，写回时合并。 */
+		function migrateHomeItemOrder(saved, availableKeys) {
+			const keys = Array.isArray(availableKeys) ? availableKeys : [];
+			if (Array.isArray(saved && saved.homeItemOrder) && saved.homeItemOrder.length) {
+				return normalizeHomeOrder(saved.homeItemOrder, keys);
+			}
+			const source = saved || {};
+			const legacy = [
+				...(Array.isArray(source[HOME_WB_ORDER_FIELD]) ? source[HOME_WB_ORDER_FIELD] : []),
+				...(Array.isArray(source[HOME_TOOL_ORDER_FIELD])
+					? source[HOME_TOOL_ORDER_FIELD].map(id => homeItemKey(HOME_ITEM_KIND_TAB, id)) : []),
+			];
+			return normalizeHomeOrder(legacy, keys);
 		}
 		/** P4 基础：识别 `@image:name` 标记；不猜附件 id、不读任意本地路径。 */
 		function parseImageToken(text) {
@@ -694,7 +1089,7 @@ window.__ModuleLoader__.load({
 			if (disposeImageReferenceTab) { disposeImageReferenceTab(); }
 			let disposed = false;
 			const dispose = betterSidebar.registerTab({
-				id: HOME_IMAGE_TAB_TYPE, title: '图片资源', hidden: true,
+				id: HOME_IMAGE_TAB_TYPE, vssarosOwner: HOME_ITEM_OWNER, title: '图片资源', hidden: true,
 				available: () => false,
 				component: ImageReferenceView,
 				createTab: () => {
@@ -805,16 +1200,13 @@ window.__ModuleLoader__.load({
 			document.addEventListener('pointerup', up);
 			document.addEventListener('pointercancel', cancel);
 		}
-		/** 自家右侧「开始」页：搜索/分类 + 常用工具 + 工作台目录；无欢迎、统计或最近资源。 */
+		/** 自家右侧「开始」页：搜索 + 统一工作台 item 目录；无分类页签、常用工具分组、欢迎或统计。 */
 		function makeVsSarosHomeGuide(service, ctx, betterSidebar) {
 			return function VsSarosHomeGuide() {
 				const [, forceRevision] = React.useState(0);
 				const [query, setQuery] = React.useState('');
-				const [category, setCategory] = React.useState('all');
 				const [menuOpen, setMenuOpen] = React.useState(false);
 				const [menuPos, setMenuPos] = React.useState({ left: 0, top: 0, width: 216, ready: false });
-				const [allToolsOpen, setAllToolsOpen] = React.useState(false);
-				const [toolQuery, setToolQuery] = React.useState('');
 				const [notice, setNotice] = React.useState('');
 				const [toolOrderDraft, setToolOrderDraft] = React.useState(null);
 				const [keyboardDraft, setKeyboardDraft] = React.useState(null);
@@ -938,28 +1330,26 @@ window.__ModuleLoader__.load({
 						}
 					};
 				}, [menuOpen]);
-				const pages = selectStartPages(service.getCatalogSnapshot().pages);
-				const tools = toolEntriesOf(betterSidebar);
+				// 单一 registry：catalog 页 + Better Sidebar tab 都在这里归一成 HomeItem。
+				const registry = getHomeItemRegistry(service, betterSidebar);
+				globalThis.__vssarosHomeItemRegistry = registry;
+				React.useEffect(() => registry.subscribe(() => forceRevision(n => n + 1)), []);
 				const saved = service.state || {};
-				const wbIds = pages.map(page => page.key);
-				const toolIds = tools.map(tool => tool.id);
-				const wbOrder = normalizeHomeOrder(saved[HOME_WB_ORDER_FIELD], wbIds);
-				const toolOrder = normalizeHomeOrder(saved[HOME_TOOL_ORDER_FIELD], toolIds);
-				const activeToolOrder = toolOrderDraft || toolOrder;
-				const activeWbOrder = keyboardDraft || wbOrder;
+				const allItems = registry.snapshot();
+				const items = selectHomeItems(allItems, 'start');
+				const itemKeys = items.map(item => item.key);
+				// 统一排序：homeItemOrder 单字段，旧 homeWorkbenchOrder/homeToolOrder 惰性合并。
+				const homeOrder = migrateHomeItemOrder(saved, itemKeys);
+				const activeToolOrder = toolOrderDraft || homeOrder;
+				const activeWbOrder = keyboardDraft || homeOrder;
 				const rank = order => {
 					const map = new Map(order.map((id, index) => [id, index]));
 					return (a, b) => (map.get(a) ?? 0) - (map.get(b) ?? 0);
 				};
-				const orderedWb = [...pages].sort((a, b) => rank(activeWbOrder)(a.key, b.key));
-				const orderedTools = [...tools].sort((a, b) => rank(activeToolOrder)(a.id, b.id));
+				const orderedItems = [...items].sort((a, b) => rank(activeToolOrder)(a.key, b.key));
 				const needle = String(query || '').trim().toLowerCase();
 				const matches = item => !needle || (item.title + ' ' + item.description).toLowerCase().includes(needle);
-				const shownWb = orderedWb.filter(matches);
-				const shownTools = orderedTools.filter(tool => (!tool.moreOnly || needle) && matches(tool));
-				const toolNeedle = String(toolQuery || '').trim().toLowerCase();
-				const allTools = orderedTools.filter(tool => !toolNeedle
-					|| (tool.title + ' ' + tool.description).toLowerCase().includes(toolNeedle));
+				const shownItems = orderedItems.filter(matches);
 				const closeMenu = (restoreFocus = false) => {
 					setMenuOpen(false);
 					setMenuPos(prev => ({ ...prev, ready: false }));
@@ -968,10 +1358,13 @@ window.__ModuleLoader__.load({
 						if (trigger && typeof trigger.focus === 'function') { trigger.focus({ preventScroll: true }); }
 					}
 				};
-				const openCatalogPage = key => {
-					if (Date.now() < suppressHomeOpenUntil) { return; }
+				const tryOpenCatalogPage = key => {
+					if (Date.now() < suppressHomeOpenUntil) { return true; }
 					const open = globalThis.__vssarosOpenWorkbenchCatalogPage;
-					if (typeof open !== 'function' || !open(key)) {
+					return typeof open === 'function' && open(key) === true;
+				};
+				const openCatalogPage = key => {
+					if (!tryOpenCatalogPage(key)) {
 						setNotice('当前没有活动会话或右栏目录未就绪，工作台未打开。');
 					}
 				};
@@ -987,22 +1380,45 @@ window.__ModuleLoader__.load({
 					try { betterSidebar.openTab({ type: id }); }
 					catch (e) { setNotice('打开工具失败：' + String(e && e.message || e)); }
 				};
-				const persistWbOrder = (order, save) => {
-					if (!save) { setNotice('顺序调整中，确认后保存。'); forceRevision(n => n + 1); return; }
-					saveHomeOrder(service, HOME_WB_ORDER_FIELD, order, setNotice);
+				/** 一个打开入口：按 origin.registry 分派承载策略；V1 关闭时统一回落注册式工作台本体。 */
+				const openHomeItem = (item, surface = 'right-tab') => {
+					if (!item) { setNotice('开始页条目不存在或已下线。'); return; }
+					if (item.origin.registry === HOME_ITEM_SOURCE_TABS) { openTool(item.tabId); return; }
+					// left-anchor 与 right-tab 必须同链路：从左侧栏点锚点也要打开右栏 catalog tab。
+					// 之前 surface !== 'right-tab' 会强制降级到注册式工作台本体，用户看到「点了没反应」。
+					if (!sidebarLayoutV1Enabled) {
+						try {
+							if (item.workbenchId && service && typeof service.open === 'function'
+								&& service.open(item.workbenchId)) { return; }
+						} catch { /* 继续走右栏目录链路 */ }
+					}
+					openCatalogPage(item.catalogKey);
 				};
+				// 左侧栏锚点查 registry，不再依赖渲染闭包里的 items。
+				globalThis.__vssarosOpenHomeAnchor = (key, surface) => openHomeItem(registry.get(key), surface);
+				globalThis.__vssarosToggleHomeAnchor = item => toggleHomeAnchor(item);
+				try { installHomeAnchorBridge(); } catch { /* 左侧栏未就绪时由后续重贴兜底 */ }
+				/** 统一持久化：所有 item 的顺序都写 homeItemOrder。 */
+				const persistHomeOrder = (order, save) => {
+					if (!save) { setNotice('顺序调整中，确认后保存。'); forceRevision(n => n + 1); return; }
+					saveHomeOrder(service, HOME_ITEM_ORDER_FIELD, order, setNotice);
+				};
+				const persistWbOrder = (order, save) => persistHomeOrder(order, save);
 				const persistToolOrder = draft => {
-					saveHomeOrder(service, HOME_TOOL_ORDER_FIELD, draft, setNotice);
+					persistHomeOrder(draft, true);
 					setToolOrderDraft(null);
 				};
 				const browsePlugins = () => {
 					closeMenu();
-					let nav = null;
-					try { nav = ctx && typeof ctx.get === 'function' ? ctx.get('pluginNavigation') : null; } catch { /* 未声明 */ }
-					if (nav && typeof nav.openList === 'function') { nav.openList(); return; }
-					const market = pages.find(page => /market/i.test(page.key) || /market/i.test(page.pageId));
-					if (market) { openCatalogPage(market.key); return; }
-					setNotice('当前宿主没有插件目录入口。');
+					// 「浏览更多插件」= 直达商城工作台：优先打开目录里的 active 商城页（右栏「商城」tab），
+					// 目录/右栏未就绪时回落注册式商城工作台本体；不再打开宿主插件目录。
+					const market = registry.snapshot().find(item => item.kind === HOME_ITEM_KIND_CATALOG
+						&& item.page && item.page.canonicalId === MARKET_WORKBENCH_ID);
+					if (market && tryOpenCatalogPage(market.catalogKey)) { return; }
+					try {
+						if (service && typeof service.open === 'function' && service.open(MARKET_WORKBENCH_ID)) { return; }
+					} catch (e) { setNotice('打开商城工作台失败：' + String(e && e.message || e)); return; }
+					setNotice('商城工作台未就绪，请稍后重试。');
 				};
 				const createPlugin = () => {
 					closeMenu();
@@ -1018,22 +1434,22 @@ window.__ModuleLoader__.load({
 					} catch (e) { setNotice('进入创造模式失败：' + String(e && e.message || e)); }
 				};
 				const startToolOrdering = () => {
-					closeMenu(); setQuery(''); setCategory('all');
-					setToolOrderDraft(normalizeHomeOrder(toolOrder, toolIds));
+					closeMenu(); setQuery('');
+					setToolOrderDraft(normalizeHomeOrder(homeOrder, itemKeys));
 					setKeyboardDraft(null); setKeyboardKey('');
-					setNotice('调整常用工具顺序：使用上移/下移，完成后保存。');
+					setNotice('调整顺序：使用上移/下移，完成后保存。');
 				};
-				const moveToolDraft = (id, direction) => {
-					const current = toolOrderDraft || toolOrder;
-					const at = current.indexOf(id), target = current[at + direction];
+				const moveToolDraft = (key, direction) => {
+					const current = toolOrderDraft || homeOrder;
+					const at = current.indexOf(key), target = current[at + direction];
 					if (!target) { return; }
-					setToolOrderDraft(moveHomeOrder(current, id, target));
-					setNotice('工具顺序草稿已更新，完成才保存。');
+					setToolOrderDraft(moveHomeOrder(current, key, target));
+					setNotice('顺序草稿已更新，完成才保存。');
 				};
 				const onWorkbenchKeyDown = (ev, key) => {
 					if (![' ', 'Enter', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(ev.key)) { return; }
 					ev.preventDefault(); ev.stopPropagation();
-					const current = keyboardDraft || wbOrder;
+					const current = keyboardDraft || homeOrder;
 					if (!keyboardDraft) {
 						if (ev.key === ' ' || ev.key === 'Enter') {
 							setKeyboardDraft([...current]); setKeyboardKey(key);
@@ -1061,87 +1477,125 @@ window.__ModuleLoader__.load({
 					}
 				};
 				const onWorkbenchDrop = (from, to) => {
+					// 统一网格：工作台与工具 item 都是合法落点，顺序写同一份 homeItemOrder。
 					if (!from || from === to) { setDragOverKey(''); return; }
-					persistWbOrder(moveHomeOrder(activeWbOrder, from, to), true);
+					persistHomeOrder(moveHomeOrder(activeWbOrder, from, to), true);
 					setDragOverKey('');
 				};
-				const filterButton = (id, label) => h('button', {
-					type: 'button', className: 'vssaros-home-filter' + (category === id ? ' active' : ''),
-					'data-vssaros-home-filter': id, 'aria-pressed': category === id ? 'true' : 'false',
-					onClick: () => { setCategory(id); setToolOrderDraft(null); setKeyboardDraft(null); setKeyboardKey(''); },
-				}, label);
-				const toolCard = (tool, index, count, ordering, onOpen) => h('button', {
-					type: 'button', className: 'vssaros-home-entry-card',
-					'data-vssaros-home-tool': tool.id, 'data-vssaros-home-open-tool': tool.id,
-					'aria-label': '打开 ' + tool.title, disabled: ordering,
-					onClick: () => { if (!ordering) { (onOpen || openTool)(tool.id); } },
-				},
-					h('span', { className: 'vssaros-home-entry-icon' }, guideIcon(tool.icon || 'grid')),
-					h('span', { className: 'vssaros-home-entry-body' },
-						h('b', null, tool.title),
-						tool.description ? h('p', null, tool.description) : null),
-					tool.key ? h('span', { className: 'vssaros-home-entry-key' }, tool.key) : null);
-				const toolOrderCard = (tool, index, count) => h('div', { className: 'vssaros-home-tool-order-row' },
-					toolCard(tool, index, count, true),
-					h('span', { className: 'vssaros-home-tool-order-controls' },
-						h('button', {
-							type: 'button', className: 'vssaros-home-icon-button',
-							'data-vssaros-tool-move': tool.id, 'data-direction': '-1',
-							'aria-label': '上移 ' + tool.title, disabled: index === 0,
-							onClick: () => moveToolDraft(tool.id, -1),
-						}, guideIcon('arrow')),
-						h('button', {
-							type: 'button', className: 'vssaros-home-icon-button',
-							'data-vssaros-tool-move': tool.id, 'data-direction': '1',
-							'aria-label': '下移 ' + tool.title, disabled: index === count - 1,
-							onClick: () => moveToolDraft(tool.id, 1),
-						}, guideIcon('arrow', 'down'))));
-				const workbenchCard = page => {
-					const isKeyboard = keyboardDraft && keyboardKey === page.key;
-					const isDrop = dragOverKey === page.key;
-					const cardId = homeWorkbenchCardIdOf(page.key);
-					const anchorId = homeWorkbenchAnchorIdOf(page.key);
+				/** 统一 item 卡片：工作台页 / 工具 / 自动化任务共用，右上角锚点既可拖拽排序也可点击固定到左侧栏。 */
+				const itemCard = item => {
+					const isKeyboard = keyboardDraft && keyboardKey === item.itemKey;
+					const isDrop = dragOverKey === item.itemKey;
+					const isWorkbench = item.kind === 'workbench';
+					const cardId = homeWorkbenchCardIdOf(item.itemKey);
+					const anchorId = homeWorkbenchAnchorIdOf(item.itemKey);
+					const anchored = isHomeAnchored(item.itemKey);
 					const className = 'vssaros-home-workbench-card'
-						+ (isKeyboard ? ' is-keyboard-dragging' : '') + (isDrop ? ' is-drop-target' : '');
+						+ (isKeyboard ? ' is-keyboard-dragging' : '') + (isDrop ? ' is-drop-target' : '')
+						+ (anchored ? ' is-anchored' : '');
+					const dragProps = isWorkbench ? {
+						draggable: !needle,
+						onDragStart: ev => { htmlDragKey = item.itemKey; if (ev.dataTransfer) { ev.dataTransfer.setData('text/plain', item.itemKey); } },
+						onDragOver: ev => { ev.preventDefault(); setDragOverKey(item.itemKey); },
+						onDrop: ev => {
+							ev.preventDefault();
+							onWorkbenchDrop(htmlDragKey || (ev.dataTransfer && ev.dataTransfer.getData('text/plain')), item.itemKey);
+							htmlDragKey = '';
+						},
+						onDragEnd: () => { htmlDragKey = ''; setDragOverKey(''); },
+						onPointerDown: ev => beginWorkbenchPointerDrag(ev, item.itemKey, setDragOverKey, target => onWorkbenchDrop(item.itemKey, target)),
+						onKeyDown: ev => onWorkbenchKeyDown(ev, item.itemKey),
+					} : { draggable: false };
+					const doAnchorToggle = () => {
+						const added = toggleHomeAnchor(item);
+						// React 重渲染是异步的：先同步改图钉/卡片 DOM，用户点完立刻看得到状态变化。
+						try {
+							if (typeof document !== 'undefined' && typeof document.getElementById === 'function') {
+								const card = document.getElementById(homeWorkbenchCardIdOf(item.itemKey));
+								if (card && card.classList && typeof card.classList.toggle === 'function') {
+									card.classList.toggle('is-anchored', added);
+								}
+								const pin = document.getElementById(homeWorkbenchAnchorIdOf(item.itemKey));
+								if (pin) {
+									pin.setAttribute('aria-pressed', added ? 'true' : 'false');
+									pin.setAttribute('aria-label', (added ? '从左侧栏移除 ' : '固定到左侧栏 ') + item.title);
+									pin.title = added ? '已固定在左侧栏，点击取消' : '点击固定到左侧栏，Enter / 空格同样可用';
+									// 视觉状态不能只靠 aria-pressed（主题里品牌色与默认色可能相同）：
+									// 同步切 is-pinned 类 + 图标 path，点击瞬间就看得见。
+									if (pin.classList && typeof pin.classList.toggle === 'function') {
+										pin.classList.toggle('is-pinned', added);
+									}
+									const path = pin.querySelector && pin.querySelector('svg path');
+									if (path) {
+										path.setAttribute('d', added ? 'M4 12l5 5L20 6'
+											: 'M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v7');
+									}
+								}
+							}
+						} catch { /* DOM 未就绪时由 React 重渲染兜底 */ }
+						setNotice(added ? '已固定到左侧栏：' + item.title : '已从左侧栏移除：' + item.title);
+						forceRevision(n => n + 1);
+					};
 					return h('div', {
 						className, id: cardId,
-						'data-vssaros-home-workbench': page.key,
+						'data-vssaros-home-workbench': item.itemKey,
+						...(item.kind === 'tool' ? { 'data-vssaros-home-tool': item.tool.id } : {}),
 						'data-vssaros-home-anchor-card': anchorId,
 						'data-vssaros-home-drop-target': isDrop ? '1' : undefined,
 					},
 						h('button', {
 							type: 'button', className: 'vssaros-home-workbench-open',
-							'data-vssaros-home-open': page.key, 'aria-label': '打开 ' + page.title,
-							onClick: () => openCatalogPage(page.key),
+							'data-vssaros-home-open': item.itemKey, 'aria-label': '打开 ' + item.title,
+							onClick: () => openHomeItem(item),
 						},
 							h('header', null,
-								guideIcon(iconNameOf(page)),
-								h('strong', null, page.title),
-								isNewPage(page) ? h('span', { className: 'vssaros-home-new-badge' }, '新') : null),
-							h('p', null, page.description || '工作台页面'),
-							h('div', { className: 'vssaros-home-source' }, sourceLabelOf(page))),
-						h('button', {
-							type: 'button', className: 'vssaros-home-drag-handle vssaros-home-anchor',
-							id: anchorId,
-							'data-vssaros-home-anchor': page.key,
-							'data-vssaros-home-drag': page.key,
-							'aria-roledescription': '拖拽锚点',
-							'aria-label': '工作台锚点：拖动 ' + page.title + ' 调整顺序',
-							'aria-describedby': 'vssaros-home-drag-help',
-							'aria-pressed': isKeyboard ? 'true' : 'false',
-							title: '拖拽锚点；空格拿起，方向键移动，Enter 放下，Esc 取消',
-							disabled: !!needle, draggable: !needle,
-							onDragStart: ev => { htmlDragKey = page.key; if (ev.dataTransfer) { ev.dataTransfer.setData('text/plain', page.key); } },
-							onDragOver: ev => { ev.preventDefault(); setDragOverKey(page.key); },
-							onDrop: ev => {
-								ev.preventDefault();
-								onWorkbenchDrop(htmlDragKey || (ev.dataTransfer && ev.dataTransfer.getData('text/plain')), page.key);
-								htmlDragKey = '';
-							},
-							onDragEnd: () => { htmlDragKey = ''; setDragOverKey(''); },
-							onPointerDown: ev => beginWorkbenchPointerDrag(ev, page.key, setDragOverKey, target => onWorkbenchDrop(page.key, target)),
-							onKeyDown: ev => onWorkbenchKeyDown(ev, page.key),
-						}, guideIcon('grip')));
+								guideIcon(item.icon || 'grid'),
+								h('strong', null, item.title),
+								isWorkbench && isNewPage(item.page) ? h('span', { className: 'vssaros-home-new-badge' }, '新') : null),
+							h('p', null, item.description || (isWorkbench ? '工作台页面' : '工具')),
+							h('div', { className: 'vssaros-home-source' }, item.source)),
+						h('div', { className: 'vssaros-home-card-actions' },
+							h('button', {
+								type: 'button', className: 'vssaros-home-anchor-button vssaros-home-anchor' + (anchored ? ' is-pinned' : ''),
+								id: anchorId,
+								'data-vssaros-home-anchor': item.itemKey,
+								'data-vssaros-home-anchor-action': '1',
+								'aria-roledescription': '固定锚点',
+								'aria-label': (anchored ? '从左侧栏移除 ' : '固定到左侧栏 ') + item.title,
+								'aria-pressed': anchored ? 'true' : 'false',
+								title: anchored ? '已固定在左侧栏，点击取消' : '点击固定到左侧栏，Enter / 空格同样可用',
+								// 不再按 ev.detail 过滤：键盘/触屏/合成 click 的 detail 可能为 0，
+								// 早退会让真机「点了没反应」。键盘 Enter / 空格由浏览器派发原生 click，无需重复绑定。
+								onClick: () => {
+									if (Date.now() < suppressHomeOpenUntil) { return; }
+									doAnchorToggle();
+								},
+								}, guideIcon(anchored ? 'check' : 'pin')),
+							h('button', {
+								type: 'button', className: 'vssaros-home-drag-handle',
+								'data-vssaros-home-drag': item.itemKey,
+								'aria-roledescription': '拖拽锚点',
+								'aria-label': '拖动 ' + item.title + ' 调整顺序',
+								'aria-describedby': 'vssaros-home-drag-help',
+								title: '拖拽排序；空格拿起，方向键移动，Enter 放下，Esc 取消',
+								disabled: !!needle,
+								...dragProps,
+							}, guideIcon('grip'))),
+						toolOrderDraft && item.kind === 'tool'
+							? h('span', { className: 'vssaros-home-item-order-controls' },
+								h('button', {
+									type: 'button', className: 'vssaros-home-icon-button',
+									'data-vssaros-tool-move': item.key, 'data-direction': '-1',
+									'aria-label': '上移 ' + item.title,
+									onClick: () => moveToolDraft(item.key, -1),
+								}, guideIcon('arrow')),
+								h('button', {
+									type: 'button', className: 'vssaros-home-icon-button',
+									'data-vssaros-tool-move': item.key, 'data-direction': '1',
+									'aria-label': '下移 ' + item.title,
+									onClick: () => moveToolDraft(item.key, 1),
+								}, guideIcon('arrow', 'down')))
+							: null);
 				};
 				const menu = menuOpen ? h('div', {
 					id: 'vssaros-home-tools-menu', className: 'vssaros-home-menu',
@@ -1188,7 +1642,9 @@ window.__ModuleLoader__.load({
 							type: 'button', className: 'vssaros-home-button', 'data-vssaros-save-tool-order': '1',
 							onClick: () => persistToolOrder(toolOrderDraft),
 						}, '完成'))
-					: h('div', { className: 'vssaros-home-more-wrap' },
+					: null;
+				const sectionActions = h('div', { className: 'vssaros-home-section-actions' },
+					h('div', { className: 'vssaros-home-more-wrap' },
 						h('button', {
 							type: 'button', className: 'vssaros-home-more-card',
 							'data-vssaros-more-trigger': '1', 'aria-label': '更多工具操作',
@@ -1196,67 +1652,23 @@ window.__ModuleLoader__.load({
 							'aria-controls': 'vssaros-home-tools-menu',
 							onClick: () => { if (pointerDrag) { pointerDrag.cancel(); } setMenuOpen(!menuOpen); },
 						}, guideIcon('more'), h('b', null, '更多'), guideIcon('chevron', 'vssaros-home-chevron')),
-						menu);
-				const toolSection = category !== 'workbench' && (!needle || shownTools.length)
-					? h('div', { className: 'vssaros-home-tools-section' },
-						h('div', { className: 'vssaros-home-section-head vssaros-home-tools-heading' },
-							h('h2', { id: 'vssaros-home-tool-order-title' }, toolOrderDraft ? '调整工具顺序' : '常用工具'),
-							h('button', {
-								type: 'button', className: 'vssaros-home-view-tools',
-								'data-vssaros-all-tools-trigger': '1', 'aria-haspopup': 'dialog',
-								onClick: () => { closeMenu(); setAllToolsOpen(true); },
-							}, '全部工具', guideIcon('chevron', 'vssaros-home-chevron'))),
-						h('div', { className: 'vssaros-home-tool-grid' },
-							shownTools.map((tool, index) => toolOrderDraft
-								? toolOrderCard(tool, index, shownTools.length)
-								: toolCard(tool, index, shownTools.length, false)),
-							toolFooter))
-					: null;
-				const workbenchSection = category !== 'tool' && (!needle || shownWb.length)
-					? h('div', { className: 'vssaros-home-workbench-section' },
-						h('div', { className: 'vssaros-home-section-head' },
-							h('h2', null, '工作台'),
-							h('span', { className: 'vssaros-home-pill' }, '目录自动发现'),
-							h('span', { className: 'vssaros-home-small' }, pages.length + ' 个页面')),
-						h('p', { className: 'vssaros-home-drag-help', id: 'vssaros-home-drag-help' },
-							'拖动卡片右上角锚点，调整任意行列位置；顺序自动保存。'),
-						h('div', { className: 'vssaros-home-workbench-grid' }, shownWb.map(workbenchCard)),
-						h('p', { className: 'vssaros-home-keyboard-help' },
-							'键盘：聚焦锚点后按空格拿起，方向键移动，Enter 放下，Esc 取消。搜索时暂不可排序。'))
-					: null;
-				const emptyState = !toolSection && !workbenchSection
+						menu));
+				const workbenchSection = h('div', { className: 'vssaros-home-workbench-section' },
+					h('div', { className: 'vssaros-home-section-head' },
+						h('h2', null, '工作台'),
+						h('span', { className: 'vssaros-home-pill' }, '目录自动发现'),
+						h('span', { className: 'vssaros-home-small' }, items.length + ' 个条目'),
+						sectionActions),
+					h('p', { className: 'vssaros-home-drag-help', id: 'vssaros-home-drag-help' },
+						'拖动卡片右上角锚点，调整任意行列位置；点击图钉按钮固定到左侧栏，再次点击取消。'),
+					h('div', { className: 'vssaros-home-workbench-grid vssaros-home-tool-grid' }, shownItems.map(itemCard)),
+					toolFooter,
+					h('p', { className: 'vssaros-home-keyboard-help' },
+						'键盘：聚焦拖动手柄按空格拿起，方向键移动，Enter 放下，Esc 取消；聚焦图钉按钮按 Enter 固定。搜索时暂不可排序。'));
+				const emptyState = !shownItems.length
 					? h('div', { className: 'vssaros-home-empty' }, '没有匹配结果',
-						h('br'), h('span', { className: 'vssaros-home-small' }, '换个关键词，或切回「全部」。'))
+						h('br'), h('span', { className: 'vssaros-home-small' }, '换个关键词试试。'))
 					: null;
-				const allToolsDialog = allToolsOpen ? h('div', {
-					className: 'vssaros-home-dialog-backdrop',
-					onClick: ev => { if (ev.target === ev.currentTarget) { setAllToolsOpen(false); } },
-				}, h('div', {
-					className: 'vssaros-home-dialog', 'data-vssaros-all-tools': '1',
-					role: 'dialog', 'aria-modal': 'true', 'aria-label': '更多工具',
-					onKeyDown: ev => { if (ev.key === 'Escape') { setAllToolsOpen(false); } },
-				},
-					h('header', null,
-						h('h2', null, '更多工具'),
-						h('button', {
-							type: 'button', className: 'vssaros-home-icon-button',
-							'data-vssaros-close-all-tools': '1', 'aria-label': '关闭更多工具',
-							onClick: () => setAllToolsOpen(false),
-						}, guideIcon('x'))),
-					h('p', null, '按需打开工具，在右侧展示，保留开始页和当前聊天。'),
-					h('label', { className: 'vssaros-home-search' },
-						guideIcon('search'),
-						h('input', {
-							'aria-label': '搜索更多工具', placeholder: '搜索工具…', value: toolQuery,
-							onChange: e => setToolQuery(e && e.target ? e.target.value : ''),
-						})),
-					h('div', { className: 'vssaros-home-dialog-tools' }, allTools.length
-						? allTools.map((tool, index) => toolCard(tool, index, allTools.length, false, id => {
-							setAllToolsOpen(false); openTool(id);
-						}))
-						: h('div', { className: 'vssaros-home-empty' }, '没有匹配工具，换个关键词试试。')),
-					h('p', { className: 'vssaros-home-dialog-note' },
-						'列表来自宿主工具注册表；打开不会替换开始页与中栏会话。'))) : null;
 				return h('section', {
 					className: 'vssaros-home', 'data-vssaros-guide-root': '1',
 					'data-vssaros-home-view': 'workbenches', 'data-vssaros-surface': 'workbench',
@@ -1272,17 +1684,13 @@ window.__ModuleLoader__.load({
 							},
 						}),
 						h('span', { className: 'vssaros-home-small' }, '/')),
-					h('div', { className: 'vssaros-home-filters', role: 'group', 'aria-label': '目录分类' },
-						[['all', '全部'], ['workbench', '工作台'], ['tool', '工具']]
-							.map(([id, label]) => filterButton(id, label))),
 					restartPending.length ? h('div', {
 						className: 'vssaros-home-install-notice', role: 'status', 'aria-live': 'polite',
 						'data-vssaros-restart-pending': String(restartPending.length),
 					}, restartPending.map(item => '「' + item.name + (item.version ? ' ' + item.version : '') + '」').join('、')
 						+ '已安装，重启 Harness 后出现') : null,
-					toolSection, workbenchSection, emptyState,
-					notice ? h('div', { className: 'vssaros-home-notice', role: 'status', 'aria-live': 'polite' }, notice) : null,
-					allToolsDialog);
+					workbenchSection, emptyState,
+					notice ? h('div', { className: 'vssaros-home-notice', role: 'status', 'aria-live': 'polite' }, notice) : null);
 			};
 		}
 		/**
@@ -1380,8 +1788,10 @@ window.__ModuleLoader__.load({
 			]);
 			const sync = () => {
 				if (disposed) { return; }
+				// 统一投影：nativeTab surface 与开始页共用同一张 HomeItem 表；工具 item 无 page ⇒ 过滤掉。
 				const pages = sidebarLayoutV1Enabled
-					? selectNativeTabPages(service.getCatalogSnapshot().pages) : [];
+					? selectHomeItems(getHomeItemRegistry(service, betterSidebar).snapshot(), 'nativeTab')
+						.filter(item => item.page).map(item => item.page) : [];
 				const live = new Set(pages.map(page => page.key));
 				for (const [key, record] of [...registrations]) {
 					if (!live.has(key)) {
@@ -1399,6 +1809,8 @@ window.__ModuleLoader__.load({
 					const hidden = page.hidden || page.retired || !page.enabled || page.availability !== 'ready';
 					const descriptor = {
 						id: typeId,
+						// 标记宿主自注册承载 tab：统一 HomeItemRegistry 按 origin 排除，不再靠字符串前缀猜。
+						vssarosOwner: HOME_ITEM_OWNER,
 						title: page.title,
 						description: page.description || page.title,
 						order: 200 + index,
@@ -1756,7 +2168,9 @@ window.__ModuleLoader__.load({
 						return false;
 					}
 					await this.commit(state => {
-						state.homeWorkbenchOrder = normalizeHomeOrder(keys, pages.map(page => page.key));
+						const order = normalizeHomeOrder(keys, pages.map(page => page.key));
+						state.homeWorkbenchOrder = order;
+						state.homeItemOrder = order;   // 统一排序字段同步落地，旧存档仍可读
 					});
 					this.legacyTabsMigrated = true;
 					storage.setItem(LEGACY_TABS_MIGRATED_KEY, '1');
@@ -3752,29 +4166,19 @@ window.__ModuleLoader__.load({
 .vssaros-home-search:focus-within { border-color:var(--dsw-alias-brand-primary); }
 .vssaros-home-search svg { width:15px; height:15px; color:var(--dsw-alias-label-tertiary); }
 .vssaros-home-search input { width:100%; min-width:0; border:0; background:none; outline:none; font-size:12px; }
-.vssaros-home-filters { display:flex; gap:5px; margin-bottom:19px; }
-.vssaros-home-filter { border-radius:6px; font-size:11px; padding:4px 10px; color:var(--dsw-alias-label-secondary); }
-.vssaros-home-filter.active { background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); }
-.vssaros-home-filter:hover:not(:disabled) { background:var(--dsw-alias-bg-layer-3); }
 .vssaros-home-section-head { display:flex; align-items:center; gap:6px; margin:19px 0 10px; }
-.vssaros-home-tools-heading { margin-top:19px; }
 .vssaros-home-section-head h2 { font-size:12px; font-weight:600; margin:0; }
-.vssaros-home-section-head .vssaros-home-small { margin-left:auto; }
+.vssaros-home-section-head .vssaros-home-small { margin-left:auto; white-space:nowrap; }
 .vssaros-home-pill { display:inline-flex; align-items:center; padding:2px 7px; border:1px solid var(--dsw-alias-border-l2); border-radius:6px; font-size:10px; color:var(--dsw-alias-label-secondary); }
-.vssaros-home-view-tools { margin-left:auto; display:flex; align-items:center; gap:4px; color:var(--dsw-alias-label-secondary); font-size:10px; padding:4px 7px; border-radius:6px; }
-.vssaros-home-view-tools:hover:not(:disabled) { background:var(--dsw-alias-bg-layer-2); }
-.vssaros-home-view-tools .vssaros-home-chevron { width:13px; height:13px; }
+.vssaros-home-section-actions { margin-left:auto; display:flex; align-items:center; gap:6px; position:relative; }
+.vssaros-home-section-actions .vssaros-home-more-wrap { position:relative; }
+.vssaros-home-section-actions .vssaros-home-more-card { width:auto; min-height:28px; border-style:solid; padding:4px 9px; }
+.vssaros-home-workbench-card.is-anchored { border-color:var(--dsw-alias-brand-primary); }
+.vssaros-home-workbench-card.is-anchored .vssaros-home-anchor { color:var(--dsw-alias-brand-primary); }
+.vssaros-home-item-order-controls { position:absolute; right:6px; bottom:6px; display:flex; gap:2px; z-index:2; }
 .vssaros-home-tool-grid, .vssaros-home-workbench-grid { display:grid; gap:9px; min-width:0; max-width:100%; }
 .vssaros-home-tool-grid { grid-template-columns:minmax(0,1fr); }
 .vssaros-home-workbench-grid { grid-template-columns:repeat(2,minmax(0,1fr)); min-width:0; max-width:100%; }
-.vssaros-home-entry-card { display:flex; align-items:center; gap:13px; text-align:left; width:100%; min-width:0; border:1px solid var(--dsw-alias-border-l3); border-radius:13px; background:var(--dsw-alias-card-fill); padding:12px 14px; min-height:61px; transition:background .16s,border-color .16s; }
-.vssaros-home-entry-card:hover:not(:disabled) { background:var(--dsw-alias-card-fill-hover); border-color:var(--dsw-alias-label-tertiary); }
-.vssaros-home-entry-icon { display:grid; place-items:center; color:var(--dsw-alias-label-secondary); }
-.vssaros-home-entry-icon svg { width:20px; height:20px; }
-.vssaros-home-entry-body { flex:1; min-width:0; }
-.vssaros-home-entry-card b { display:block; font-size:12px; font-weight:600; }
-.vssaros-home-entry-card p { margin:2px 0 0; color:var(--dsw-alias-label-secondary); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.vssaros-home-entry-key { font-size:9px; white-space:nowrap; color:var(--dsw-alias-label-secondary); margin-left:auto; }
 .vssaros-home-more-wrap { grid-column:1/-1; position:relative; }
 .vssaros-home-more-card { grid-column:1/-1; display:flex; align-items:center; gap:8px; min-height:40px; width:100%; border:1px dashed var(--dsw-alias-border-l2); border-radius:9px; background:var(--dsw-alias-bg-layer-1); padding:7px 12px; }
 .vssaros-home-more-card svg { width:16px; height:16px; color:var(--dsw-alias-label-secondary); }
@@ -3795,14 +4199,23 @@ window.__ModuleLoader__.load({
 .vssaros-home-workbench-card.is-drop-target { box-shadow:inset 0 0 0 2px var(--dsw-alias-brand-primary); }
 .vssaros-home-workbench-card.is-keyboard-dragging { outline:2px solid var(--dsw-alias-brand-primary); outline-offset:2px; }
 .vssaros-home-workbench-open { display:block; width:100%; height:100%; min-height:100px; text-align:left; padding:13px 12px 11px; border:0; border-radius:10px; background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }
-.vssaros-home-workbench-open header { display:flex; align-items:center; gap:7px; margin-bottom:5px; padding-right:27px; }
+.vssaros-home-workbench-open header { display:flex; align-items:center; gap:7px; margin-bottom:5px; padding-right:64px; }
 .vssaros-home-workbench-open header svg { width:15px; height:15px; color:var(--dsw-alias-label-secondary); }
 .vssaros-home-workbench-open header strong { font-size:12px; font-weight:500; min-width:0; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
 .vssaros-home-workbench-open p { margin:0; color:var(--dsw-alias-label-secondary); font-size:10px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
 .vssaros-home-new-badge { margin-left:auto; font-size:9px; color:var(--dsw-alias-state-success-primary); }
 .vssaros-home-workbench-open .vssaros-home-new-badge { position:absolute; right:13px; bottom:10px; }
 .vssaros-home-source { color:var(--dsw-alias-label-tertiary); font-size:9px; margin-top:5px; padding-right:20px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
+.vssaros-home-card-actions { position:absolute; right:4px; top:4px; display:flex; align-items:center; gap:4px; z-index:2; }
+.vssaros-home-anchor-button { display:grid; place-items:center; width:28px; height:28px; border:1px solid var(--dsw-alias-border-l2); border-radius:6px; color:var(--dsw-alias-label-tertiary); background:var(--dsw-alias-bg-layer-1); cursor:pointer; }
+.vssaros-home-anchor-button svg { width:15px; height:15px; }
+.vssaros-home-anchor-button:hover:not(:disabled) { background:var(--dsw-alias-bg-layer-2); border-color:var(--dsw-alias-label-tertiary); }
+.vssaros-home-anchor-button[aria-pressed="true"] { color:var(--dsw-alias-brand-primary); border-color:var(--dsw-alias-brand-primary); }
+/* 已固定态不能只靠 aria-pressed 的颜色（主题里品牌色可能与默认色相同）：加背景 + 内描边 + 对勾图标。 */
+.vssaros-home-card-actions .vssaros-home-anchor-button.is-pinned { color:var(--dsw-alias-brand-primary); border-color:var(--dsw-alias-brand-primary); background:var(--dsw-alias-bg-layer-3); box-shadow:inset 0 0 0 1px var(--dsw-alias-brand-primary); }
+.vssaros-home-card-actions .vssaros-home-anchor-button.is-pinned svg { stroke-width:2.2; }
 .vssaros-home-drag-handle { position:absolute; right:4px; top:4px; display:grid; place-items:center; width:32px; height:32px; border:1px solid var(--dsw-alias-border-l2); border-radius:6px; color:var(--dsw-alias-label-tertiary); background:var(--dsw-alias-bg-layer-1); cursor:grab; touch-action:none; }
+.vssaros-home-card-actions .vssaros-home-drag-handle { position:static; width:28px; height:28px; }
 .vssaros-home-anchor { z-index:1; }
 .vssaros-home-drag-handle svg { width:15px; height:15px; }
 .vssaros-home-drag-handle:active { cursor:grabbing; }
@@ -3811,10 +4224,6 @@ window.__ModuleLoader__.load({
 .vssaros-home-drag-preview [data-vssaros-home-drag] { display:none; }
 .vssaros-home-drag-help, .vssaros-home-keyboard-help { font-size:10px; color:var(--dsw-alias-label-tertiary); margin:0 0 10px; }
 .vssaros-home-keyboard-help { margin-top:10px; }
-.vssaros-home-tool-order-row { display:flex; align-items:center; gap:4px; border:1px solid var(--dsw-alias-border-l3); border-radius:11px; background:var(--dsw-alias-card-fill); padding-right:6px; min-width:0; }
-.vssaros-home-tool-order-row .vssaros-home-entry-card { border:0; background:none; padding:11px 9px; flex:1; }
-.vssaros-home-tool-order-row .vssaros-home-entry-key { display:none; }
-.vssaros-home-tool-order-controls { display:flex; flex-shrink:0; gap:2px; }
 .vssaros-home-icon-button { display:grid; place-items:center; width:27px; height:30px; border:1px solid var(--dsw-alias-border-l3); border-radius:7px; background:var(--dsw-alias-bg-layer-1); }
 .vssaros-home-icon-button svg { width:13px; height:13px; }
 .vssaros-home-icon.down { transform:rotate(180deg); }
@@ -3825,18 +4234,9 @@ window.__ModuleLoader__.load({
 .vssaros-home-empty { padding:25px; text-align:center; color:var(--dsw-alias-label-secondary); }
 .vssaros-home-notice { font-size:11px; color:var(--dsw-alias-label-secondary); margin-top:10px; }
 .vssaros-home-install-notice { margin:0 0 14px; padding:8px 10px; border:1px solid var(--dsw-alias-border-l3); border-radius:8px; background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-secondary); font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
-.vssaros-home-dialog-backdrop { position:fixed; inset:0; z-index:100; display:grid; place-items:center; background:var(--dsw-alias-bg-base); }
-.vssaros-home-dialog { width:min(470px,92vw); max-height:86dvh; overflow:auto; border:1px solid var(--dsw-alias-border-l3); border-radius:16px; padding:24px; background:var(--dsw-alias-bg-layer-1); }
-.vssaros-home-dialog header { display:flex; align-items:center; justify-content:space-between; }
-.vssaros-home-dialog h2 { font-size:20px; margin:0 0 10px; }
-.vssaros-home-dialog p { font-size:13px; color:var(--dsw-alias-label-secondary); }
-.vssaros-home-dialog .vssaros-home-search { margin-top:12px; }
-.vssaros-home-dialog-tools { display:grid; gap:8px; max-height:55dvh; overflow:auto; padding:4px; }
-.vssaros-home-dialog-tools .vssaros-home-entry-card { flex-shrink:0; }
-.vssaros-home-dialog-note { font-size:10px; color:var(--dsw-alias-label-tertiary); }
-@container (min-width:376px) { .vssaros-home-tool-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .vssaros-home-tool-grid .vssaros-home-entry-key { display:none; } .vssaros-home-tool-grid .vssaros-home-entry-card { padding:11px 10px; gap:8px; } .vssaros-home-tool-grid .vssaros-home-entry-icon svg { width:17px; height:17px; } }
-@container (max-width:375px) { .vssaros-home { padding:22px 16px; } .vssaros-home-workbench-grid { grid-template-columns:1fr; } .vssaros-home-entry-key { display:none; } }
-@media(pointer:coarse) { .vssaros-home-menu button { min-height:44px; } .vssaros-home-drag-handle { width:44px; height:44px; right:0; top:0; } .vssaros-home-workbench-open header { padding-right:34px; } }
+@container (min-width:376px) { .vssaros-home-tool-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@container (max-width:375px) { .vssaros-home { padding:22px 16px; } .vssaros-home-workbench-grid { grid-template-columns:1fr; } }
+@media(pointer:coarse) { .vssaros-home-menu button { min-height:44px; } .vssaros-home-card-actions .vssaros-home-drag-handle, .vssaros-home-anchor-button { width:38px; height:38px; } .vssaros-home-workbench-open header { padding-right:84px; } }
 @media(prefers-reduced-motion:reduce) { .vssaros-home * { transition:none!important; } }
 `;
 		/**
@@ -3861,6 +4261,12 @@ window.__ModuleLoader__.load({
 		}
 
 		function apply(ctx) {
+			// 左栏由 anchor 决定：模块加载即安装桥与三行隐藏，不依赖 guide 挂载或 inject 回调。
+			try { installHomeAnchorBridge(); } catch { /* 后续兜底 */ }
+			try {
+				setTimeout(installHomeAnchorBridge, 400);
+				setTimeout(installHomeAnchorBridge, 1500);
+			} catch { /* 老宿主 */ }
 			const service = new Workbenches(ctx);
 			service.View = makeView(service);
 			service.PageView = makePageView(service);
@@ -3893,6 +4299,22 @@ window.__ModuleLoader__.load({
 					ctx.inject(['betterSidebar'], (scoped) => {
 						const sidebar = optionalService(scoped, 'betterSidebar');
 						if (!sidebar) { return; }
+						// 左栏 item 完全由 anchor 决定 ⇒ registry / 打开桥 / DOM 桥不能依赖「开始」页是否挂载。
+						const registry = getHomeItemRegistry(service, sidebar);
+						globalThis.__vssarosHomeItemRegistry = registry;
+						if (typeof globalThis.__vssarosOpenHomeAnchor !== 'function') {
+							globalThis.__vssarosOpenHomeAnchor = key => {
+								const item = registry.get(key);
+								if (!item) { return; }
+								if (item.origin.registry === HOME_ITEM_SOURCE_TABS && typeof sidebar.openTab === 'function') {
+									sidebar.openTab({ type: item.tabId }); return;
+								}
+								const open = globalThis.__vssarosOpenWorkbenchCatalogPage;
+								if (typeof open === 'function' && open(item.catalogKey) === true) { return; }
+								if (item.workbenchId && typeof service.open === 'function') { service.open(item.workbenchId); }
+							};
+						}
+						try { installHomeAnchorBridge(); } catch { /* DOM 未就绪时由后续重贴兜底 */ }
 						return installSidebarLayoutOwnership(ctx, service, sidebar);
 					});
 				}
@@ -4253,6 +4675,14 @@ window.__ModuleLoader__.load({
 		module.exports.normalizeHomeOrder = normalizeHomeOrder;
 		module.exports.moveHomeOrder = moveHomeOrder;
 		module.exports.toolEntriesOf = toolEntriesOf;
+		module.exports.toolViewOf = toolViewOf;
+		module.exports.homeItemKey = homeItemKey;
+		module.exports.isHostOwnedTab = isHostOwnedTab;
+		module.exports.homeItemOfCatalogPage = homeItemOfCatalogPage;
+		module.exports.homeItemOfTabDescriptor = homeItemOfTabDescriptor;
+		module.exports.selectHomeItems = selectHomeItems;
+		module.exports.createHomeItemRegistry = createHomeItemRegistry;
+		module.exports.migrateHomeItemOrder = migrateHomeItemOrder;
 		module.exports.parseImageToken = parseImageToken;
 		module.exports.pendingInstallsOf = pendingInstallsOf;
 		module.exports.selectStartPages = selectStartPages;
@@ -4281,6 +4711,10 @@ window.__ModuleLoader__.load({
 		module.exports.__openSidebarWorkbenchPage = (key, scope) => activeSidebarAdapter ? activeSidebarAdapter.openPage(key, scope) : false;
 		module.exports.__testSetGlobal = (name, value) => { globalThis[name] = value; };
 		module.exports.__testDeleteGlobal = name => { delete globalThis[name]; };
+		module.exports.__testGetGlobal = name => globalThis[name];
+		module.exports.__testReadHomeAnchors = readHomeAnchors;
+		module.exports.__testToggleHomeAnchor = toggleHomeAnchor;
+		module.exports.__testWriteHomeAnchors = writeHomeAnchors;
 		module.exports.__Frame = Frame;
 		return module.exports;
 	},

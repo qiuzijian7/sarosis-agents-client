@@ -26,6 +26,19 @@ if (Test-Path $destPath) {
 }
 Copy-Item -Recurse -Force $sourcePath $destPath
 
+# 2.5 可选组件包（媒体 / Office / Whisper）：同步到 DOWNLOADS_DIR/components。
+# 先执行 node build/saros/package-components.mjs 生成；不存在时保留服务器现有组件。
+$componentsSource = Join-Path (Split-Path (Split-Path $PSScriptRoot)) 'build\saros\update-server\downloads\components'
+if (Test-Path -LiteralPath $componentsSource) {
+    $downloadsDest = Join-Path $DeployPath 'downloads'
+    $componentsDest = Join-Path $downloadsDest 'components'
+    New-Item -ItemType Directory -Force -Path $componentsDest | Out-Null
+    Copy-Item -Path (Join-Path $componentsSource '*') -Destination $componentsDest -Recurse -Force
+    Write-Host "[OK] 已同步可选组件包到 $componentsDest" -ForegroundColor Green
+} else {
+    Write-Host "[WARN] 未找到 $componentsSource；服务器沿用现有组件包" -ForegroundColor Yellow
+}
+
 # 3. 创建 package.json (如果需要)
 Write-Host "[3/5] 创建 package.json..." -ForegroundColor Cyan
 $packageJson = @{

@@ -67,6 +67,8 @@ export class VoxLaunchChannel extends Disposable {
 	constructor(
 		private readonly logService: ILogService,
 		private readonly configurationService: IConfigurationService,
+		/** <userData>；可选组件下载到 <userData>/components/media/current。 */
+		private readonly userDataPath?: string,
 	) {
 		super();
 		this.registerChannels();
@@ -184,6 +186,22 @@ export class VoxLaunchChannel extends Disposable {
 		const exe = process.platform === 'win32' ? `${name}.exe` : name;
 		const packaged = join(this.resourcesPath(), 'saros', 'bin', exe);
 		if (existsSync(packaged)) { return packaged; }
+		if (this.userDataPath) {
+			const installed = join(this.userDataPath, 'components', 'media', 'current', exe);
+			if (existsSync(installed)) { return installed; }
+		}
+		// 官方包管理器/系统路径：winget links、Homebrew、Linux /usr/bin。
+		const officialCandidates = [
+			process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links', exe) : '',
+			process.env.ProgramFiles ? join(process.env.ProgramFiles, 'ffmpeg', 'bin', exe) : '',
+			'/opt/homebrew/bin/' + exe,
+			'/usr/local/bin/' + exe,
+			'/usr/bin/' + exe,
+			process.env.HOME ? join(process.env.HOME, '.local', 'bin', exe) : '',
+		];
+		for (const candidate of officialCandidates) {
+			if (candidate && existsSync(candidate)) { return candidate; }
+		}
 		let dir = __dirname;
 		for (let i = 0; i < 8; i++) {
 			const candidate = join(dir, 'build', 'saros', 'bin', exe);

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>构建记录 · 交互样例</title>
+<style>
+:root{font:100%/1.6 system-ui,sans-serif;color:#173736;background:#f2f5ef}
+main{max-width:46rem;margin:8vh auto;padding:clamp(1rem,4vw,3rem);background:white;border-top:.4rem solid #167066}
+h1{font-size:clamp(2rem,5vw,3rem);margin:0 0 .5rem;line-height:1.2}
+form{display:flex;flex-wrap:wrap;align-items:end;gap:.65rem;margin:1.6rem 0}
+label{display:grid;flex:1 1 13rem;gap:.3rem}
+input,button{font:inherit;padding:.45rem .8rem;border:1px solid #819591;border-radius:.25rem}
+button{background:#155f58;color:white;cursor:pointer}
+:focus-visible{outline:3px solid #a64918;outline-offset:3px}
+li{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;border-bottom:1px solid #d1dcd7;padding:.6rem 0;overflow-wrap:anywhere}
+ul{list-style:none;padding:0} small{color:#3f5954}
+</style>
+<main><h1>构建记录</h1><form><label>分支<input name="branch" value="main"></label><button>查询</button></form>
+<p role="status" aria-live="polite"></p><ul aria-label="构建结果"></ul></main>
+<script type="module">
+// Replace the fixture with the project's API. Sequence numbers also cover transports without abort.
+const form = document.querySelector('form'), input = form.elements.branch;
+const status = document.querySelector('[role=status]'), list = document.querySelector('ul');
+let generation = 0;
+async function lookup(branch) {
+  await new Promise(resolve => setTimeout(resolve, branch === 'slow' ? 450 : 40));
+  if (branch === 'error') throw new Error('示例请求失败');
+  if (branch === 'empty') return [];
+  return [{ label: branch, result: '已完成' }];
+}
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  const branch = input.value.trim(), current = ++generation;
+  list.replaceChildren();
+  if (!branch) { status.textContent = '请填写分支'; input.focus(); return; }
+  status.textContent = '正在查询…';
+  try {
+    const rows = await lookup(branch);
+    if (current !== generation) return;
+    for (const row of rows) {
+      const li = document.createElement('li'), state = document.createElement('small');
+      state.textContent = row.result;
+      li.append(document.createTextNode(row.label), state);
+      list.append(li);
+    }
+    status.textContent = rows.length ? '找到 ' + rows.length + ' 条记录' : '这个分支没有构建记录';
+  } catch (error) {
+    if (current === generation) status.textContent = error.message + '，可重新查询';
+  }
+});
+form.requestSubmit();
+</script></html>

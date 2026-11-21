@@ -17,19 +17,18 @@
  * 安装后要裁掉的**运行时本体**负载。每项是从 runtime 根开始的相对路径段
  * （`prune()` 用 `join(targetDir, ...rel)` 定位）。
  *
- * ★ 2026-11-02：当前为**空**。LibreOffice Kit 不再裁剪 —— Office 全量路线上线后，
- *   它是渲染 / 转换 / 重算能力的执行引擎，随 **dsh-runtime 本体**分发，见
- *   `build/prepare-office-runtime.mjs:276`："LibreOffice 引擎不在这里 —— 它随 dsh-runtime 分发"。
- *   ★ 2026-11-12（dsh 0.2.2-rc.2）：上游把 `office-render` / `office-export-pdf` /
- *   `office-recalculate` 三个技能改成了 `office_render` / `office_convert` / `office_recalculate`
- *   三个工具（由 `@deepseek-ai/dsh-skill-office` 提供）。内核仍是它们的引擎，保留理由不变，
- *   只是调用方从技能变成了工具。
- *   体积代价见 `build/prepare-office-runtime.mjs` 头注释与发版说明。
+ * ★ 2026-11-02：LibreOffice Kit 原生引擎不裁 —— Office 全量路线需要它做渲染 / 转换 /
+ *   重算，随 **dsh-runtime 本体**分发，见 `build/prepare-office-runtime.mjs:276`。
+ *   ★ 2026-11-12（dsh 0.2.2-rc.2）：Office 工具仍依赖这个原生引擎，保留理由不变。
+ *   ★ 2026-11-21：Windows 有原生 win32-x64 引擎时不会使用 wasm 后备，因此裁掉
+ *   `libreoffice-kit-wasm` 的 145MB 资源，保留原生 Office 能力。
  *
  * 注意：sherpa-onnx-*（本地语音识别，22 MB）**不裁** —— 语音输入是聊天框特性。
  */
 export const PRUNE_LIST = [
-	// 有意留空：Office 全量路线需要运行时本体里的 LibreOffice 引擎。
+	// Windows 桌面端有 win32-x64 原生引擎时不会加载 wasm 后备；保留原生引擎和 Office 能力，
+	// 移除 145MB 的 portable wasm 资源，减少安装包体积。
+	['node_modules', '@deepseek-ai', 'libreoffice-kit-wasm'],
 ];
 
 /**
@@ -43,4 +42,4 @@ export const PRUNE_LIST = [
  * pnpm 12 默认用 `.pnpm` 虚拟店布局，内核藏在
  * `@deepseek-ai+libreoffice-kit-win32-x64@<ver>/node_modules/...`；hoisted 布局没有这个路径。
  */
-export const VIRTUAL_STORE_HEAVY_RE = /^@deepseek-ai\+libreoffice-kit-(?:win32|darwin|linux)/;
+export const VIRTUAL_STORE_HEAVY_RE = /^@deepseek-ai\+libreoffice-kit-(?:win32|darwin|linux|wasm)/;

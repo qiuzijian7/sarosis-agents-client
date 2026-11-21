@@ -43,6 +43,76 @@ export const PRESET_PATH = path.join(DIR, 'cordis.presets.yml');
  */
 export const BASE_ROWS_PATH = path.join(DIR, 'lib', 'core', 'presetBase.generated.js');
 
+/**
+ * ★ 2026-11-21：**模式 preset id 的唯一数据真源**。
+ * 以前这份清单散在 12 处（botIdentity 真源 + 8 份 chunk 逐字副本 + catalog + 守卫期望 +
+ * preset-compat + BUILTIN_PRESETS …），口径互相打架（幽灵 id 从未生成过 preset 却一直留在判据里）。
+ * ⇒ 现在只有下面这一份：`modePresetIds.generated.js` 与 8 份副本全部由 `--write-registry` 生成，
+ *   `check-bot-identity.mjs` 负责逐字对拍。加/删一个模式 = 改这里 + 跑一次生成器。
+ * ⚠ `deep-ptc` 是**第三方**自声明的展示目录项（无 `vssaros-` 前缀、由插件自己注册），
+ *   不属于身份判据；`vssaros-full` / `vssaros-minimal` / `vssaros-cordis` 的 preset 定义已删，
+ *   按用户口径「老会话直接删除、不做兼容」⇒ 一律不登记。
+ */
+export const MODE_PRESET_IDS = Object.freeze([
+	'standard', 'ptc', 'minimal', 'cordis', 'vssaros-standard', 'vssaros-ptc',
+]);
+
+/** 真源生成物（被 botIdentity.js 静态 import）。 */
+export const MODE_IDS_PATH = path.join(DIR, 'lib', 'core', 'modePresetIds.generated.js');
+/** 8 份 `vssaros:bot-identity v1` 副本所在文件（相对 dsh-plugins/）。 */
+export const BOT_IDENTITY_FILES = Object.freeze([
+	'vssaros-chat-surface/lib/client.capsule.js',
+	'vssaros-chat-surface/lib/client.welcome.js',
+	'vssaros-chat-surface/lib/client.sessions.js',
+	'vssaros-chat-surface/lib/client.conversationViews.js',
+	'vssaros-chat-surface/lib/client.botEntry.js',
+	'vssaros-chat-surface/lib/client.botHistory.js',
+	'vssaros-chat-surface/lib/client.agents.js',
+	'vssaros-memory/lib/vssaros-bot.js',
+]);
+
+const BOT_ID_ARRAY_LINE = /^([ \t]*)const BOT_MODE_PRESET_IDS = (\[[^\]]*\]);$/m;
+
+export function expectedModeIdsText() {
+	return [
+		'// ⚠ 本文件由 `dsh-plugins/preset-sync.mjs --write-registry` 生成，**不要手改** ✗。',
+		'// 模式 preset id 的唯一数据真源；8 份 chunk 的 BOT_MODE_PRESET_IDS 副本由同一份生成。',
+		`export const MODE_PRESET_IDS = Object.freeze(${JSON.stringify([...MODE_PRESET_IDS], null, '\t')});`,
+		'',
+	].join('\n');
+}
+
+/** 校验 8 份副本与真源一致（check 模式用）。 */
+export function botIdentityProblems() {
+	const problems = [];
+	const expected = JSON.stringify([...MODE_PRESET_IDS]);
+	for (const rel of BOT_IDENTITY_FILES) {
+		const abs = path.join(HERE, rel);
+		const text = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : '';
+		const m = BOT_ID_ARRAY_LINE.exec(text);
+		if (!m) { problems.push(`${rel}: 缺 BOT_MODE_PRESET_IDS 数组行`); continue; }
+		let actual = m[2];
+		try { actual = JSON.stringify(JSON.parse(m[2])); } catch { /* 坏数组按原文比对 */ }
+		if (actual !== expected) { problems.push(`${rel}: 身份数组与真源不一致 ⇒ 跑 --write-registry`); }
+	}
+	return problems;
+}
+
+/** 把 8 份副本的数组行刷成真源（保留各自原有缩进）。 */
+export function writeBotIdentityFiles() {
+	const expected = JSON.stringify([...MODE_PRESET_IDS]);
+	let changed = 0;
+	for (const rel of BOT_IDENTITY_FILES) {
+		const abs = path.join(HERE, rel);
+		const text = fs.readFileSync(abs, 'utf8');
+		const m = BOT_ID_ARRAY_LINE.exec(text);
+		if (!m) { throw new Error(`${rel}: 找不到 BOT_MODE_PRESET_IDS 数组行`); }
+		const line = `${m[1]}const BOT_MODE_PRESET_IDS = ${expected};`;
+		if (m[0] !== line) { fs.writeFileSync(abs, text.replace(m[0], line), 'utf8'); changed += 1; }
+	}
+	return changed;
+}
+
 /** 我们的 preset 标识（`config.id`，会话保存的就是它 ✓）。 */
 export const OUR_PRESET_ID = 'vssaros-standard';
 /** 行 id（Loader 编辑地址 ✓）。 */
@@ -52,7 +122,9 @@ export const OUR_PRESET_ROW_ID = 'preset-vssaros-standard';
  *
  * ★ 2026-10-21 原来这里是 **3** ⇒ 与官方 minimal(3)/cordis(4) **同 order** ⇒ 官方 seat 菜单里
  *   "极简模式 → standard → 创造模式" **交错穿插**（用户截图现场 ✗）⇒ 观感上像"重复项"。
- *   沉到 100 之后：官方 4 模式(1..4) → agent → 我们的 3 档(100/101/102) ⇒ **三层清晰可辨** ✓。
+ *   沉到 100 之后：官方 4 模式(1..4) → agent → 我们的 2 档(100/101) ⇒ **两层清晰可辨** ✓。
+ *   ⚠ 2026-11-21：第三档 `vssaros-full`（全工具）已退役删除 —— 行集合与标准档逐字相同、
+ *     只差 `denyTools`，而"放开场景类工具"已由运行期开关承担 ⇒ 没有必要再维护一份 preset 副本。
  *   ⚠ 只改排序，不改 id/内容 ⇒ 会话 id 语义与功能零影响 ✓。
  */
 export const OUR_PRESET_ORDER = 100;
@@ -91,7 +163,7 @@ export const OUR_PRESET_DESCRIPTION = '带 VsSaros 能力模块的默认档：�
  */
 export const PTC_PRESET_ID = 'vssaros-ptc';
 export const PTC_PRESET_ROW_ID = 'preset-vssaros-ptc';
-/** `order` 101：与另外两档一起沉到官方模式与 agent 之后（只影响列表顺序 ✓）。 */
+/** `order` 101：与标准档一起沉到官方模式与 agent 之后（只影响列表顺序 ✓）。 */
 export const PTC_PRESET_ORDER = 101;
 /** 显示名：带 VsSaros 前缀，免得和官方那个 `ptc` 在 UI 里分不清 ✓。
  *  ★ 2026-10-21：`PTC (VsSaros)` → `PTC 档（VsSaros）`（"档"字点明它是我们的档位、不是官方那个模式 ✓）。 */
@@ -99,23 +171,6 @@ export const PTC_PRESET_NAME = 'PTC 模式（VsSaros）';
 /** 说明：与标准档的差别只有"工具以批量执行方式呈现"这一条 ⇒ 写清楚才不会被当成重复项 ✓。 */
 export const PTC_PRESET_DESCRIPTION = '与标准档同一套能力，但工具以批量执行（PTC）方式呈现：模型只看到 run_code 与自动生成的 SDK。';
 /** 追加进 plugins 末尾那一行（缩进 10/12 与官方 `ptc.patch.yml:123-126` 逐字同形 ✓）。 */
-// ── 第三个 preset：`vssaros-full`（"全能力"档，2026-10-21）──────────────────────────────
-// 与 `vssaros-standard` **逐字相同**，**只差 `vssaros-agents` 行的 `denyTools` 清单**：
-// 标准档藏掉"场景类"工具（省 token），本档**放开**它们 ⇒ 能力不丢（按需切档即可 ✓）。
-// ⚠ 单变量纪律：两份 preset 的**行集合必须完全相同** ⇒ 这样"切档后工具面差多少"才可归因 ✓（守卫会盯 ✓）。
-export const FULL_PRESET_ID = 'vssaros-full';
-export const FULL_PRESET_ROW_ID = 'preset-vssaros-full';
-/** `order` 102：与另外两档一起沉到官方模式与 agent 之后（只影响列表顺序 ✓）。 */
-export const FULL_PRESET_ORDER = 102;
-/**
- * 显示名：与「标准档（VsSaros）」成对 ⇒ 用户一眼知道这是**同一个底座的两档**（差别只在工具面宽窄），
- * 而不是一个"另一件事"。
- * ★ 2026-10-21：`Full (VsSaros)` → `全能力档（VsSaros）` → **`标准档 · 全工具（VsSaros）`**。
- */
-export const FULL_PRESET_NAME = '标准档 · 全工具（VsSaros）';
-/** 说明：与标准档的差别只有"工具面宽窄" ⇒ 说清"更全但更贵"，用户才知道什么时候切它 ✓。 */
-export const FULL_PRESET_DESCRIPTION = '与标准档同一套能力，但放开被收敛掉的场景类工具（媒体 / 看板 / MCP / Web / Unreal 等）：能力最全，token 也最贵。';
-
 export const PTC_PRESENTATION_ROWS = [
 	'          - id: tool-presentation',
 	'            name: \'@deepseek-ai/dsh-agent-tool-presentation\'',
@@ -125,6 +180,17 @@ export const PTC_PRESENTATION_ROWS = [
 
 /** runtime 里官方 standard preset 的路径（找不到 ⇒ 只能跳过"与 runtime 比对"那一半 ✓）。 */
 export function runtimeStandardPresetPath(env = process.env) {
+	// ★ 2026-11-21：宿主实际用的是 dsh-compat.json 里 pin 的 bundled 版本（dsh-runtime/<ver>），
+	//   而探针目录 poc/dsh-p0/.runtime 只是历史残留（本机 state.json 仍指向 0.2.1-rc.2）⇒
+	//   拿它比对会得到「假漂移」，还会掩盖真正的新版差异 ✗ ⇒ 先按 bundled 找，找不到再退回探针。
+	try {
+		const compat = JSON.parse(fs.readFileSync(path.join(HERE, 'dsh-compat.json'), 'utf8'));
+		const bundled = typeof compat.bundled === 'string' ? compat.bundled.trim() : '';
+		if (bundled) {
+			const p = path.join(HERE, '..', 'dsh-runtime', bundled, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'standard.patch.yml');
+			if (fs.existsSync(p)) { return p; }
+		}
+	} catch { /* 读不到 compat ⇒ 退回探针目录 */ }
 	const home = env.DSH_TEST_RUNTIME_ROOT || null;
 	const bases = [home, path.join(HERE, '..', 'poc', 'dsh-p0', '.runtime')].filter(Boolean);
 	for (const base of bases) {
@@ -252,59 +318,9 @@ export function buildPtcPreset(standardPresetText) {
 }
 
 /** 期望的 `cordis.presets.yml` 内容（生成器与守卫**共用这一份**，免得两边各算一遍漂移 ✓）。 */
-/**
- * 从"我们的 native preset 文本"派生 **Full 档**：换 id/name/order + **把 `denyTools` 换成 `denyToolsFull`**。
- *
- * 为什么要"换清单"而不是"换行集合"：host plane 的工具注册是**全局可见**的 ⇒ preset 里少挂某插件，
- * 那些工具**照样**进模型目录 ⇒ 靠"不挂"是藏不住的 ⇒ 唯一能藏的是 **mask（denyTools）** ✓。
- * ⇒ "轻/全"两档必须是**同一批行 + 不同 mask**（顺带满足"单一变量 ⇒ 可归因" ✓）。
- */
-export function buildFullPreset(standardPresetText) {
-	const lines = standardPresetText.replace(/\s+$/, '').split(/\r?\n/);
-	const renamed = lines.map(line => {
-		if (line === `    - id: ${OUR_PRESET_ROW_ID}`) { return `    - id: ${FULL_PRESET_ROW_ID}`; }
-		if (line === `        id: ${OUR_PRESET_ID}`) { return `        id: ${FULL_PRESET_ID}`; }
-		if (line === `        name: ${OUR_PRESET_NAME}`) { return `        name: ${FULL_PRESET_NAME}`; }
-		if (line === `        description: "${OUR_PRESET_DESCRIPTION}"`) { return `        description: "${FULL_PRESET_DESCRIPTION}"`; }
-		if (line === `        order: ${OUR_PRESET_ORDER}`) { return `        order: ${FULL_PRESET_ORDER}`; }
-		return line;
-	});
-	// 取出 `denyToolsFull:` 的条目（它紧跟在 `denyTools:` 之后，缩进更深 ✓）
-	const fullStart = renamed.findIndex(line => /^\s+denyToolsFull:\s*$/.test(line));
-	if (fullStart < 0) { throw new Error('派生 Full preset 时找不到 `denyToolsFull:`（rows 文件里要写它 ✓）'); }
-	const indent = renamed[fullStart].match(/^\s*/)[0];
-	const fullEntries = [];
-	let cursor = fullStart + 1;
-	const fullItem = new RegExp(`^ {${indent.length + 2}}-`);
-	while (cursor < renamed.length && fullItem.test(renamed[cursor])) {
-		fullEntries.push(renamed[cursor]);
-		cursor += 1;
-	}
-	// 删掉 `denyToolsFull:` 整块（连它的注释行一起：往前吃掉连续的注释行 ✓）
-	let blockStart = fullStart;
-	while (blockStart > 0 && /^\s*#/.test(renamed[blockStart - 1]) && renamed[blockStart - 1].match(/^\s*/)[0].length >= indent.length) { blockStart -= 1; }
-	const withoutFull = [...renamed.slice(0, blockStart), ...renamed.slice(cursor)];
-	// 把 `denyTools:` 的条目替换成 full 的条目
-	const denyStart = withoutFull.findIndex(line => /^\s+denyTools:\s*$/.test(line));
-	if (denyStart < 0) { throw new Error('派生 Full preset 时找不到 `denyTools:`（rows 文件里要写它 ✓）'); }
-	const denyIndent = withoutFull[denyStart].match(/^\s*/)[0];
-	let denyEnd = denyStart + 1;
-	// ⚠ 列表里**夹着注释行**（rows 里每段都写了"为什么"）⇒ 只删连续的 `- ` 行会把后面的条目留下 ✗
-	//   ⇒ 这里要连**同缩进的注释**一起吞掉，直到遇到"既不是条目也不是注释"的行（下一个键）✓
-	const denyItem = new RegExp(`^ {${denyIndent.length + 2}}(-|#)`);
-	while (denyEnd < withoutFull.length && denyItem.test(withoutFull[denyEnd])) { denyEnd += 1; }
-	const swapped = [
-		...withoutFull.slice(0, denyStart + 1),
-		...fullEntries,
-		...withoutFull.slice(denyEnd),
-	];
-	return `${swapped.join('\n')}\n`;
-}
-
 export function expectedPresetText(baselineText, ourRowsText) {
 	const standard = buildOurPreset(baselineText, ourRowsText).replace(/\s+$/, '');
 	const ptc = buildPtcPreset(standard).replace(/\s+$/, '');
-	const full = buildFullPreset(standard).replace(/\s+$/, '');
 	return [
 		'# ⚠ 本文件由 `dsh-plugins/preset-sync.mjs` 生成，**不要手改** ✗（改了守卫会红 ✓）：',
 		'#   node dsh-plugins/preset-sync.mjs --write',
@@ -325,14 +341,9 @@ export function expectedPresetText(baselineText, ourRowsText) {
 		'#   （默认 native 档是直接发 197 个 schema）。**不要**把它设成默认 —— 它是拿来做 A/B 的 ✓；',
 		'#   `ctx.ptcRuntime` 由 host 层 `dsh-base` 的 `ptc-runtime` 行提供，本文件不需要挂 ✓。',
 		'#',
-		`# ★ 第三个 preset \`${FULL_PRESET_ID}\`（"全能力"档，2026-10-21）：与上面那份**逐字相同**，**只差** \`vssaros-agents\` 行的 \`denyTools\` 清单`,
-		'#   （标准档藏掉"场景类"工具省 token；本档放开它们 ⇒ 能力不丢 ✓）。切档即可换轻重 ✓；',
-		'#   ⚠ 两份的**行集合必须完全相同** ⇒ "切档后差多少"才可归因（守卫会盯 ✓）。',
 		standard,
 		'',
 		ptc,
-		'',
-		full,
 		'',
 	].join('\n');
 }
@@ -380,9 +391,19 @@ export async function buildAgentBaseRows(baselineText, ourRowsText) {
 /** 基座模块的期望文本（生成器与守卫共用）。 */
 export async function expectedBaseRowsText(baselineText, ourRowsText) {
 	const rows = await buildAgentBaseRows(baselineText, ourRowsText);
+	// ★ 2026-11-21：给基座打**外部锚点**，回答「这份基座派生自哪一版官方 preset」。
+	//   dsh 升级换了 bundled 版本 ⇒ 期望文本随之变化 ⇒ check 自动判红，逼出一次 --write ✓。
+	//   没有这两行时 baseline 与基座会一起漂、自比恒绿（质量复盘 P2-1）。
+	const { createHash } = await import('node:crypto');
+	let bundled = '(unknown)';
+	try {
+		bundled = String(JSON.parse(fs.readFileSync(path.join(HERE, 'dsh-compat.json'), 'utf8')).bundled || '(unknown)');
+	} catch { /* 读不到就如实标 unknown，不假装成功 */ }
+	const digest = createHash('sha256').update(normEol(baselineText)).digest('hex').slice(0, 16);
 	return [
 		'// ⚠ 本文件由 `dsh-plugins/preset-sync.mjs --write-agent-base` 生成，**不要手改**（`node dsh-plugins/preset-sync.mjs` 会判红）。',
 		'//',
+		`// ★ 外部锚点：dsh bundled = ${bundled} / baseline sha256 = ${digest}`,
 		'// 每个 agent preset 的**共享基座**（`core/agents.js` 的 `toPresetDefinition` = 本基座 ⊕ 该 agent 的差量）：',
 		'//   · 官方 standard preset（`preset-standard.baseline.yml`）的全部行，去掉官方 persona 行（由 agent 人设行顶替）；',
 		'//   · `preset-vssaros.rows.yml` 里**官方包**（`@deepseek-ai/*`）的补充行；',
@@ -396,12 +417,17 @@ export async function expectedBaseRowsText(baselineText, ourRowsText) {
 // ── CLI ─────────────────────────────────────────────────────────────────────
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
 	const write = process.argv.includes('--write');
+	const writeRegistry = process.argv.includes('--write-registry');
 	// 只重生成 agent 基座（不碰 baseline / cordis.presets.yml）：不需要 runtime，也不会顺手重写别的生成物
 	const writeAgentBase = process.argv.includes('--write-agent-base');
 	const ourRows = fs.existsSync(ROWS_PATH) ? fs.readFileSync(ROWS_PATH, 'utf8') : '';
 	if (!ourRows.trim()) { console.error(`✗ 缺少我们的行源文件：${path.relative(process.cwd(), ROWS_PATH)}`); process.exit(1); }
 
-	if (writeAgentBase) {
+	if (writeRegistry) {
+		fs.writeFileSync(MODE_IDS_PATH, expectedModeIdsText(), 'utf8');
+		const changed = writeBotIdentityFiles();
+		console.log(`已写入 ${path.relative(process.cwd(), MODE_IDS_PATH)}（${MODE_PRESET_IDS.length} 项）＋同步 ${changed} 份身份副本`);
+	} else if (writeAgentBase) {
 		const baseline = fs.readFileSync(BASELINE_PATH, 'utf8');
 		const text = await expectedBaseRowsText(baseline, ourRows);
 		fs.writeFileSync(BASE_ROWS_PATH, normEol(text), 'utf8');
@@ -429,7 +455,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
 			const baseline = fs.readFileSync(BASELINE_PATH, 'utf8');
 			const runtime = runtimeStandardPresetPath();
 			if (!runtime) {
-				console.log('ℹ 找不到 runtime ⇒ 跳过"baseline 是否还等于官方"那一半检查（离线可跑的部分仍然会查 ✓）');
+				// ★ 2026-11-21：以前只 log 一句就跳过 ⇒ dsh 升级 / 干净 CI（没装 runtime）时
+				//   "baseline 是否还等于官方"那半检查静默不跑，主链恒绿（质量复盘 P0 洞）。
+				//   现在默认判红；确实离线的环境要**显式**加 `--allow-offline` 才跳过。
+				if (process.argv.includes('--allow-offline')) {
+					console.log('ℹ --allow-offline：跳过"baseline 是否还等于官方"那一半检查（离线可跑的部分仍然会查 ✓）');
+				} else {
+					problems.push('找不到 runtime 里的官方 standard preset ⇒ 无法验证 baseline 是否随 dsh 升级漂移（离线环境请显式加 --allow-offline；正常流程应装好 bundled runtime 并跑 --write）');
+				}
 			} else if (!samePresetContent(fs.readFileSync(runtime, 'utf8'), baseline)) {
 				problems.push(`baseline 与 runtime 里的官方 standard preset 不一致（官方改了 ⇒ 跑 --write 并审 diff）：${path.relative(process.cwd(), runtime)}`);
 			}
@@ -443,6 +476,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
 			} else if (!samePresetContent(fs.readFileSync(BASE_ROWS_PATH, 'utf8'), await expectedBaseRowsText(baseline, ourRows))) {
 				problems.push('agent 共享基座（presetBase.generated.js）与 baseline 不一致（手改过？或 baseline/rows 变了没重生成？）⇒ 跑 --write-agent-base');
 			}
+			// ★ 模式 id 真源 + 8 份副本：改一处不跑生成器 ⇒ 这里判红（主链已包含本脚本）。
+			if (!fs.existsSync(MODE_IDS_PATH)) {
+				problems.push('缺模式 id 真源生成物 modePresetIds.generated.js（跑 --write-registry）');
+			} else if (!samePresetContent(fs.readFileSync(MODE_IDS_PATH, 'utf8'), expectedModeIdsText())) {
+				problems.push('modePresetIds.generated.js 与真源不一致（跑 --write-registry）');
+			}
+			for (const p of botIdentityProblems()) { problems.push(p); }
 			// ★ 自检（2026-10-21）：拿一份**真的 CRLF 文件**走一遍比对 ⇒ 必须判一致。
 			//   这条就是"逐字比对"回归的守卫：谁把比对改回 `!==`，这里立刻红（而不是等某个新克隆踩到）。
 			{

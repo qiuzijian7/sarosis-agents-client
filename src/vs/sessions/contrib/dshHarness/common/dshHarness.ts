@@ -134,6 +134,24 @@ export const DSH_VISION_ROUTER_PLUGIN_NAME = 'dsh-vision-router';
 export const DSH_BETTER_SIDEBAR_PLUGIN_NAME = 'dsh-better-sidebar';
 
 /**
+ * **随包 vendored 的第三方 `dsh-deep-ptc-mode` 插件**包名（源码位于
+ * `dsh-plugins/dsh-deep-ptc-mode/`；上游 `lishize20040802-rgb/dsh-deep-ptc-mode` v2.3.0，MIT，
+ * provenance 见该目录的 `VENDOR.md`）。
+ *
+ * 2026-11-21 起 VsSaros **默认安装**这个插件：它是官方 PTC 预设派生的 Agent 模式，带可插话的
+ * 后台任务、按需工具/Skill 加载与一套对话卡片 UI。
+ *
+ * ⚠ **安装不等于启用**：装上只是模式菜单多一项「深度 PTC 模式」，用户仍需新建会话并选中它；
+ *   本仓默认 preset 仍是 `vssaros-standard`（native），没有改成 deep PTC。
+ * ⚠ 同 ego-browser / vision-router / better-sidebar：没有 `vssaros.module` ⇒ 伴生插件、
+ *   显式登记目录、包名保留上游名；`lib/index.mjs` 静态 import `@deepseek-ai/schemastery`
+ *   ⇒ 由 dsh Host 解析，仓库离线 import 不适用。
+ * ⚠ 上游从宿主的**官方** `presets/ptc.patch.yml` 派生预设，而 VsSaros 的 PTC 档是
+ *   `vssaros-ptc`（官方行 + 我们的模块）⇒ 集成后需真机核对 VsSaros 工具是否仍在 SDK 中。
+ */
+export const DSH_DEEP_PTC_MODE_PLUGIN_NAME = 'dsh-deep-ptc-mode';
+
+/**
  * **已退役**的 ego lite 薄接入包名（原 `dsh-plugins/vssaros-ego/`，4 个 `ego_*` 工具 + 随包技能）。
  *
  * 它被上面的上游插件取代：两者的 `ego_status` **重名**，dsh 里同名工具会让整条 entry 失效 ⇒ 不能并存。
@@ -445,6 +463,17 @@ export const enum DshHarnessSettings {
 	 */
 	OpenDesktopOnStartup = 'sessions.dshHarness.openDesktopOnStartup',
 	/**
+	 * B 方案：启动时**完全不创建 IDE 主窗口**，由主进程直接创建 dsh desktop 壳（默认开）。
+	 * 设为 `false` 回退到「隐藏 IDE 主窗口 + 渲染进程自动开 desktop」的旧路径。
+	 */
+	DesktopOnlyStartup = 'sessions.dshHarness.desktopOnlyStartup',
+	/**
+	 * 应急回退：启用 `@vssaros/dsh-sessions` 自带的轻量 `session_search`（只搜投影缓存的标题/路径），
+	 * 并禁用官方 `optional-session-search` group。默认 false ⇒ 只保留官方内容级 `session_search`。
+	 * 也可用环境变量 `VSSAROS_LEGACY_SESSION_SEARCH=1` 临时覆盖。
+	 */
+	LegacySessionSearch = 'sessions.dshHarness.legacySessionSearch',
+	/**
 	 * 迭代期开关：启动时**跳过随包插件的"升级"安装**（**缺失的仍会装**）。
 	 *
 	 * 为什么需要：`dshHostSupervisor.start()` 里随包插件是**串行安装、且先于 spawn Host**（profile 的
@@ -701,6 +730,11 @@ export interface IDshHostStartOptions {
 	 */
 	readonly sidebarLayoutV1?: boolean;
 	/**
+	 * 应急回退：启用本仓轻量 `session_search`，并禁用官方 `optional-session-search` group。
+	 * 默认 undefined/false ⇒ 只保留官方内容级 `session_search`。参与 `sameStartOptions`。
+	 */
+	readonly legacySessionSearch?: boolean;
+	/**
 	 * 启动时跳过随包插件的**升级**安装（缺失的仍会装）。
 	 *
 	 * 不影响 Host 组成（因此**不**参与 `sameStartOptions` 的比较）：它只决定"这一次启动要不要先等
@@ -756,6 +790,8 @@ export function sameStartOptions(a: IDshHostStartOptions, b: IDshHostStartOption
 		&& (a.unrealBridgeUrl ?? '') === (b.unrealBridgeUrl ?? '')
 		&& sameBrowserConfig(a.browser, b.browser)
 		&& (a.keepAlive === true) === (b.keepAlive === true)
+		// 官方 / legacy session_search 模式会改变 profile patch 与 Host env，切换必须重启。
+		&& (a.legacySessionSearch === true) === (b.legacySessionSearch === true)
 		// P3 默认开启：undefined 与 true 等价，只有显式 false 才回退旧布局；预热与渲染进程必须同口径。
 		&& (a.sidebarLayoutV1 !== false) === (b.sidebarLayoutV1 !== false);
 }
@@ -1270,6 +1306,11 @@ export const enum DshHarnessChannelCommand {
 	 * 入参 `{ endpoint, payload }`；endpoint 必须命中 Host 插件的白名单。
 	 */
 	WorktreeHostCall = 'worktreeHostCall',
+	/**
+	 * B 方案：desktop-only 壳里的「IDE」入口按需创建 sessions/IDE 主窗口。
+	 * 启动时不调用；返回是否成功发起开窗。
+	 */
+	OpenIdeWindow = 'openIdeWindow',
 }
 
 /** dsh Host 侧 `@vssaros/dsh-worktree` 返回的只读快照（IDE 侧只把它当镜像，不在这层执行 git）。 */

@@ -40,7 +40,7 @@ window.__ModuleLoader__.load({
 		/** dsh 自带 preset（无 `vssaros-` 前缀）；用于分组显示。 */
 		const BUILTIN_PRESETS = ["standard", "ptc", "minimal", "cordis"];
 		/* vssaros:bot-identity v1 —— 逐字副本，真源 vssaros-agents/lib/core/botIdentity.js（守卫 dsh-plugins/check-bot-identity.mjs） */
-		const BOT_MODE_PRESET_IDS = ["standard", "ptc", "minimal", "cordis", "vssaros-standard", "vssaros-ptc", "vssaros-full", "vssaros-minimal", "vssaros-cordis"];
+		const BOT_MODE_PRESET_IDS = ["standard","ptc","minimal","cordis","vssaros-standard","vssaros-ptc"];
 		/** 是不是"可能属于某个 bot"的 preset（vssaros- 前缀且不是模式 preset）。 */
 		function isBotPresetId(presetId) {
 			const id = String(presetId || "").trim();
@@ -135,8 +135,10 @@ const loadVisiblePresetIds = () => {
 		/** 分组与来源徽标：vssaros- 前缀 = 我们的 agent（本地目录 / 商城下载**同一目录**，故不独立分组，只打徽标）。 */
 		function sourceOf(preset) {
 			const id = String((preset && preset.id) || "");
-			if (id.startsWith(VSSAROS_PREFIX)) { return BUILTIN_PRESETS.includes(id) ? "builtin" : "mine"; }
-			return BUILTIN_PRESETS.includes(id) ? "builtin" : "builtin";
+			// ★ 2026-11-21：旧实现两处三元都恒真（vssaros- 前缀不可能命中无前缀的
+			//   BUILTIN_PRESETS；非前缀的两个分支都返回 "builtin"）⇒ 直接按前缀判来源，
+			//   行为不变但去掉恒真表达式，也不再让 BUILTIN_PRESETS 假装参与了判定。
+			return id.startsWith(VSSAROS_PREFIX) ? "mine" : "builtin";
 		}
 		function rowLabel(preset) {
 			return String((preset && (preset.name || preset.id)) || "");

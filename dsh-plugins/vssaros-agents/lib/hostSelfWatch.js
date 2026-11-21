@@ -43,9 +43,12 @@ export const HOST_OWNERSHIP_KEY = Symbol.for('vssaros.hostOwnership');
 
 /**
  * 拥有者记录多久没被刷新就不再相信它（与 vssaros-bridge 的 `OWNER_STALE_MS` 同值）。
- * 宿主优雅分离时会把 mtime 推到**未来** ⇒ 那种情况下 `appPid` 已死，判据自然不成立 ✓。
+ * 宿主优雅分离时会把 mtime 推到**未来**；这个标记现在也由本看护显式识别，
+ * 不再把「appPid 已死」当成 keepAlive Host 该自退的信号。
  */
 export const OWNER_RECORD_STALE_MS = 3 * 20_000;
+/** mtime 至少比当前时间晚这么多，才认作「优雅分离」（留时钟回拨/写入抖动余量）。 */
+export const OWNER_DETACHED_MIN_FUTURE_MS = 60_000;
 
 /** pid 是否还活着（EPERM = 有进程占着但没权限 ⇒ 同样算活）。 */
 export function pidAlive(pid) {
@@ -64,7 +67,7 @@ export function pidAlive(pid) {
 /**
  * 读当前拥有者（来自 vssaros-bridge 发布的共享位 + 拥有者记录）。
  *
- * @returns {{ inUse: boolean, appPid?: number } | null} null = 桥插件没发布（没挂载 / 非 VsSaros 托管）
+ * @returns {{ inUse: boolean, appPid?: number, detachedUntil?: number } | null} null = 桥插件没发布
  */
 export function readHostOwnership({ now = Date.now(), selfPid = process.pid } = {}) {
 	let shared;
@@ -78,11 +81,14 @@ export function readHostOwnership({ now = Date.now(), selfPid = process.pid } = 
 	}
 	const inUse = Number(shared.clientCount) > 0;
 	let appPid;
+	let detachedUntil;
 	const file = typeof shared.ownerRecordPath === 'string' ? shared.ownerRecordPath : '';
 	if (file) {
 		try {
 			// ⚠ 心跳要新鲜：pid 会被复用 ⇒ 只看 pid 活不活会被骗（与桥插件看门狗同一条纪律）
-			const fresh = now - statSync(file).mtimeMs <= OWNER_RECORD_STALE_MS;
+			const mtimeMs = statSync(file).mtimeMs;
+			// 未来 mtime 是优雅分离标记，不是正常心跳；不能借它把一个已死的 appPid 当成活着。
+			const fresh = now - mtimeMs <= OWNER_RECORD_STALE_MS && mtimeMs <= now + OWNER_DETACHED_MIN_FUTURE_MS;
 			const record = JSON.parse(readFileSync(file, 'utf8'));
 			// ⚠ 记录必须是**本 Host** 的：路径来自握手，正常一定是；不是就别信
 			const forSelf = Number(record?.hostPid) === Number(selfPid);
@@ -90,9 +96,16 @@ export function readHostOwnership({ now = Date.now(), selfPid = process.pid } = 
 			if (fresh && forSelf && Number.isFinite(pid) && pid > 1) {
 				appPid = pid;
 			}
+			if (forSelf && mtimeMs > now + OWNER_DETACHED_MIN_FUTURE_MS) {
+				detachedUntil = mtimeMs;
+			}
 		} catch { /* 记录还没写 / 已被清 ⇒ 当作没有 */ }
 	}
-	return { inUse, ...(appPid ? { appPid } : {}) };
+	return {
+		inUse,
+		...(appPid ? { appPid } : {}),
+		...(detachedUntil ? { detachedUntil } : {}),
+	};
 }
 
 /**
@@ -144,6 +157,16 @@ export function startAppParentWatch({
 			if (!notedInUse) {
 				notedInUse = true;
 				log(`[host] 父进程（app pid ${parent}）不可见，但仍有 IDE 客户端连着本 Host ⇒ 有人在用，不退出`);
+			}
+			misses = 0;
+			return;
+		}
+		// ★ 2026-11-21（P0-1）：宿主已优雅分离、且标记属于本 Host ⇒ keepAlive 期间不自退。
+		// 真崩溃走不到 dispose() ⇒ mtime 只会是过去时间；新 app 接管/客户端在用已在上面优先放行。
+		if (owner && owner.detachedUntil && owner.detachedUntil > Date.now()) {
+			if (!notedInUse) {
+				notedInUse = true;
+				log(`[host] 父进程（app pid ${parent}）不可见，但拥有者记录标记为优雅分离 ⇒ keepAlive 期间不自退`);
 			}
 			misses = 0;
 			return;

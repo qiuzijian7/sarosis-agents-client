@@ -107,21 +107,50 @@ const offlineRows = manifestRows.filter(row => row.state === 'offline');
 const retiredRows = manifestRows.filter(row => row.state === 'retired');
 const activeRows = manifestRows.filter(row => row.state === 'active' && row.sourceKind === 'manifest');
 if (new Set(keys).size !== keys.length) { fail('WORKBENCH_MANIFEST key 重复'); }
-if (manifestRows.length !== 19) { fail(`WORKBENCH_MANIFEST 应为 19 行（实际 ${manifestRows.length}）`); }
-if (hiddenRows.length !== 11) { fail(`hidden 行应为 11（实际 ${hiddenRows.length}）`); }
-if (offlineRows.length !== 4) { fail(`offline 行应为 4（实际 ${offlineRows.length}）`); }
+// ★ 2026-11-21：把「必须 N 行」的硬编码计数换成从真源派生的结构性不变量。
+//   增删目录行不再需要同步改守卫数字；生成区块与真源逐字一致已由 ① checkGenerated() 保证。
+if (!manifestRows.length) { fail('WORKBENCH_MANIFEST 不能为空'); }
+const states = new Set(['hidden', 'offline', 'retired', 'active']);
+if (manifestRows.some(row => !states.has(row.state))) { fail('目录行出现未知 state'); }
+const visibilityKeys = new Set(Object.keys(source.VISIBILITY_IDENTIFIERS || {}));
+if (visibilityKeys.size && manifestRows.some(row => !visibilityKeys.has(row.visibilityKey))) {
+	fail('目录行出现未登记的 visibilityKey');
+}
+if (hiddenRows.some(row => row.start !== false || !row.hidden)) {
+	fail('hidden 行必须 start=false 且 hidden=true（避免与开始页卡重复）');
+}
+for (const row of hiddenRows) {
+	if (!source.hiddenWorkbenchIdsOf().includes(row.workbenchId)) { fail(`hidden 身份视图缺 ${row.workbenchId}`); }
+}
+if (offlineRows.some(row => row.start !== false || !row.routeWhitelist)) {
+	fail('offline 行必须 start=false 且保留 route 白名单');
+}
 if (retiredRows.length !== 1 || retiredRows[0]?.workbenchId !== 'vssaros/loop') { fail('retired 必须恰好保留 vssaros/loop'); }
-if (activeRows.length !== 3) { fail(`active manifest route 页应为 3（实际 ${activeRows.length}）`); }
-if (source.navItemsOf().length !== 13) { fail('nav 投影应为 13 条'); }
-if (source.dashboardModulesOf().length !== 12) { fail('dashboard 投影应为 12 条'); }
-if (source.toolsWorkbenchesOf().length !== 11) { fail('tools 只读镜像应为 11 条'); }
-if (source.installedItemsOf().length !== 13) { fail('已装投影应为 13 条'); }
-if (source.fixedEntriesOf().length !== 13) { fail('固定入口投影应为 13 条'); }
+if (activeRows.some(row => row.start !== true || !row.route)) {
+	fail('active manifest route 页必须 start=true 且有 route');
+}
+for (const [name, rows] of [
+	['nav', source.navItemsOf()], ['dashboard', source.dashboardModulesOf()],
+	['tools', source.toolsWorkbenchesOf()], ['installed', source.installedItemsOf()],
+	['fixed', source.fixedEntriesOf()],
+]) {
+	if (!rows.length) { fail(`${name} 投影为空`); }
+	const rowKeys = rows.map(row => row.key);
+	if (new Set(rowKeys).size !== rowKeys.length) { fail(`${name} 投影 key 重复`); }
+	if (rows.some(row => !row.route)) { fail(`${name} 投影存在无 route 的条目`); }
+}
 const routeWhitelist = [...source.routeWhitelistOf()];
+for (const row of source.directoryRowsOf()) {
+	if (row.routeWhitelist && row.route && !routeWhitelist.includes(row.route)) {
+		fail(`routeWhitelist 缺 ${row.route}`);
+	}
+}
 for (const route of ['/x/dashboard/', '/x/sessions/', '/x/sessions/?view=tiles', '/x/kanban/', '/x/workflow/', '/x/kb/', '/x/memory/', '/x/codebase/', '/x/media/', '/x/imagegen/', '/x/skills/', '/x/scheduler/', '/x/marketplace/']) {
 	if (!routeWhitelist.includes(route)) { fail(`routeWhitelist 缺深链 ${route}`); }
 }
-if (source.startCardsOf().length !== 3) { fail('开始页 canonical 投影应为 3 条'); }
+const startCards = source.startCardsOf();
+if (!startCards.length) { fail('开始页 canonical 投影不能为空'); }
+if (startCards.some(key => !keys.includes(key))) { fail('开始页卡片必须来自 WORKBENCH_MANIFEST'); }
 const startTitles = manifestRows.filter(row => row.start).map(row => row.title);
 if (new Set(startTitles).size !== startTitles.length) { fail('开始页 canonical 卡片标题重复'); }
 const kbHiddenRow = manifestRows.find(row => row.key === 'vssaros/kb/default');

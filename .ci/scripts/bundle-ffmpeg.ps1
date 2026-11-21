@@ -9,6 +9,16 @@
 
 $repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
+$buildOut = Join-Path (Split-Path $repoRoot) "VSCode-win32-x64"
+$stagingBin = Join-Path $buildOut "resources\saros\bin"
+if ($env:SAROS_MEDIA_MODE -eq 'external') {
+  Write-Host "Media mode external: ffmpeg/ffprobe/yt-dlp stay out of the installer; runtime uses PATH/FFMPEG_PATH/YTDLP_PATH."
+  foreach ($name in @('ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe')) {
+    $file = Join-Path $stagingBin $name
+    if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force -ErrorAction Stop }
+  }
+  exit 0
+}
 
 # 1) Download ffmpeg/ffprobe/yt-dlp static binaries into build/saros/bin/ (idempotent: skips if present)
 Write-Host "=== Fetching media binaries (ffmpeg/ffprobe/yt-dlp, optional dependencies) ==="

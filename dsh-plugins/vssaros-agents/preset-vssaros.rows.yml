@@ -65,7 +65,8 @@
                 # ── 标准档再藏"场景类"族（2026-10-21；量化见 doc/tool-surface-family-usage.md）──
                 # 这些族在 29 个真机会话里**调用 0 次**，而它们的可见面合计 ≈4.9k tok
                 #   （占可见面 23,454 tok 的 **21%**）⇒ 藏掉是**默认档**的净收益。
-                # ⚠ 藏 = 模型**看不见**这些工具 ⇒ 需要时切 `Full (VsSaros)` 档即可（**能力不丢** ✓）。
+                # ⚠ 藏 = 模型**看不见**这些工具 ⇒ 需要时按精确名删掉对应行、重跑 `--write` 即可
+                #   （**能力不丢** ✓；旧的全工具档已退役，不再单独维护一份 preset 副本）。
                 #   逐族理由：feishu=通道未配置（调了必失败）· workflow=多 agent 编排场景 ·
                 #   media/video/image/vision/extract/text=媒体管线场景 · dashboard=看板页面场景 ·
                 #   mcp=外部 MCP 透传 · web=URL 抓取 · unreal=Unreal 工程场景。
@@ -89,12 +90,6 @@
                 - 'mcp_*'
                 - 'web_*'
                 - 'unreal_*'
-                # ── Full 档（`vssaros-full`）用的清单：只藏 MCP 图像那一族 ────────────────
-                # ⚠ 这份清单**只给** Full 档用（生成器把它换进 Full 那份 preset 的 `denyTools` ✓）；
-                #   标准档读的是上面那份 ⇒ 两者**行集合完全相同**、**只差 mask** ⇒ 单变量可归因 ✓。
-                #   保留 comfy 藏身：它是 39 个工具 / ≈15.5k tok 的图像管线，另有 `image_generate` 工具可用 ✓。
-              denyToolsFull:
-                - 'mcp__comfy-mcp__*'
           # web-content-import（2026-10-15 新增模块）：按 URL 抓平台文章/视频内容（HTTP+reader /
           # yt-dlp+字幕/ASR），可写进知识库 库/raw/。纯工具、无页面 ⇒ 与 host 面双挂载只多一份
           # 工具注册（dsh 的工具重复注册是幂等顶掉 ✓）；本插件**没有模块级状态** ⇒ 不串话 ✓。
@@ -107,9 +102,17 @@
           #   ⇒ 同一组合里两处同 id ⇒ preset 那次"从未启动"（真机日志：
           #   `agent-preset/invalid: vssaros-sessions (@vssaros/dsh-sessions): never started`
           #   ⇒ `session create failed` ⇒ 会话打不开、状态条卡「正在打开会话…」）。
-          #   工具（`session_search`）由 host 层注册，全局可见 ⇒ 这里不需要再挂 ✓
+          # ★ 2026-11-21 方案 A：本仓 sessions 插件默认零工具，`session_search` 由官方 group 提供。
           - id: vssaros-mcp
             name: '@vssaros/dsh-mcp'
+          # 2026-11-21：工具面快照里这三个模块也在 preset 可见集合内；页面/路由已有
+          # `registerPageRouteOnce` 幂等保护，双 plane 挂载不会再 duplicate prefix route。
+          - id: vssaros-loop
+            name: '@vssaros/dsh-loop'
+          - id: vssaros-marketplace
+            name: '@vssaros/dsh-marketplace'
+          - id: vssaros-scheduler
+            name: '@vssaros/dsh-scheduler'
           # ★ 官方 `working_directory` 工具（2026-10-19 用户报 `unknown tool "working_directory"`）：
           #   包 `@deepseek-ai/dsh-tool-working-directory` 在 runtime 里，但**官方 standard preset 默认没有装配它**
           #   （`preset-standard.baseline.yml` 里没有这行）⇒ 模型按别的 harness 的习惯调用就报 unknown tool ✗。

@@ -80,29 +80,38 @@ suite('产物自带 pnpm', () => {
 			'必须真的执行它（只引用文件名不算）');
 	});
 
-	test('3) 注入：系统没有 pnpm 时才注入，且用 node.path 而非 Electron', () => {
+	test('3) 注入：PATH 上不是 pin 版本就锁到自带那份，且用 node.path 而非 Electron', () => {
 		const runtime = stripComments(read(RUNTIME));
 		const at = runtime.indexOf('export function injectBundledPnpm');
 		assert.ok(at > 0, '缺少 injectBundledPnpm');
 		const end = runtime.indexOf('\nexport ', at + 10);
 		const body = runtime.slice(at, end > 0 ? end : at + 3000);
 
-		assert.match(body, /bundledPnpmEntry\(\)/,
+		assert.match(body, /bundledPnpmEntry\(/,
 			'必须读产物自带的 pnpm 包入口（bin/pnpm.mjs）');
 		// dist 的完整性检查在 bundledPnpmEntry() 里（不在 injectBundledPnpm 的函数体内）⇒ 查全文
 		assert.match(runtime, /dist[\s\S]{0,120}?pnpm\.mjs/,
 			'必须同时确认 dist/pnpm.mjs 在位（pnpm 11 是目录分发，缺它会 ERR_MODULE_NOT_FOUND）');
 		assert.match(body, /hasPnpmOnPath\(/,
-			'系统已有 pnpm 时必须尊重用户环境（不注入）');
+			'必须先判 PATH 上有没有 pnpm（只在这里才谈得上「尊重用户环境」）');
+		// ★ 2026-11-21：版本比较必须是**真的**，只查常量名会被「常量还在、比较改成 >= 0」骗过
+		assert.match(body, /pnpmVersionOnPath\(/, '必须真去探测 PATH 上那份 pnpm 的版本');
+		assert.match(body, /onPathVersion === bundled\.version/,
+			'必须与 pin 版本做真实相等比较（只有版本一致才不注入；12.18.0 漂移不得无条件放行）');
+		assert.match(runtime, /'devDependencies', 'pnpm'/,
+			'必须拿根 package.json 的 pin 校验自带那份，别把本机装错的版本冒充 pin');
 		assert.match(body, /nodeExe/,
 			'shim 必须用调用方给的 node（Host 自己的解释器）');
 		assert.ok(!/process\.execPath/.test(body),
 			'shim 里不许用 process.execPath 顶替 node（Electron 跑 pnpm install 会失败）');
 
-		// 必须在 spawn Host 之前真的被调用，并传 node.path
+		// 三条会跑 `dsh plugin add` 的路径都要锁版本：spawn Host 前、spec 安装、本地目录安装
 		const supervisor = stripComments(read(SUPERVISOR));
-		assert.match(supervisor, /injectBundledPnpm\(env, node\.path\)/,
-			'spawn Host 前必须调用 injectBundledPnpm(env, node.path)');
+		assert.match(supervisor, /injectBundledPnpm\(env, node\.path/,
+			'spawn Host 前必须调用 injectBundledPnpm(env, node.path, …)');
+		const calls = supervisor.match(/injectBundledPnpm\(env, node\.path/g) ?? [];
+		assert.ok(calls.length >= 3,
+			`启动 + spec 安装 + 本地目录安装三条路径都要锁到 pin 版本（实测 ${calls.length} 处）`);
 	});
 
 	test('4) 版本单一真源：根 package.json / prepack / 发布守卫 / CI 四处同源', () => {

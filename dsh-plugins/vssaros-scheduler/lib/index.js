@@ -312,6 +312,19 @@ export function apply(ctx, config = {}) {
 			// ★ 2026-10-31：企微推送 webhook（插件 config.notifyWebhook；没配 ⇒ 推送只记日志）。
 			notifyWebhook: typeof config?.notifyWebhook === 'string' ? config.notifyWebhook.trim() : '',
 		});
+		// ★ 2026-11-21：preset plane 会再 apply 一次；紧邻 provide 再探一次同名服务，
+		// 避免 `service "vssarosScheduler" has been registered` 把整个 preset 判 invalid。
+		let existingScheduler;
+		try {
+			existingScheduler = ctx.reflect && typeof ctx.reflect.get === 'function'
+				? ctx.reflect.get('vssarosScheduler', false)
+				: undefined;
+		} catch { existingScheduler = undefined; }
+		if (existingScheduler) {
+			engine = existingScheduler;
+			engineInstalled = true;
+			return;
+		}
 		ctx.provide('vssarosScheduler', engine);
 		ownsEngine = true;
 		const installedEngine = engine;

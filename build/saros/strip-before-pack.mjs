@@ -445,6 +445,17 @@ function shippedDshPluginPath(rel) {
 	if (parts.includes('node_modules')) { return false; }
 	return !(parts.length >= 2 && parts[1] === 'dev' && existsSync(path.join(repoRoot, 'dsh-plugins', parts[0], 'dev', 'package.json')));
 }
+
+/**
+ * `prepack-dsh-runtime.mjs` 的 `removeTree()` 在 Windows 删不掉深层 `.pnpm` 目录时，
+ * 会把旧种子改名到 `profile-seed.deleting-<pid>/` 之后继续。它不是运行时产物；
+ * 整目录刷新 `dsh-runtime/<version>/` 时若把它一起拷进暂存，安装路径会超过 260 字符，
+ * Inno Setup 的 `restartreplace` 临时重命名就会报 `MoveFile 失败；错误代码 3`。
+ * @param rel 相对 `dsh-runtime/<version>/` 的路径（任一分隔符）。
+ */
+function shippedDshRuntimePath(rel) {
+	return !rel.split(/[\\/]/).some(part => /\.deleting-\d+$/.test(part));
+}
 ensureDir(
 	'dsh-plugins',
 	'resources/app/dsh-plugins',
@@ -642,7 +653,8 @@ if (versionKnown) {
 		//   ⇒ 永远跳过拷贝 ⇒ **`profile-seed/` 根本没进包** ⇒ 首启只能走 `dsh profile init`
 		//   的 web 模板（bundles 只有 base/web-app）⇒ 插件不加载 ⇒ 主页白屏 ✗✗。
 		//   ⇒ refresh：每次按仓库当前内容整目录重拷（约 200MB，几秒到十几秒，可接受）。
-		{ refresh: true },
+		//   ⇒ filter：排除 `profile-seed.deleting-<pid>/` 残留（超长路径会让安装器 MoveFile 报错 3）。
+		{ refresh: true, filter: shippedDshRuntimePath },
 	);
 	// ★ 同一条链上的**门禁**：种子必须真的在暂存里（`_ensureProfile` 靠它做"零下载首启"，
 	//   缺了就会退化成 web 模板 ⇒ 上面那条 P0 的现场）。任一 profile 有 package.json 即算通过。
@@ -686,6 +698,9 @@ if (versionKnown) {
 		existsSync(path.join(dir, 'primary-runtime', 'runtime.json'))
 		&& existsSync(path.join(dir, 'office-skills', 'office-docx', 'SKILL.md')));
 	if (skipOfficeRuntime) {
+		for (const dir of officeCandidates) {
+			if (existsSync(dir)) { rmSync(dir, { recursive: true, force: true }); }
+		}
 		console.log('  ⚠ 跳过 Office 运行时检查（VSSAROS_SKIP_OFFICE_RUNTIME=1）—— 本版包**不含** docx/xlsx/渲染能力');
 	} else if (officeDir) {
 		console.log('  ✅ office-runtime 已随包（Python 负载 + 7 个 Office 技能）');
@@ -900,9 +915,9 @@ ensureFile(
 );
 
 // === 5.5 ffmpeg/ffprobe（vox 口播视频节点可选依赖）===
-// 内置到 resources/saros/bin/，让安装包「默认自带 ffmpeg」。缺失仅警告（不阻断
-// 核心出包，vox 功能会回退提示用户），与 rg.exe 等核心构件区分。
+// 默认随包；SAROS_MEDIA_MODE=external 时跳过并从暂存移除，运行时回退 PATH/FFMPEG_PATH。
 console.log('\n🎬 [可选依赖] ffmpeg/ffprobe（vox 口播视频）:');
+const mediaExternal = process.env.SAROS_MEDIA_MODE === 'external';
 function ensureOptionalBin(label, stagingRel, repoRel) {
 	const stagingAbs = path.join(buildDir, stagingRel);
 	if (existsSync(stagingAbs)) {
@@ -920,9 +935,21 @@ function ensureOptionalBin(label, stagingRel, repoRel) {
 }
 // macOS 二进制没有 .exe 后缀（且 build/saros/bin 里目前只有 win 版 ⇒ 缺失仅警告，不阻断出包）
 const BIN_EXT = IS_DARWIN ? '' : '.exe';
-ensureOptionalBin(`ffmpeg${BIN_EXT}`, `resources/saros/bin/ffmpeg${BIN_EXT}`, `build/saros/bin/ffmpeg${BIN_EXT}`);
-ensureOptionalBin(`ffprobe${BIN_EXT}`, `resources/saros/bin/ffprobe${BIN_EXT}`, `build/saros/bin/ffprobe${BIN_EXT}`);
-ensureOptionalBin(`yt-dlp${BIN_EXT}`, `resources/saros/bin/yt-dlp${BIN_EXT}`, `build/saros/bin/yt-dlp${BIN_EXT}`);
+if (mediaExternal) {
+	const stagingBin = path.join(buildDir, toStagingRel('resources/saros/bin'));
+	for (const name of ['ffmpeg', 'ffprobe', 'yt-dlp']) {
+		const file = path.join(stagingBin, `${name}${BIN_EXT}`);
+		if (existsSync(file)) {
+			rmSync(file, { force: true });
+			console.log(`  ⏭  ${name}${BIN_EXT} — 已按 external 模式移除`);
+		}
+	}
+	console.log('  ⏭  媒体二进制外置：运行时使用 PATH / FFMPEG_PATH / YTDLP_PATH');
+} else {
+	ensureOptionalBin(`ffmpeg${BIN_EXT}`, `resources/saros/bin/ffmpeg${BIN_EXT}`, `build/saros/bin/ffmpeg${BIN_EXT}`);
+	ensureOptionalBin(`ffprobe${BIN_EXT}`, `resources/saros/bin/ffprobe${BIN_EXT}`, `build/saros/bin/ffprobe${BIN_EXT}`);
+	ensureOptionalBin(`yt-dlp${BIN_EXT}`, `resources/saros/bin/yt-dlp${BIN_EXT}`, `build/saros/bin/yt-dlp${BIN_EXT}`);
+}
 
 // === 5.6 whisper.cpp（本地 ASR：video_analyze 对无字幕轨视频的口播转写）===
 // 2026-09-25 用户拍板随包。exe+DLL ≈8MB；模型 ggml-base ≈141MB 显著抬包体积 ——

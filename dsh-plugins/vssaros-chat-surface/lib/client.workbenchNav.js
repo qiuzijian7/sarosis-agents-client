@@ -222,6 +222,87 @@ const DEFAULT_ITEMS = [
 				? react.createElement(service.PageView, { id, title: tab.name, active }, content) : content;
 		}
 
+		/**
+		 * 左侧栏官方三行（plugins / schedules / 更多）的常驻隐藏器。
+		 * 独立于 install 的幂等标记：页面未重载 + Host 重启时旧标记会让 install 早退，
+		 * 但这段必须在每次 chunk 执行时都尝试（幂等靠 CSS id + data 标记）。
+		 */
+		function hideOfficialSidebarRows() {
+			if (typeof document === 'undefined' || typeof document.querySelector !== 'function') { return; }
+			const labels = ['插件', 'Plugins', 'plugins', '自动化任务', 'Automation tasks', 'Automated tasks', '更多', 'More'];
+			const scope = '[data-slot="sidebar"]';
+			try {
+				if (typeof document.getElementById === 'function' && !document.getElementById('vssaros-hidden-left-rows')) {
+					const host = document.head || document.documentElement || document.body;
+					if (host && typeof host.appendChild === 'function' && typeof document.createElement === 'function') {
+						const style = document.createElement('style');
+						style.id = 'vssaros-hidden-left-rows';
+						const attrs = ['aria-label', 'title', 'data-panel-id', 'data-entry-id', 'id'];
+						const rules = [];
+						for (const label of labels) {
+							for (const attr of attrs) { rules.push(scope + ' [' + attr + '="' + label + '"]'); }
+						}
+						style.textContent = rules.join(',') + '{display:none!important}';
+						host.appendChild(style);
+					}
+				}
+			} catch { /* 样式注入失败不阻断行隐藏 */ }
+			const hide = node => {
+				if (!node || node.getAttribute('data-vssaros-hidden') === '1') { return; }
+				node.setAttribute('data-vssaros-hidden', '1');
+				node.style.display = 'none';
+			};
+			const rowOf = el => {
+				let node = el;
+				let best = el;
+				for (let i = 0; node && node !== document.body && i < 4; i += 1, node = node.parentElement) {
+					const text = String(node.textContent || '').replace(/\s+/g, '');
+					if (text.length > 60 || /新会话|会话|Bots|工作区/.test(text)) { break; }
+					best = node;
+					const tag = String(node.tagName || '').toLowerCase();
+					const cls = typeof node.className === 'string' ? node.className : '';
+					if (tag === 'button' || tag === 'a' || /item|row|entry|nav|panel|action/i.test(cls)) { return node; }
+				}
+				return best;
+			};
+			const apply = () => {
+				const buttons = document.querySelectorAll('button[aria-label]');
+				for (let i = 0; i < buttons.length; i += 1) {
+					const btn = buttons[i];
+					const label = String(btn.getAttribute('aria-label') || '').trim();
+					if (labels.indexOf(label) < 0) { continue; }
+					hide(rowOf(btn));
+				}
+				if (document.body && typeof document.createTreeWalker === 'function' && typeof NodeFilter !== 'undefined') {
+					const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+					let node;
+					while ((node = walker.nextNode())) {
+						const label = String(node.nodeValue || '').trim();
+						if (labels.indexOf(label) < 0) { continue; }
+						const el = node.parentElement;
+						if (!el) { continue; }
+						const rect = el.getBoundingClientRect && el.getBoundingClientRect();
+						const width = (typeof window !== 'undefined' && window.innerWidth) || 1200;
+						if (rect && rect.height > 0 && (rect.left < 0 || rect.left > width * 0.45)) { continue; }
+						hide(rowOf(el));
+					}
+				}
+			};
+			try { apply(); } catch { /* 首帧 DOM 未就绪 */ }
+			if (typeof MutationObserver === 'function' && !globalThis.__vssarosSidebarRowsObserved) {
+				try {
+					const target = document.querySelector(scope) || document.body || document.documentElement;
+					if (target) {
+						let timer = 0;
+						new MutationObserver(() => {
+							if (timer) { return; }
+							timer = setTimeout(() => { timer = 0; try { apply(); } catch { /* 已释放 */ } }, 200);
+						}).observe(target, { childList: true, subtree: true });
+						globalThis.__vssarosSidebarRowsObserved = true;
+					}
+				} catch { /* 观察失败由 install 的兜底定时器补 */ }
+			}
+		}
 		function install(ctx, shell) {
 			// ★ 幂等（2026-10-21 真机取证）：同一个 chunk 可能被**装载两次** ——
 			//   `client.js` 的 `PART_CHUNKS`（chat 形态）与 `hasOfficialChrome` 分支都 require 了它；
@@ -232,6 +313,13 @@ const DEFAULT_ITEMS = [
 			//   ⇒ 打开工作台没有页签、中栏也没有工作台面板 ✗（真机症状：keyed 槽冲突 + 页签条整条不显示）。
 			// ⇒ 用**全局标记**挡住第二次（同一插件的 ctx 相同 ⇒ 幂等安全 ✓）。
 			//   （另有一层防线：`client.js` 两个装载分支已改成互斥。）
+			// ★ 2026-11-21 真机：Host 重启但页面未重载时，旧幂等标记会挡住新的隐藏逻辑 ⇒ 先重跑已注册的隐藏器。
+			try {
+				const retry = window.__vssarosHideOfficialRows;
+				if (typeof retry === "function") { retry(); }
+			} catch { /* 隐藏器自身已兜底 */ }
+			// 独立隐藏器：即使下面的整包幂等标记让 install 早退，官方三行也必须被藏掉。
+			try { hideOfficialSidebarRows(); } catch { /* 已在内部兜底 */ }
 			if (window.__vssarosWorkbenchNavInstalled) { return; }
 			window.__vssarosWorkbenchNavInstalled = true;
 			const bridge = shell && shell.bridge;
@@ -277,24 +365,160 @@ const DEFAULT_ITEMS = [
 				//   ⇒ 一起在 DOM 层隐藏。能力没丢：它被收进了 `@vssaros/dsh-scheduler` 的**自动化任务工作台**
 				//   （页签条里的「自动化任务」，DEFAULT_ITEMS 已登记 ⇒ route 白名单也认 ✓）。
 				//   以后再有"官方行不该露脸"的，往这张表里加 label 即可（判据只看侧栏里的 button[aria-label]）。
-				const HIDDEN_LABELS = ["插件", "Plugins", "自动化任务", "定时任务", "Scheduled tasks", "Automated tasks"];
+				// ★ 2026-11-21（用户：「左侧栏隐藏 插件、自动化任务、更多」）：第三个「更多」是官方账号/侧栏
+				//   家族那一行，同样只藏这一颗 button，不删设置入口；无 aria-label 的版本用纯文本兜底。
+				// ★ 2026-11-21 真机复盘：官方三行由 `dsh-client-ui-plugin-manager` / `dsh-client-ui-schedule` /
+				//   账号插件注册到 `sidebar.panellist`（list 槽），本仓没有注册级开关，也不许停用官方插件
+				//   ⇒ 只能在 DOM 层隐藏。官方侧栏的真实根是 `[data-slot="sidebar"]`（preload-dshView 的
+				//   CHAT_ONLY_CSS 用的就是它），**不是** `[data-sidebar-left]`；英文文案是 "Automation tasks"。
+				const HIDDEN_LABELS = ["插件", "Plugins", "plugins", "自动化任务", "Automation tasks", "Automated tasks", "定时任务", "Scheduled tasks", "schedules", "更多", "More", "更多操作", "更多选项", "More options"];
+				const SIDEBAR_SELECTORS = ["[data-slot=\"sidebar\"]", "[data-sidebar-left]", "[data-sidebar]", "aside[data-sidebar]", ".sidebar-left"];
+				const sidebarRoot = () => {
+					for (const selector of SIDEBAR_SELECTORS) {
+						try {
+							const el = document.querySelector(selector);
+							if (el && typeof el.appendChild === "function") { return el; }
+						} catch { /* 选择器不受支持 */ }
+					}
+					return document.body || document.documentElement || null;
+				};
 				let lastRun = 0;
 				let queued = 0;
+				let observerInstalled = false;
+				const hideNode = btn => {
+					if (!btn || btn.getAttribute("data-vssaros-hidden") === "1") { return; }
+					btn.setAttribute("data-vssaros-hidden", "1");
+					btn.style.display = "none";
+					state.pluginsRowHidden = true;
+				};
+				const inLeftRail = el => {
+					try {
+						const root = sidebarRoot();
+						if (root && root !== document.body && root !== document.documentElement
+							&& root.contains && root.contains(el)) { return true; }
+						const rect = el.getBoundingClientRect && el.getBoundingClientRect();
+						const w = window.innerWidth || 1200;
+						const h = window.innerHeight || 800;
+						return !!rect && (rect.width > 0 || rect.height > 0)
+							&& rect.left >= 0 && rect.left < Math.max(300, w * 0.45)
+							&& rect.top >= 0 && rect.top < h * 0.6;
+					} catch { return false; }
+				};
+				/** 官方行不是 button、父级 textContent 常带图标/角标 ⇒ 不再要求文本精确相等。 */
+				const rowOf = el => {
+					let node = el;
+					let best = el;
+					for (let i = 0; node && node !== document.body && i < 4; i++, node = node.parentElement) {
+						const text = String(node.textContent || "").replace(/\s+/g, "");
+						if (text.length > 60 || /新会话|会话|Bots|工作区/.test(text)) { break; }
+						best = node;
+						const tag = String(node.tagName || "").toLowerCase();
+						const role = String(node.getAttribute && node.getAttribute("role") || "");
+						const cls = typeof node.className === "string" ? node.className : "";
+						if (tag === "button" || tag === "a" || role === "button"
+							|| /item|row|entry|nav|panel|action|button|cell|link/i.test(cls)
+							|| (node.getAttribute && (node.getAttribute("data-panel-id") || node.getAttribute("data-entry-id")))) { return node; }
+					}
+					return best;
+				};
+				const injectHiddenStyle = () => {
+					try {
+						if (typeof document.getElementById !== "function" || typeof document.createElement !== "function") { return false; }
+						if (document.getElementById("vssaros-hidden-left-rows")) { return true; }
+						// body 首帧可能还没画出来 ⇒ documentElement 也能挂样式，不能只认 head/body。
+						const host = document.head || document.documentElement || document.body;
+						if (!host || typeof host.appendChild !== "function") { return false; }
+						const style = document.createElement("style");
+						style.id = "vssaros-hidden-left-rows";
+						const scope = ":is([data-slot=\"sidebar\"],[data-sidebar-left],[data-sidebar],.sidebar-left)";
+						const attrs = ["aria-label", "title", "data-panel-id", "data-entry-id", "data-slot-id", "id"];
+						const selectors = [];
+						for (const label of HIDDEN_LABELS) {
+							for (const attr of attrs) { selectors.push(scope + " [" + attr + "=\"" + label + "\"]"); }
+						}
+						style.textContent = selectors.join(",") + "{display:none!important}";
+						host.appendChild(style);
+						return true;
+					} catch (e) { noteFail("nav:隐藏官方行(样式)", e); return false; }
+				};
+				const labelHit = value => {
+					const v = String(value || "").trim();
+					if (!v) { return false; }
+					return HIDDEN_LABELS.some(label => v === label || v.toLowerCase() === label.toLowerCase());
+				};
+				/** 结构性宽匹配：官方行不是 button / 没有 aria-label 时也能命中并整行隐藏。 */
+				const hideOfficialRows = () => {
+					const root = sidebarRoot();
+					if (!root || typeof root.querySelectorAll !== "function") { return; }
+					// 只扫可能的行元素，别把整栏几千个会话节点全遍历一遍。
+					const candidates = root.querySelectorAll('[aria-label], [title], [id], [data-panel-id], [data-entry-id], [data-slot-id], button, a, [role="button"], [class*="item"], [class*="row"], [class*="entry"]');
+					const h = window.innerHeight || 800;
+					for (let i = 0; i < candidates.length; i++) {
+						const el = candidates[i];
+						if (!el || el.getAttribute("data-vssaros-hidden") === "1") { continue; }
+						const attrHit = ["aria-label", "title", "id", "data-panel-id", "data-entry-id", "data-slot-id"]
+							.some(name => el.getAttribute && labelHit(el.getAttribute(name)));
+						const text = el.children && el.children.length <= 3 ? String(el.textContent || "").replace(/\s+/g, "") : "";
+						const textHit = text.length > 0 && text.length <= 20 && labelHit(text);
+						if (!attrHit && !textHit) { continue; }
+						if (!inLeftRail(el)) { continue; }
+						// 只认左栏顶部的导航行；纯文本命中的范围更窄，避免误伤会话列表里同名标题。
+						try {
+							const rect = el.getBoundingClientRect && el.getBoundingClientRect();
+							if (rect && rect.height > 0 && rect.top > h * (attrHit ? 0.42 : 0.3)) { continue; }
+						} catch { /* 几何 API 不可用则只靠 inLeftRail */ }
+						hideNode(rowOf(el));
+					}
+				};
+				/** Observer 必须在 body 就绪后才装上；每次 apply 都重试，杜绝首帧空跑后永久失效。 */
+				const ensureObserver = () => {
+					if (observerInstalled || typeof MutationObserver !== "function") { return; }
+					try {
+						const target = sidebarRoot() || document.body || document.documentElement;
+						if (target && typeof target.appendChild === "function") {
+							new MutationObserver(schedule).observe(target, { childList: true, subtree: true });
+							observerInstalled = true;
+						}
+					} catch (e) { noteFail("nav:隐藏官方行(观察)", e); }
+				};
 				const apply = () => {
 					queued = 0;
 					try {
-						const scope = document.querySelector("[data-sidebar-left]") || document.body;
-						if (!scope) { return; }
-						const rows = scope.querySelectorAll("button[aria-label]");
-						for (let i = 0; i < rows.length; i++) {
-							const btn = rows[i];
-							const label = String(btn.getAttribute("aria-label") || "").trim();
-							if (HIDDEN_LABELS.indexOf(label) < 0) { continue; }
-							if (btn.getAttribute("data-vssaros-hidden") === "1") { continue; }
-							btn.setAttribute("data-vssaros-hidden", "1");
-							btn.style.display = "none";
-							state.pluginsRowHidden = true;
+						injectHiddenStyle();
+						const scope = sidebarRoot() || document.documentElement;
+						const TEXT_HIDDEN_LABELS = ["插件", "Plugins", "自动化任务", "Automation tasks", "定时任务", "Scheduled tasks", "更多", "More", "更多操作", "更多选项", "More options"];
+						const rows = document.querySelectorAll("button[aria-label]");
+						const extraRows = document.querySelectorAll("[role=button][aria-label], a[aria-label]");
+						for (const list of [rows, extraRows]) {
+							for (let i = 0; i < list.length; i++) {
+								const btn = list[i];
+								const label = String(btn.getAttribute("aria-label") || "").trim();
+								if (HIDDEN_LABELS.indexOf(label) < 0 || !inLeftRail(btn)) { continue; }
+								hideNode(rowOf(btn));
+							}
 						}
+						if (scope && typeof scope.querySelectorAll === "function") {
+							const textRows = scope.querySelectorAll("button:not([aria-label])");
+							for (let i = 0; i < textRows.length; i++) {
+								const btn = textRows[i];
+								const label = String(btn.textContent || "").trim();
+								if (TEXT_HIDDEN_LABELS.indexOf(label) < 0 || !inLeftRail(btn)) { continue; }
+								hideNode(btn);
+							}
+						}
+						if (document.body && typeof document.createTreeWalker === "function" && typeof NodeFilter !== "undefined") {
+							const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+							let node;
+							while ((node = walker.nextNode())) {
+								const label = String(node.nodeValue || "").trim();
+								if (TEXT_HIDDEN_LABELS.indexOf(label) < 0) { continue; }
+								const el = node.parentElement;
+								if (!el || !inLeftRail(el)) { continue; }
+								hideNode(rowOf(el));
+							}
+						}
+						hideOfficialRows();
+						ensureObserver();
 					} catch (e) { noteFail("nav:隐藏插件行", e); }
 				};
 				/** 节流到 ~200ms：侧栏 DOM 变动很频繁，不节流的 querySelectorAll 会拖慢输入 ✓ */
@@ -305,15 +529,15 @@ const DEFAULT_ITEMS = [
 					queued = setTimeout(() => { lastRun = Date.now(); apply(); }, wait);
 				};
 				apply();
-				try {
-					if (typeof MutationObserver === "function") {
-						const target = document.querySelector("[data-sidebar-left]") || document.body;
-						if (target) { new MutationObserver(schedule).observe(target, { childList: true, subtree: true }); }
-					}
-				} catch (e) { noteFail("nav:隐藏插件行(观察)", e); }
-				// 首屏兜底：React 还没画出来时那一次 apply 会空跑 ✓
-				setTimeout(apply, 400);
-				setTimeout(apply, 1500);
+				ensureObserver();
+				// 官方插件 chunk 常晚于本 chunk 装载：DOMContentLoaded / load + 多次兜底 + 常驻 Observer。
+				try { document.addEventListener("DOMContentLoaded", apply); } catch { /* 老宿主 */ }
+				try { window.addEventListener("load", apply); } catch { /* 老宿主 */ }
+				for (const delay of [0, 120, 400, 1500, 3000]) {
+					window.setTimeout(() => { apply(); ensureObserver(); }, delay);
+				}
+				// 同一 window 内 chunk 可能因模块缓存不再执行；把入口暴露出来，install 再次调用时也能重跑。
+				window.__vssarosHideOfficialRows = () => { apply(); ensureObserver(); };
 			})();
 			} catch (e) {
 				// 隐藏官方行失败**绝不能带走「主页」行**：摘掉幂等标记 ⇒ 允许下一次装载重试 ✓

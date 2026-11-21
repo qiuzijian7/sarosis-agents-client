@@ -376,7 +376,15 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			//   `LICENSE` 同理带上（上游 MIT 的许可证必须随分发 ✓；其它插件没这文件，allowEmpty 兜着）。
 			'dsh-plugins/*/skills/**',
 			'dsh-plugins/*/LICENSE',
-		], { base: '.', allowEmpty: true });
+			// ★ 2026-11-21：`dsh-deep-ptc-mode` 的负载还散在 `locale/`（界面语言）、`assets/`（图标）、
+			//   `compatibility.json` 与若干 `.md`（上游 README/CHANGELOG/测试报告）里。它们都在该包
+			//   `package.json.files` 白名单内 ⇒ 不显式列出就是打包后缺文件；而 `strip-before-pack.mjs`
+			//   的完整性门禁按整目录逐文件比对，会直接判 criticalMissing。
+			'dsh-plugins/*/locale/**',
+			'dsh-plugins/*/assets/**',
+			'dsh-plugins/*/compatibility.json',
+			'dsh-plugins/*/*.md',
+			], { base: '.', allowEmpty: true });
 
 		// 构建期预装的 dsh 运行时（build/prepack-dsh-runtime.mjs 生成，版本由 dsh-compat.json 的
 		// bundled 字段 pin 定）：原样打进 <appPath>/dsh-runtime/，全新安装首启零下载。

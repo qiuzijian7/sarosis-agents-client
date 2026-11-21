@@ -24,6 +24,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const MEDIA = 'dsh-plugins/vssaros-media/lib/index.js';
+/** 真机日志里报 duplicate prefix route 的 7 个页面（media 已有自己的幂等保护）。 */
+const ROUTE_PLUGINS = [
+	'dsh-plugins/vssaros-skills/lib/index.js',
+	'dsh-plugins/vssaros-kanban/lib/index.js',
+	'dsh-plugins/vssaros-kb/lib/index.js',
+	'dsh-plugins/vssaros-workflow/lib/index.js',
+	'dsh-plugins/vssaros-codebase/lib/index.js',
+	'dsh-plugins/vssaros-dashboard/lib/index.js',
+	'dsh-plugins/vssaros-mcp/lib/index.js',
+];
 
 function read(rel: string): string {
 	const abs = path.join(process.cwd(), rel);
@@ -60,5 +70,15 @@ suite('vssaros-media 双挂载幂等', () => {
 		const before = src.slice(Math.max(0, i - 120), i);
 		assert.ok(before.includes('mediaStoreExisting'),
 			'路由注册必须紧跟在 `if (mediaStoreExisting)` 的保护之下（已由另一层注册过就不再注册）');
+	});
+
+	test('3) 其余 7 个页面路由必须统一走幂等注册助手', () => {
+		for (const rel of ROUTE_PLUGINS) {
+			const src = code(rel);
+			assert.match(src, /Symbol\.for\('vssaros\.webRouteOwners'\)/, `${rel} 缺少跨 apply 的路由属主表`);
+			assert.match(src, /function registerPageRouteOnce\(/, `${rel} 缺少幂等注册助手`);
+			assert.match(src, /registerPageRouteOnce\(page, \{/, `${rel} 的页面路由没有走助手`);
+			assert.ok(!/page\.webServer\.register\(\{/.test(src), `${rel} 仍直接调用 webServer.register，会 duplicate prefix route`);
+		}
 	});
 });

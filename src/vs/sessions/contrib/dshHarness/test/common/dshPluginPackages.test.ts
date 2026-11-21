@@ -104,7 +104,9 @@ function filesCovers(files: readonly string[], dir: string, absFile: string): bo
  *     通用断言 ⇒ 统一豁免，判据仍要求"确实插了一行"）；
  *   · 上游没声明 `peerDependencies["@deepseek-ai/dsh"]` —— 我们不替上游**编**一个范围
  *     （编错会让 dsh 的准入检查**误拒**该插件 ✗）。
- * ⇒ 例外**只开这三条**（逐条在案）；包结构、文件存在性、`files` 覆盖这些**照样查** ✓，另外额外钉一条
+ * ⇒ 例外**逐条显式登记**（`VENDORED_THIRD_PARTY` / `VENDORED_HOST_ENTRIES` / `VENDORED_SLOT_INJECTS`
+ *   / `VENDORED_DEV_DEEPSEEK_DEPS` / `VENDORED_MULTI_ENTRY_HOST`），不放宽其它包；包结构、文件存在性、
+ *   `files` 覆盖这些**照样查** ✓，另外额外钉一条
  *   "vendored 目录里的版本 == 这里登记的版本"（防有人换了字节却忘了更新这份记录 ✓）。
  */
 const VENDORED_THIRD_PARTY: Record<string, { readonly upstream: string; readonly version: string; readonly why: string }> = {
@@ -128,6 +130,11 @@ const VENDORED_THIRD_PARTY: Record<string, { readonly upstream: string; readonly
 		version: '3.4.0',
 		why: '视觉路由随包内置（MIT，上游 ysr666/dsh-vision-router；图片轮视觉模型路由 + 14 个 vision_* 像素工具）。用户 2026-11-19 要求"vssaros 内置 dsh-visison-router"（笔误，npm 真包是 dsh-vision-router）。与 vssaros-media 的 vision_analyze 不重名 ⇒ 并存。provenance 见该目录 VENDOR.md。',
 	},
+	'dsh-deep-ptc-mode': {
+		upstream: 'dsh-deep-ptc-mode',
+		version: '2.3.1',
+		why: '深度 PTC Agent 模式随包内置（MIT，上游 lishize20040802-rgb/dsh-deep-ptc-mode；从官方 PTC 预设派生，带可插话后台任务、按需工具/Skill 与对话卡片）。用户 2026-11-21 要求"VsSaros 的 dsh 默认安装 deep-ptc-mode"。⚠ 安装不等于启用：默认 preset 仍是 vssaros-standard（native），用户需新建会话选中「深度 PTC 模式」；上游派生来源与本仓 vssaros-ptc 的模块组成不同，真机核对要点见该目录 VENDOR.md。',
+	},
 };
 
 /**
@@ -138,6 +145,7 @@ const VENDORED_HOST_ENTRIES: Readonly<Record<string, readonly string[]>> = {
 	'dsh-ego-browser': ['@deepseek-ai/dsh-tools', '@deepseek-ai/schemastery'],
 	'dsh-vision-router': ['./abort-signal-compat.js', '../entry.js'],
 	'dsh-better-sidebar': ['from "ws"', '@deepseek-ai/schemastery'],
+	'dsh-deep-ptc-mode': ['@deepseek-ai/schemastery', './preset.json'],
 };
 
 /** 上游客户端自带宿主 slot 契约的 vendored 包 → `dsh.client.inject` 里必须仍有的前置包（豁免前提）。 */
@@ -145,7 +153,25 @@ const VENDORED_SLOT_INJECTS: Readonly<Record<string, readonly string[]>> = {
 	'dsh-ego-browser': ['@deepseek-ai/dsh-client-ui-settings-plugins'],
 	'dsh-vision-router': ['@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-ui-primitives'],
 	'dsh-better-sidebar': ['@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-ui-sidebar-right'],
+	'dsh-deep-ptc-mode': ['@deepseek-ai/dsh-client-locale', '@deepseek-ai/dsh-client-ui-settings'],
 };
+
+/**
+ * 上游**只在 `devDependencies`**（本地跑测试用，不随包分发、不进 profile 依赖树）声明的
+ * dsh 随发包 → 逐包逐名显式登记。运行时依赖 `dependencies` / `optionalDependencies` 对
+ * vendored 包**照查不误** ✓（那两处才会在真机上与 Host 的版本打架）。
+ */
+const VENDORED_DEV_DEEPSEEK_DEPS: Readonly<Record<string, readonly string[]>> = {
+	'dsh-deep-ptc-mode': ['@deepseek-ai/schemastery'],
+};
+
+/**
+ * **多个 Host 入口**的上游源码包：`VENDORED_HOST_ENTRIES` 的形态标记只在**主入口**成立，
+ * 子入口要么静态 import 宿主包、要么相对 import 到含宿主包的模块 ⇒ 逐入口套标记会假红。
+ * 只有登记在此表的包走「主入口验标记 + 子入口 `node --check` 验语法」，其余 vendored 包
+ * 仍按原判据逐入口验标记 ✓。
+ */
+const VENDORED_MULTI_ENTRY_HOST: ReadonlySet<string> = new Set(['dsh-deep-ptc-mode']);
 
 /** 读取 `dsh-plugins/` 下每个含 package.json 的目录（跳过 node_modules）。 */
 function readPluginPackages(root: string): readonly IPluginPackage[] {
@@ -397,6 +423,7 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			{ dir: 'dsh-ego-browser', constant: 'DSH_EGO_BROWSER_PLUGIN_NAME', option: 'egoBrowserPluginDir' },
 			{ dir: 'dsh-vision-router', constant: 'DSH_VISION_ROUTER_PLUGIN_NAME', option: 'visionRouterPluginDir' },
 			{ dir: 'dsh-better-sidebar', constant: 'DSH_BETTER_SIDEBAR_PLUGIN_NAME', option: 'betterSidebarPluginDir' },
+			{ dir: 'dsh-deep-ptc-mode', constant: 'DSH_DEEP_PTC_MODE_PLUGIN_NAME', option: 'deepPtcModePluginDir' },
 		] as const;
 		for (const w of wiring) {
 			const expected = VENDORED_THIRD_PARTY[w.dir];
@@ -429,6 +456,11 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			}
 			for (const field of ['dependencies', 'optionalDependencies', 'devDependencies'] as const) {
 				for (const dep of Object.keys(asRecord(plugin.json[field]))) {
+					// 例外 4/4：vendored 上游的**本地测试依赖**（不随包分发）逐名登记后才豁免；
+					// 运行时依赖一律照查 ✓。见 VENDORED_DEV_DEEPSEEK_DEPS。
+					if (field === 'devDependencies' && (VENDORED_DEV_DEEPSEEK_DEPS[plugin.dirName] ?? []).includes(dep)) {
+						continue;
+					}
 					assert.ok(!dep.startsWith('@deepseek-ai/'), `${plugin.dirName} 的 ${field} 不得声明随 dsh 分发的包：${dep}`);
 				}
 			}
@@ -1063,9 +1095,8 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 				dir: 'vssaros-workbenches',
 				reason: 'check_local_workbench 纯只读；install_local_workbench 的闸在 IDE 主进程（workbenches.install 的原生模态确认框，fail-closed），Host 侧没有可绕过它的路径（无控制桥即抛错）。',
 			},
-			// 2026-10-16（重构 4）：session_search 只读（搜投影缓存的元数据：标题/路径）⇒ 没有可拦的写入 ✓
-			// （与 dashboard 同口径：只读 ⇒ 不挂闸，理由写明 ✓）。
-			{ dir: 'vssaros-sessions', reason: 'session_search 只读（搜投影缓存的元数据：标题/路径，不写盘、不改数据）⇒ 没有可拦的写入。' },
+			// 2026-11-21（方案 A）：`vssaros-sessions` 默认零工具，不再进审批闸台账；
+			//   `session_search` 由官方 bundle 提供，官方工具的审批口径不在本仓插件清单里维护。
 			// 2026-10-21：dsh 侧**独立**的 TOF/OA 登录（`tof_signin` / `tof_signout`）——
 			//   两者都**改用户的身份状态**：登录会**打开系统浏览器**并把票据写进 dsh 的凭据存储，
 			//   登出会清掉那份票据 ⇒ 与 kanban/kb 的写同一档 ⇒ 挂官方钩子（`tools/pre-execute` ⇒ ask）✓。
@@ -1792,6 +1823,21 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 				const markers = VENDORED_HOST_ENTRIES[plugin.dirName];
 				if (markers) {
 					const source = fs.readFileSync(entry, 'utf8');
+					const mainRel = plugin.json['main'];
+					const isMain = typeof mainRel === 'string' && entry === path.resolve(plugin.dir, mainRel);
+					// ★ 2026-11-21：`dsh-deep-ptc-mode` 是 18 个 Host 入口的上游源码包，标记只在
+					//   主入口 `lib/index.mjs` 成立 ⇒ 子入口改判 `node --check` 验语法（不静默跳过 ✓）。
+					//   真机加载由 dsh Host 与 `VENDOR.md` 的升级流程核对。
+					if (VENDORED_MULTI_ENTRY_HOST.has(plugin.dirName) && !isMain) {
+						assert.ok(source.trim().length > 0, `${plugin.dirName} 的子入口 ${path.basename(entry)} 是空文件`);
+						const { execFileSync } = await import('node:child_process');
+						try {
+							execFileSync(process.execPath, ['--check', entry], { stdio: 'pipe' });
+						} catch (e) {
+							assert.fail(`${plugin.dirName} 的入口 ${path.basename(entry)} 语法检查失败：${String((e as Error)?.message ?? e)}`);
+						}
+						continue;
+					}
 					assert.ok(markers.every(m => source.includes(m)),
 						`${plugin.dirName} 的入口应仍含上游形态标记 ${markers.join(' / ')}；换构建方式要重新评估这条例外`);
 					continue;

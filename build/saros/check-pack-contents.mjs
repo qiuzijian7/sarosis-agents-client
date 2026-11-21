@@ -336,6 +336,28 @@ if (!existsSync(join(appDir, 'out/main.js'))) {
 	console.error('   用法：node build/saros/check-pack-contents.mjs <构建输出目录>');
 	process.exit(1);
 }
+
+// ④-a 构建残留门禁（2026-11-21）：`prepack-dsh-runtime.mjs` 删不掉旧种子时会留下
+//   `profile-seed.deleting-<pid>/`。它含 `.pnpm` 深层副本，整目录拷进暂存后安装路径会超过
+//   Win32 MAX_PATH，Inno Setup 的 `restartreplace` 临时重命名报 `MoveFile 失败；错误代码 3`。
+{
+	const runtimeRoot = join(appDir, 'dsh-runtime');
+	const stale = [];
+	if (existsSync(runtimeRoot)) {
+		for (const version of readdirSync(runtimeRoot, { withFileTypes: true })) {
+			if (!version.isDirectory()) { continue; }
+			const versionDir = join(runtimeRoot, version.name);
+			for (const entry of readdirSync(versionDir, { withFileTypes: true })) {
+				if (/\.deleting-\d+$/.test(entry.name)) { stale.push(`${version.name}/${entry.name}`); }
+			}
+		}
+	}
+	if (stale.length) {
+		problems.push(`随包 dsh-runtime 含构建残留 ${stale.slice(0, 3).join('、')}${stale.length > 3 ? ` 等 ${stale.length} 项` : ''}`
+			+ '；清理 dsh-runtime/<version>/*.deleting-* 并重跑 strip-before-pack.mjs 后再打包');
+	}
+}
+
 if (existsSync(appDir)) {
 	const scanRoots = [join(appDir, 'out'), join(appDir, 'extensions')].filter(p => existsSync(p));
 	if (scanRoots.length) {

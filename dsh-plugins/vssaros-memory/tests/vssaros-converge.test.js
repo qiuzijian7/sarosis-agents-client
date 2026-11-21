@@ -47,7 +47,7 @@ function fakeCtx(services = {}) {
 test('botOfAgent：Bot preset 有键、模式 preset / 非 vssaros 没有', () => {
   assert.equal(botOfAgent(botAgent('vssaros-coder'))?.key, 'coder')
   assert.equal(botOfAgent(botAgent('vssaros-standard')), null, '模式 preset 不是 Bot')
-  assert.equal(botOfAgent(botAgent('vssaros-full')), null)
+  assert.equal(botOfAgent(botAgent('vssaros-ptc')), null, 'PTC 档也是模式')
   assert.equal(botOfAgent(botAgent('standard')), null)
   assert.equal(botOfAgent(botAgent('')), null)
   assert.equal(botOfAgent(undefined), null)

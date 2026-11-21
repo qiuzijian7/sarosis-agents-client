@@ -7,9 +7,11 @@
 // （别把 `webServer` / `connection` 写进去 —— 那会让插件在 headless / tui profile 里**永久
 // pending**，连工具一起失效，kanban 实测过），页面路由走可选 `ctx.inject([...])` 动态挂。
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { readFile as readFileAsync } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile as readFileAsync, readdir, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, extname, isAbsolute, join } from 'node:path';
 // ★ 2026-10-26（改版 A 案）：页面拆成三块 —— 渲染层 `mediaPage.js`（SSR）、客户端 `mediaApp.js`
 //   （作为 `/x/media/app.js` 单独下发）、本文件（路由 + API + 工具）。拆开的理由见 mediaPage.js 头注释。
 import { KIND_LABEL, renderMediaPage, toView } from './mediaPage.js';
@@ -111,8 +113,8 @@ function needLightAIDefault(state, target) {
  * 以前都是「显式选了非 LightAI 就回退 IDE」⇒ **那条回退 100% 必失败**，用户还会收到一句
  * "IDE 没回（provider 没实现 xxx？）"的模糊话。
  * ⇒ 改成在**发桥之前**就说清为什么 + 给出路（去登录 LightAI / 显式指定 LightAI 模型）。
- * ⚠ 哪天 IDE 侧补了这些 op，把各工具里那句 `throw ideMissingOp(...)` 换回 `bridge.callIDE` 即可
- *   （调用形状留在各处的注释里）。
+ * 2026-11-21：视频/视觉分析已改为 Host 侧直接执行；这个错误只保留给尚无 dsh 直连实现
+ * 的生成类能力（视频生成 / 语音合成）。
  */
 function ideMissingOp(what) {
 	return new Error(`${what}目前只能用 dsh 侧直连的 LightAI：IDE 的 media 能力只实现了「生图 / 按参考图改图 / 能力表」，`
@@ -351,6 +353,346 @@ function assetRow(asset) {
 		board: asset.board,
 		tags: asset.tags,
 	};
+}
+
+/**
+ * Host 侧媒体执行器（2026-11-21）：
+ *
+ * `video_analyze` / `extract_video_frames` 不再把工具执行委托给 IDE。
+ * dsh 的媒体依赖已经由 Host PATH 注入（随包 bin、WinGet、brew、apt 等），
+ * 这里直接跑 yt-dlp / ffprobe / ffmpeg / whisper-cli，IDE 只负责聊天框外层。
+ *
+ * 所有命令都用参数数组 spawn，不拼 shell；临时文件落 `<dataRoot>/tmp`。
+ */
+function hostPlatform() {
+	return process.platform;
+}
+
+/** 在 config.binDir / VSSAROS_BIN_DIR / PATH 上找可执行文件；找不到返回裸命令名。 */
+function hostExecutable(name, config) {
+	const exts = hostPlatform() === 'win32' ? [`.exe`, ''] : [''];
+	const dirs = [config?.binDir, process.env.VSSAROS_BIN_DIR];
+	const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === 'path');
+	if (pathKey) { dirs.push(...String(process.env[pathKey] ?? '').split(hostPlatform() === 'win32' ? ';' : ':')); }
+	for (const dir of dirs) {
+		const value = typeof dir === 'string' ? dir.trim() : '';
+		if (!value) { continue; }
+		for (const ext of exts) {
+			const candidate = join(value, `${name}${ext}`);
+			if (existsSync(candidate)) { return candidate; }
+		}
+	}
+	return name;
+}
+
+function runHostCommand(command, args, { timeoutMs = 10 * 60_000 } = {}) {
+	return new Promise(resolve => {
+		let stdout = '';
+		let stderr = '';
+		let settled = false;
+		let child;
+		let timer;
+		const finish = result => {
+			if (settled) { return; }
+			settled = true;
+			if (timer) { clearTimeout(timer); }
+			resolve({ ...result, stdout, stderr });
+		};
+		timer = setTimeout(() => {
+			try { child?.kill(); } catch { /* already gone */ }
+			finish({ ok: false, code: -1, error: `命令超时（${Math.round(timeoutMs / 1000)}s）` });
+		}, timeoutMs);
+		try {
+			child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+		} catch (error) {
+			finish({ ok: false, code: -1, error: String(error?.message ?? error) });
+			return;
+		}
+		child.stdout?.on('data', chunk => { stdout += String(chunk); });
+		child.stderr?.on('data', chunk => { stderr += String(chunk); });
+		child.on('error', error => finish({ ok: false, code: -1, error: String(error?.message ?? error) }));
+		child.on('close', code => finish({ ok: code === 0, code }));
+	});
+}
+
+function isRemoteVideo(source) {
+	return /^https?:\/\//i.test(source);
+}
+
+function videoSlug(source) {
+	let raw;
+	try {
+		raw = isRemoteVideo(source) ? basename(new URL(source).pathname) : basename(source);
+	} catch {
+		raw = basename(String(source));
+	}
+	raw = (raw || 'video').replace(/\.[A-Za-z0-9]+$/, '') || 'video';
+	return raw.replace(/[^\w.-]+/g, '-').slice(0, 40) || 'video';
+}
+
+async function prepareVideoWorkDir(config) {
+	const root = join(dataRootOf(config), 'tmp', 'video-analyze');
+	await mkdir(root, { recursive: true });
+	return mkdtemp(join(root, 'job-'));
+}
+
+async function downloadVideoSource(source, config, workDir) {
+	const ytdlp = hostExecutable('yt-dlp', config);
+	const template = join(workDir, 'video.%(ext)s');
+	const result = await runHostCommand(ytdlp, [
+		'--no-playlist', '--no-warnings', '--restrict-filenames',
+		'-f', 'bv*+ba/b', '--merge-output-format', 'mp4',
+		'-o', template, source,
+	], { timeoutMs: 15 * 60_000 });
+	if (!result.ok) {
+		throw new Error(`yt-dlp 下载失败：${(result.error || result.stderr || result.stdout || '').trim().split('\n').slice(-3).join(' ')}`);
+	}
+	const files = await readdir(workDir);
+	const video = files
+		.filter(name => !name.endsWith('.part') && !name.endsWith('.json') && !name.endsWith('.vtt'))
+		.map(name => join(workDir, name))
+		.filter(path => { try { return statSync(path).isFile() && statSync(path).size > 0; } catch { return false; } })
+		.sort((a, b) => statSync(b).size - statSync(a).size)[0];
+	if (!video) { throw new Error('yt-dlp 下载完成但没有找到视频文件'); }
+	return video;
+}
+
+async function probeVideoDuration(video, config) {
+	const ffprobe = hostExecutable('ffprobe', config);
+	const result = await runHostCommand(ffprobe, [
+		'-v', 'error', '-show_entries', 'format=duration',
+		'-of', 'default=noprint_wrappers=1:nokey=1', video,
+	], { timeoutMs: 30_000 });
+	const duration = Number.parseFloat(String(result.stdout).trim());
+	return result.ok && Number.isFinite(duration) && duration > 0 ? duration : undefined;
+}
+
+function frameTimes(duration, startSec, durationSec, count) {
+	const start = Math.max(0, Math.min(duration - 0.05, Number(startSec) || 0));
+	const span = Number(durationSec) > 0
+		? Math.min(Number(durationSec), duration - start)
+		: duration - start;
+	if (!(span > 0)) { return [start]; }
+	const step = span / count;
+	return Array.from({ length: count }, (_, index) => Math.min(duration - 0.05, start + step * (index + 0.5)));
+}
+
+async function extractFramesFromVideo(video, params, config) {
+	const count = Math.max(1, Math.min(24, Math.floor(Number(params?.frames) || 6)));
+	const duration = await probeVideoDuration(video, config);
+	if (!duration) { throw new Error('ffprobe 读不到视频时长；无法计算抽帧时间点'); }
+	const times = frameTimes(duration, params?.startSec, params?.durationSec, count);
+	const outDir = typeof params?.outDir === 'string' && params.outDir.trim()
+		? params.outDir.trim()
+		: join(dataRootOf(config), 'tmp', 'video-frames', `${videoSlug(video)}-${Date.now()}`);
+	if (!isAbsolute(outDir)) { throw new Error('outDir 必须是绝对路径'); }
+	await mkdir(outDir, { recursive: true });
+	const ffmpeg = hostExecutable('ffmpeg', config);
+	const maxWidth = Math.max(160, Math.min(2048, Math.floor(Number(params?.maxWidth) || 768)));
+	const frames = [];
+	for (let index = 0; index < times.length; index += 1) {
+		const output = join(outDir, `frame-${String(index + 1).padStart(2, '0')}.jpg`);
+		const result = await runHostCommand(ffmpeg, [
+			'-hide_banner', '-loglevel', 'error', '-ss', String(times[index]),
+			'-i', video, '-frames:v', '1', '-vf', `scale=${maxWidth}:-2`, '-q:v', '3', '-y', output,
+		], { timeoutMs: 120_000 });
+		if (!result.ok) {
+			throw new Error(`ffmpeg 抽第 ${index + 1} 帧失败：${(result.error || result.stderr || result.stdout || '').trim().split('\n').slice(-2).join(' ')}`);
+		}
+		frames.push({ path: output, timeSec: Number(times[index].toFixed(3)) });
+	}
+	return { frames, durationSec: Number(duration.toFixed(3)), outDir };
+}
+
+function findWhisperModel(config) {
+	const explicit = process.env.WHISPER_MODEL_PATH;
+	if (explicit && existsSync(explicit)) { return explicit; }
+	const binDirs = [config?.binDir, process.env.VSSAROS_BIN_DIR].filter(value => typeof value === 'string' && value.trim());
+	for (const binDir of binDirs) {
+		const candidate = join(binDir.trim(), '..', 'models', 'ggml-base.bin');
+		if (existsSync(candidate)) { return candidate; }
+	}
+	const sha = '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe';
+	const cached = join(dataRootOf(config), 'components', 'whisper', sha, 'ggml-base.bin');
+	return existsSync(cached) ? cached : undefined;
+}
+
+function parseSubtitleText(raw) {
+	const text = String(raw)
+		.replace(/^WEBVTT[^\n]*\n/i, '')
+		.split(/\r?\n/)
+		.map(line => line.trim())
+		.filter(line => line && !/^\d+$/.test(line) && !/-->/.test(line) && !/^NOTE\b/.test(line))
+		.map(line => line.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'))
+		.filter(Boolean);
+	const seen = new Set();
+	return text.filter(line => {
+		if (seen.has(line)) { return false; }
+		seen.add(line);
+		return true;
+	}).join('\n').trim();
+}
+
+async function fetchSubtitleTranscript(source, config, workDir) {
+	if (!isRemoteVideo(source)) { return undefined; }
+	const ytdlp = hostExecutable('yt-dlp', config);
+	const result = await runHostCommand(ytdlp, [
+		'--skip-download', '--no-warnings', '--write-subs', '--write-auto-subs',
+		'--sub-langs', 'all', '--sub-format', 'vtt',
+		'-o', join(workDir, 'subs.%(ext)s'), source,
+	], { timeoutMs: 5 * 60_000 });
+	if (!result.ok) { return undefined; }
+	const files = await readdir(workDir).catch(() => []);
+	const subtitle = files.find(name => /\.(vtt|srt)$/i.test(name));
+	if (!subtitle) { return undefined; }
+	const text = parseSubtitleText(await readFileAsync(join(workDir, subtitle), 'utf8'));
+	return text ? { ok: true, text } : undefined;
+}
+
+async function transcribeVideo(video, config, workDir) {
+	const whisper = hostExecutable('whisper-cli', config);
+	const model = findWhisperModel(config);
+	if (!model) {
+		return { ok: false, error: '找不到 Whisper 模型（可用 WHISPER_MODEL_PATH 或组件安装）' };
+	}
+	const wav = join(workDir, 'audio.wav');
+	const ffmpeg = hostExecutable('ffmpeg', config);
+	const audio = await runHostCommand(ffmpeg, [
+		'-hide_banner', '-loglevel', 'error', '-i', video, '-vn', '-ac', '1', '-ar', '16000',
+		'-c:a', 'pcm_s16le', '-y', wav,
+	], { timeoutMs: 5 * 60_000 });
+	if (!audio.ok) {
+		return { ok: false, error: `ffmpeg 提取音轨失败：${(audio.error || audio.stderr || '').trim().split('\n').slice(-2).join(' ')}` };
+	}
+	const result = await runHostCommand(whisper, ['-m', model, '-f', wav, '-l', 'auto'], { timeoutMs: 15 * 60_000 });
+	if (!result.ok) {
+		return { ok: false, error: `whisper 转写失败：${(result.error || result.stderr || result.stdout || '').trim().split('\n').slice(-2).join(' ')}` };
+	}
+	const text = String(result.stdout).trim();
+	return text ? { ok: true, text } : { ok: false, error: 'whisper 未返回转写文本' };
+}
+
+async function collectVideoEvidence(source, params, config, withTranscript) {
+	const workDir = await prepareVideoWorkDir(config);
+	let video = source;
+	let downloaded = false;
+	try {
+		if (isRemoteVideo(source)) {
+			video = await downloadVideoSource(source, config, workDir);
+			downloaded = true;
+		} else if (!existsSync(source)) {
+			throw new Error(`本地视频不存在：${source}`);
+		}
+		const extracted = await extractFramesFromVideo(video, params, config);
+		const transcript = withTranscript
+			? (await fetchSubtitleTranscript(source, config, workDir) ?? await transcribeVideo(video, config, workDir))
+			: undefined;
+		return { ...extracted, video, transcript };
+	} finally {
+		if (!params?.keepVideo) {
+			await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+		}
+	}
+}
+
+/**
+ * 用 dsh 当前模型服务做图像理解。
+ * 不再调用 IDE 的 `visionAnalyze`；只选声明了 image 输入的多模态路由。
+ */
+function imageMediaType(path) {
+	const ext = extname(path).toLowerCase();
+	if (ext === '.png') { return 'image/png'; }
+	if (ext === '.webp') { return 'image/webp'; }
+	if (ext === '.gif') { return 'image/gif'; }
+	return 'image/jpeg';
+}
+
+async function materializeImage(image, workDir) {
+	if (existsSync(image)) { return image; }
+	const dataUrl = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(image);
+	const base64 = dataUrl ? dataUrl[2] : (/^[A-Za-z0-9+/=\s]+$/.test(image) && image.length > 32 ? image : '');
+	if (base64) {
+		const file = join(workDir, `image-${Date.now()}.${dataUrl?.[1].includes('png') ? 'png' : dataUrl?.[1].includes('webp') ? 'webp' : 'jpg'}`);
+		await writeFile(file, Buffer.from(base64.replace(/\s+/g, ''), 'base64'));
+		return file;
+	}
+	if (isRemoteVideo(image)) {
+		const response = await fetch(image);
+		if (!response.ok) { throw new Error(`下载图片失败 HTTP ${response.status}`); }
+		const type = String(response.headers.get('content-type') ?? '').split(';')[0];
+		const ext = type.includes('png') ? 'png' : type.includes('webp') ? 'webp' : 'jpg';
+		const file = join(workDir, `image-${Date.now()}.${ext}`);
+		await writeFile(file, Buffer.from(await response.arrayBuffer()));
+		return file;
+	}
+	throw new Error('图片不是本地路径、data URL、base64 或 http(s) URL');
+}
+
+async function analyzeImagesOnHost(state, paths, question, transcript = '') {
+	const llm = state?.ctx?.get?.('llm');
+	if (!llm || typeof llm.stream !== 'function') {
+		throw new Error('dsh 当前没有模型服务（llm），无法做视觉结论');
+	}
+	const providers = await llm.listProviders?.();
+	const list = Array.isArray(providers) ? providers : [];
+	let route;
+	for (const entry of list) {
+		const provider = String(entry?.provider ?? entry?.route ?? entry?.id ?? '').trim();
+		if (!provider) { continue; }
+		let models = [];
+		try { models = await llm.listModels?.(provider) ?? []; } catch { models = []; }
+		for (const modelEntry of Array.isArray(models) ? models : []) {
+			const model = String(modelEntry?.id ?? modelEntry?.model ?? modelEntry?.name ?? '').trim();
+			if (!model) { continue; }
+			let info = modelEntry;
+			try { info = await llm.resolveModelInfo?.(provider, model) ?? modelEntry; } catch { /* 用原始条目 */ }
+			const modalities = info?.inputModalities ?? modelEntry?.inputModalities;
+			if (Array.isArray(modalities) && modalities.includes('image')) {
+				route = { provider, model };
+				break;
+			}
+		}
+		if (route) { break; }
+	}
+	if (!route) { throw new Error('没有声明 image 输入的多模态模型；请先在 dsh 设置中启用视觉模型'); }
+
+	const content = [{ type: 'text', text: `${question}\n\n${transcript ? `视频转写：\n${transcript}\n\n` : ''}请结合这些视频帧给出结论。` }];
+	for (const path of paths.slice(0, 4)) {
+		if (!existsSync(path)) { continue; }
+		content.push({ type: 'image', mediaType: imageMediaType(path), data: readFileSync(path).toString('base64') });
+	}
+	if (!content.some(part => part.type === 'image')) { throw new Error('没有可读取的视频帧'); }
+	let dshLlm;
+	try { dshLlm = await import('@deepseek-ai/dsh-llm'); } catch { dshLlm = undefined; }
+	const message = typeof dshLlm?.createUserMessage === 'function'
+		? dshLlm.createUserMessage({ content, source: { kind: 'plugin:vssaros-media' } })
+		: { id: randomUUID(), role: 'user', content, source: { kind: 'plugin:vssaros-media' } };
+	const assembler = typeof dshLlm?.BlockAssembler === 'function' ? new dshLlm.BlockAssembler() : undefined;
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 3 * 60_000);
+	let plain = '';
+	try {
+		for await (const chunk of llm.stream({
+			provider: route.provider,
+			model: route.model,
+			messages: [message],
+			system: '你是视频分析助手。只根据给定帧和转写回答，不确定时明确说明。',
+			maxTokens: 1600,
+			signal: controller.signal,
+		})) {
+			if (assembler) { assembler.push(chunk); continue; }
+			if (typeof chunk === 'string') { plain += chunk; continue; }
+			const text = chunk?.text ?? chunk?.delta ?? chunk?.content;
+			if (typeof text === 'string') { plain += text; }
+		}
+	} finally {
+		clearTimeout(timer);
+	}
+	const answer = assembler
+		? assembler.blocks().filter(block => block?.type === 'text').map(block => String(block.text ?? '')).join('').trim()
+		: plain.trim();
+	if (!answer) { throw new Error('多模态模型没有返回文本'); }
+	return answer;
 }
 
 /**
@@ -650,17 +992,21 @@ function toolDefinitions(state, config) {
 			const query = String(params?.query ?? '').trim();
 			if (!image) { throw new Error('image 必填（本地路径 / data URL / base64 / http(s) URL）'); }
 			if (!query) { throw new Error('query 必填（关于图片的问题）'); }
-			// ★ 2026-10-26：IDE 侧没有 `visionAnalyze` 这个 op（见 `ideMissingOp`）。IDE 补上后换回
-			//   bridge.callIDE('ide.request', { capability: 'media', params: { op: 'visionAnalyze', ...params } }, …)。
-			throw ideMissingOp('视觉分析（读图）');
+			const workDir = await prepareVideoWorkDir(config);
+			try {
+				const file = await materializeImage(image, workDir);
+				return { ok: true, answer: await analyzeImagesOnHost(state, [file], query) };
+			} catch (error) {
+				return { ok: false, error: String(error?.message ?? error) };
+			} finally {
+				await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+			}
 		},
 	}, {
-		// 重构 4（2026-10-16）：`video_analyze`——视频分析（一次调用完成：抽帧 + 字幕/口播转写 +
-		// 多模态模型给结论）。重活全在壳侧（ffmpeg / yt-dlp / whisper 随 VsSaros 自带，模型 provider
-		// 在 IDE 进程）⇒ 定义在插件、执行经桥回 IDE（与 vision_analyze 同构 ✓）。**只读**（读视频，
-		// 不写远端）⇒ 不挂审批闸（与 vision_analyze 同口径 ✓）。
+		// 2026-11-21：`video_analyze` 在 Host 侧完成 yt-dlp 下载、ffmpeg 抽帧、Whisper 转写，
+		// 再调用 dsh 多模态模型给结论；IDE 只承载聊天框页面。**只读**（读视频，不写远端）。
 		name: 'video_analyze',
-		description: '分析一段视频并回答关于它的问题（一次调用完成：抽帧 + 字幕/口播转写 + 多模态模型给结论）。输入 http(s) 视频链接（抖音/小红书/B站/YouTube…）或本地视频文件路径。口播内容的正确来源是音轨（有字幕轨用字幕轨；没有就走本地 ASR whisper 转写）——不要手工下载 + 循环抽帧 + 逐张 vision_analyze（那条路没有 ASR，且慢数倍）。返回带时间点标记的分析文本 + 素材清单。',
+		description: '在 dsh Host 侧下载视频、抽帧并提取字幕/口播转写（有字幕轨用字幕轨；没有则本地 Whisper ASR）。输入 http(s) 视频链接或本地视频文件路径；返回带时间点的帧图和转写证据。视觉结论由当前多模态模型基于这些帧生成，不再经过 IDE 的 videoAnalyze op。',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -682,7 +1028,7 @@ function toolDefinitions(state, config) {
 				properties: {
 					ok: { type: 'boolean' },
 					answer: { type: 'string' },
-					assets: { type: 'object', description: '素材清单（帧图路径与时间点、字幕/转写字数与来源）' },
+					assets: { type: 'object', description: '素材清单（帧图路径与时间点、字幕/转写）' },
 					error: { type: 'string' },
 				},
 			},
@@ -697,13 +1043,37 @@ function toolDefinitions(state, config) {
 			const query = String(params?.query ?? '').trim();
 			if (!videoUrl) { throw new Error('video_url 必填（http(s) 视频链接或本地视频文件路径）'); }
 			if (!query) { throw new Error('query 必填（要问这段视频什么问题）'); }
-			// ★ 2026-10-26：IDE 侧没有 `videoAnalyze` 这个 op（见 `ideMissingOp`）。IDE 补上后换回
-			//   bridge.callIDE('ide.request', { capability: 'media', params: { op: 'videoAnalyze', ...params } }, …)。
-			throw ideMissingOp('视频分析（抽帧 + 转写 + 多模态）');
+			try {
+				const evidence = await collectVideoEvidence(videoUrl, params, config, true);
+				const transcript = evidence.transcript;
+				const transcriptText = transcript?.ok ? transcript.text : '';
+				let answer;
+				try {
+					answer = await analyzeImagesOnHost(state, evidence.frames.map(frame => frame.path), query, transcriptText);
+				} catch (error) {
+					answer = [
+						`已抽取 ${evidence.frames.length} 帧，视频时长 ${evidence.durationSec}s。`,
+						transcriptText ? `本地转写：\n${transcriptText}` : `未取得转写：${transcript?.error ?? '无字幕轨且本地 Whisper 不可用'}`,
+						`视觉分析未完成：${String(error?.message ?? error)}`,
+						'帧图路径已返回，可在模型支持图片后继续分析。',
+					].join('\n\n');
+				}
+				return {
+					ok: true,
+					answer,
+					assets: {
+						frames: evidence.frames,
+						video: params?.keepVideo ? evidence.video : undefined,
+						durationSec: evidence.durationSec,
+						transcript: transcript?.ok ? transcript.text : undefined,
+					},
+				};
+			} catch (error) {
+				return { ok: false, error: String(error?.message ?? error) };
+			}
 		},
 	}, {
-		// 重构 4（2026-10-16）：`extract_video_frames`——只抽帧（给帧图路径，不分析；要把帧当证据落进
-		// 笔记、或针对单帧追问时用）。与 video_analyze 同构（经桥回 IDE ✓）。**只读** ✓。
+		// 2026-11-21：`extract_video_frames` 在 Host 侧用 ffmpeg 抽帧，直接返回帧路径（不经 IDE）。**只读** ✓。
 		name: 'extract_video_frames',
 		description: '从视频中抽帧：返回帧图路径清单（含时间点）。不写远端、不删用户文件。要"一次拿到理解"用 video_analyze（它内部调本工具的抽帧 + 多模态分析）；要把帧当证据落进笔记、或针对单帧追问细节，用本工具 + vision_analyze。',
 		parameters: {
@@ -737,9 +1107,12 @@ function toolDefinitions(state, config) {
 		execute: async (params) => {
 			const source = String(params?.source ?? '').trim();
 			if (!source) { throw new Error('source 必填（http(s) 视频链接或本地视频文件路径）'); }
-			// ★ 2026-10-26：IDE 侧没有 `extractVideoFrames` 这个 op（见 `ideMissingOp`）。IDE 补上后换回
-			//   bridge.callIDE('ide.request', { capability: 'media', params: { op: 'extractVideoFrames', ...params } }, …)。
-			throw ideMissingOp('视频抽帧');
+			try {
+				const evidence = await collectVideoEvidence(source, params, config, false);
+				return { ok: true, frames: evidence.frames };
+			} catch (error) {
+				return { ok: false, error: String(error?.message ?? error) };
+			}
 		},
 	}, {
 		// ★ 2026-10-27（助手 ⇄ UI 交互）：**用户此刻在页面里看什么**。
@@ -1348,7 +1721,7 @@ function applyInner(ctx, config = {}) {
 		if (svc) { bindFoundation(svc); }
 	});
 	}
-	const state = { tools: null, bridge: null, lightai: null };
+	const state = { ctx, tools: null, bridge: null, lightai: null };
 
 	// ★ 2026-10-24（P4）：把**媒体库真源**作为 Host 服务提供出去 —— 与 `vssarosLightAI` 同口径。
 	//   同 Host 的其它插件（`@vssaros/dsh-imagegen` 生图 / 将来的画布、工作流）**直接写这里**，

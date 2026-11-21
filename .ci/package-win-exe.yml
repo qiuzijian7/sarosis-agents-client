@@ -13,18 +13,18 @@ variables:
   NODE_OPTIONS:
     value: --max-old-space-size=8192
   SAROS_PACK_MODE:
-    value: offline
+    value: standard
     allow-modify-at-startup: true
     props:
       type: vuex-input
-      description: 打包模式：offline 保持完整离线能力；standard 外置 Whisper 模型（首用下载约 141 MiB）
+      description: 打包模式：standard 外置 Whisper 模型（首用下载约 141 MiB）；offline 保持完整离线
       required: true
   SAROS_SETUP_TARGETS:
-    value: both
+    value: user
     allow-modify-at-startup: true
     props:
       type: vuex-input
-      description: 安装包目标：both / user / system；日常验证可选 user 减少重复压缩
+      description: 安装包目标：user / system / both；默认只出 user 包，避免重复生成等大负载
       required: true
   SAROS_MAX_EXE_MB:
     value: '850'
@@ -39,6 +39,27 @@ variables:
     props:
       type: vuex-input
       description: 设置 SAROS_PACK_BASELINE_REPORT 时允许的最大体积增长百分比
+      required: true
+  SAROS_MAX_UPLOAD_MB:
+    value: '2048'
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 上传到升级服务器的单文件 MiB 上限；必须不低于服务器 MAX_UPLOAD_SIZE
+      required: true
+  SAROS_MEDIA_MODE:
+    value: external
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: external 不随包 ffmpeg/ffprobe/yt-dlp，运行时回退 PATH/FFMPEG_PATH；bundled 保持零安装
+      required: true
+  VSSAROS_SKIP_OFFICE_RUNTIME:
+    value: '0'
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 0 随包 Office Python 运行时和办公技能（不依赖组件服务器）；1 可临时裁剪，但该版本无 Office 文档能力
       required: true
   SAROS_UPDATE_SERVER:
     value: http://21.139.192.124:3030

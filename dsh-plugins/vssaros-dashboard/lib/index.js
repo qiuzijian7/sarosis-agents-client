@@ -59,6 +59,22 @@ export const name = 'vssaros-dashboard';
 export const inject = ['tools'];
 
 const ROUTE_PREFIX = '/x/dashboard';
+
+const WEB_ROUTE_OWNERS_KEY = Symbol.for('vssaros.webRouteOwners');
+/** 双 plane 挂载时同一 prefix 只注册一次；effect 撤销时释放，HMR 仍可重新注册。 */
+function registerPageRouteOnce(page, route) {
+	const key = `${route.kind}:${route.path}`;
+	let owners;
+	try { owners = globalThis[WEB_ROUTE_OWNERS_KEY] ??= new Set(); } catch { return page.webServer.register(route); }
+	if (!(owners instanceof Set) || owners.has(key)) {
+		console.log(`[${name}] ${key} 已由另一层注册 ⇒ 跳过（避免 duplicate prefix route）`);
+		return undefined;
+	}
+	owners.add(key);
+	let dispose;
+	try { dispose = page.webServer.register(route); } catch (error) { owners.delete(key); throw error; }
+	return () => { try { dispose?.(); } finally { owners.delete(key); } };
+}
 /**
  * 插件版本号，**渲染进页面**（页面上那行淡淡的 `vssaros-dashboard 0.4.x`）。
  *
@@ -645,7 +661,7 @@ export function apply(ctx, config = {}) {
 
 	// 页面路由（**可选**依赖）：`webServer` / `connection` 只在 web 模板里存在（见静态 `inject` 的注释）。
 	// 不在 web 模板 ⇒ 只是**没有页面** ✓，工具照常可用 ✓。
-	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
+	ctx.inject(['webServer', 'connection'], page => page.effect(() => registerPageRouteOnce(page, {
 		kind: 'prefix',
 		path: ROUTE_PREFIX,
 		handler: async (req, res) => {

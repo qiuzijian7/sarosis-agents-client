@@ -20,6 +20,8 @@ import path from 'node:path';
 // ★ 2026-10-21：入口指纹守卫要读 git 的工作区改动面（execFileSync）⇒ 必须显式导入 ✓
 //   （这条 import 曾在并发回退里被摘掉 ⇒ 守卫静默跳过自己 ⇒ 必须钉住 import 本身 ✗）。
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import os from 'node:os';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const PLUGIN_DIR = path.join(HERE, 'vssaros-chat-surface');
@@ -3136,15 +3138,13 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	}
 }
 
-// ── ⑰ 模式槽守卫（client.preset.js；2026-10-21 立、2026-10-22 补回 + P0-1）─────────────────────
-// ⚠ 2026-10-22 发现：这一段**曾经写过、后来整段丢了**（HEAD 与工作区都没有，疑似并发会话覆盖）⇒ 补回。
-// 口径（用户指令「agent 定位成 Bot，不要让 agent 作为 preset 呈现」+「收敛成 4 个模式」）：
-//   ① 模式菜单**只有 4 项**：vssaros-standard / vssaros-ptc / minimal / cordis（agent 一个都不许进）；
-//   ② 必须注册到 `conversation.hero.agentPreset`（否则官方 seat 仍会把 agent 列进来）；
-//   ③ 切换走官方 `ctx.remote.agentPresets.select`，**不得**回到宿主桥 `bridge.switchPreset`
-//      （无桥环境 = dsh desktop / 全窗 ⇒ 点了没反应 ✗）；
-//   ④ ★ P0-1：当前会话不在菜单里时，chip **不得冒充菜单第一项**（旧实现回落 modes[0] ⇒ Bot 会话显示成
-//      「极简模式」✗）⇒ resolveCurrent 按种类给出真实名称（绝对期望值，不是相对比较）。
+// ── ⑰ 模式槽守卫（client.preset.js；2026-11-21 改成数据驱动）────────────────────────────────
+// 口径：**页面里不许出现任何 preset id 字面量**。
+//   模式清单由各插件 package.json 的 `vssarosModePresets` 声明 → Host 汇总 →
+//   `/x/chat-surface/api/modes-list` 下发；前端只按下发数据过滤 / 分组 / 取名。
+//   ⇒ 这里用**任意 fixture id** 验证数据驱动行为 + 反向突变，而不是抄一份绝对清单
+//     （抄清单正是「加一个模式要改两处」的病根）。
+// 另钉三条历史契约：① 注册到 hero 槽；② 切换走官方 remote；③ 不得回宿主桥。
 {
 	const doc = makeDocumentStub();
 	const win = makeWindowStub(doc);
@@ -3154,43 +3154,89 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	}
 	if (loaded) {
 		const t = loaded.exports.__test;
-		if (!t || typeof t.modesOf !== 'function' || typeof t.resolveCurrent !== 'function') {
-			problems.push('client.preset.js: 缺 __test.modesOf / __test.resolveCurrent（模式过滤与当前名称必须可单测 ✗）');
+		const need = ['modeIndex', 'fallbackIndex', 'modesOf', 'labelOf', 'descOf', 'resolveCurrent'];
+		if (!t || need.some(k => typeof t[k] !== 'function')) {
+			problems.push('client.preset.js: 缺 __test 的数据驱动纯函数（' + need.join('/') + '）✗');
 		} else {
-			const roster = [
-				{ id: 'standard' }, { id: 'ptc' }, { id: 'minimal', order: 3 }, { id: 'cordis', order: 4 },
-				{ id: 'vssaros-standard', name: '标准模式（VsSaros）', order: 100, isDefault: true },
-				{ id: 'vssaros-ptc', name: 'PTC 模式（VsSaros）', order: 101 },
-				{ id: 'vssaros-full', name: '标准档 · 全工具（VsSaros）', order: 102 },
-				{ id: 'vssaros-code-architect', name: 'Code Architect' },
-				{ id: 'vssaros-coder', name: 'Coder' },
-				{ id: 'some-user-agent', name: '用户自建 Agent' },
+			// fixture 故意用与真实 preset 无关的名字 ⇒ 前端若残留硬编码 id，下面必红。
+			const catalog = [
+				{ id: 'fx-a', group: 'alpha', label: '甲模式', desc: '甲说明', visible: true },
+				{ id: 'fx-b', group: 'beta', label: '乙模式', desc: '乙说明', visible: true },
+				{ id: 'fx-hidden', group: 'alpha', label: '隐藏档', visible: false },
 			];
-			// ① 只列 4 个模式（★ 反向突变点：过滤改成全放行 ⇒ 这里必红）
-			const kept = t.modesOf(roster).map((p) => String(p.id)).sort();
-			const expected = ['cordis', 'minimal', 'vssaros-ptc', 'vssaros-standard'];
-			if (JSON.stringify(kept) !== JSON.stringify(expected)) {
-				problems.push(`client.preset.js: 模式菜单应恰好是 ${expected.join('/')}，实际 ${kept.join('/')} ✗（agent/Bot 不许以 preset 呈现；官方 standard/ptc 与退役的 vssaros-full 不进菜单）`);
+			const roster = [
+				{ id: 'fx-a', name: 'A' }, { id: 'fx-b', name: 'B' },
+				{ id: 'fx-hidden' },
+				{ id: 'fx-agent', name: 'Some Bot' },
+			];
+			const idx = t.modeIndex(catalog);
+			const modes = t.modesOf(roster, idx);
+			const kept = modes.map(p => String(p.id)).sort();
+			if (JSON.stringify(kept) !== JSON.stringify(['fx-a', 'fx-b'])) {
+				problems.push(`client.preset.js: 菜单必须只留下发目录里 visible 的项，实际 ${kept.join('/')} ✗`);
 			}
-			// ④ P0-1：当前名称（绝对期望值）
-			const modes = t.modesOf(roster);
+			// 分组与文案都由目录决定
+			if (idx.groupOrder.join(',') !== 'alpha,beta' || !idx.groups.get('beta').has('fx-b')) {
+				problems.push('client.preset.js: 分组必须由目录的 group 决定 ✗');
+			}
+			if (t.labelOf(roster[0], idx) !== '甲模式' || t.descOf(roster[0], idx) !== '甲说明') {
+				problems.push('client.preset.js: 名称 / 说明必须由下发目录提供 ✗');
+			}
+			// P0-1：种类判定（mode / legacy / bot / unknown），绝不允许回落 modes[0] 冒充
 			const cases = [
-				['vssaros-code-architect', 'bot', 'Bot · Code Architect'],
-				['standard', 'legacy', '标准模式（dsh 原生）'],
-				['vssaros-full', 'legacy', '标准档 · 全工具（VsSaros）'],
-				['minimal', 'mode', '极简模式'],
-				['vssaros-ptc', 'mode', 'PTC 模式（VsSaros）'],
-				['', 'mode', '标准模式（VsSaros）'],
-				['ghost-preset', 'unknown', 'ghost-preset'],
+				['fx-a', 'mode', '甲模式'],
+				['fx-hidden', 'legacy', '隐藏档'],
+				['fx-agent', 'bot', 'Bot · Some Bot'],
+				['', 'mode', '甲模式'],
+				['ghost', 'unknown', 'ghost'],
 			];
 			for (const [cur, kind, label] of cases) {
-				const r = t.resolveCurrent(roster, cur, modes);
+				const r = t.resolveCurrent(roster, cur, modes, idx);
 				if (!r || r.kind !== kind || r.label !== label) {
-					problems.push(`client.preset.js: resolveCurrent(${JSON.stringify(cur)}) 应为 {${kind}, ${label}}，实际 ${JSON.stringify(r)} ✗（旧 bug：Bot 会话 chip 显示成「极简模式」）`);
+					problems.push(`client.preset.js: resolveCurrent(${JSON.stringify(cur)}) 应为 {${kind}, ${label}}，实际 ${JSON.stringify(r)} ✗`);
 				}
 			}
+			// ★ 反向突变 1：目录删掉一项 ⇒ 菜单立刻少一项（证明不是白名单写死）
+			const shrunk = t.modesOf(roster, t.modeIndex(catalog.filter(r => r.id !== 'fx-b')));
+			if (shrunk.map(p => String(p.id)).join(',') !== 'fx-a') {
+				problems.push('client.preset.js: 改目录没有改变菜单 ⇒ 过滤仍是硬编码 ✗');
+			}
+			// ★ 反向突变 2：改 group ⇒ 分组跟着变
+			const regrouped = t.modeIndex(catalog.map(r => r.id === 'fx-b' ? { ...r, group: 'gamma' } : r));
+			if (regrouped.groupOrder.indexOf('gamma') < 0 || !regrouped.groups.get('gamma').has('fx-b')) {
+				problems.push('client.preset.js: 改 group 没有改变分组 ⇒ 分组仍是硬编码 ✗');
+			}
+			// ★ 反向突变 3：空目录 ⇒ 零可见模式；**降级不许编造菜单**。
+			//    旧守卫把「按 roster 无 name 猜内置」钉成契约，而那份降级会丢 VsSaros 档、
+			//    放出声明为 visible:false 的官方档 ⇒ 2026-11-21 改为空索引 + 只读错误提示。
+			if (t.modesOf(roster, t.modeIndex([])).length !== 0) {
+				problems.push('client.preset.js: 空目录仍显示模式 ⇒ 不是数据驱动 ✗');
+			}
+			const fb = t.fallbackIndex([{ id: 'fx-no-name' }, { id: 'fx-named', name: 'X' }]);
+			if (fb.visible.size !== 0 || t.modesOf(roster, fb).length !== 0) {
+				problems.push('client.preset.js: 降级索引编造了模式项（端点不可用时必须为空，由只读提示接管）✗');
+			}
+			const presetSrc = String(fs.readFileSync(path.join(LIB, 'client.preset.js'), 'utf8'));
+			if (!/catalog.length === 0/.test(presetSrc) || !/modeCatalogError/.test(presetSrc) || !/data-vssaros-mode-seat/.test(presetSrc)) {
+				problems.push('client.preset.js: 目录为空时必须渲染只读错误 chip（不编造菜单、不静默消失）✗');
+			}
+			// ★ 页面源码不许出现任何具体 preset id 字面量（「彻底去硬编码」的机器保证）
+			// 期望清单**不手写**：活跃档从唯一真源读、第三方从它自己的声明读，
+			// 再加三个已删除的幽灵 id（防止有人把它们重新写回页面）。
+			const truth = await import(pathToFileURL(path.resolve('dsh-plugins/vssaros-agents/lib/core/modePresetIds.generated.js')).href);
+			const thirdParty = JSON.parse(fs.readFileSync(path.resolve('dsh-plugins/dsh-deep-ptc-mode/package.json'), 'utf8')).vssarosModePresets.map(r => r.id);
+			const banned = [...truth.MODE_PRESET_IDS, ...thirdParty, 'vssaros-full', 'vssaros-minimal', 'vssaros-cordis'];
+			for (const id of banned) {
+				if (new RegExp("['\"]" + id + "['\"]").test(presetSrc)) {
+					problems.push(`client.preset.js: 仍残留硬编码 preset id「${id}」⇒ 改回数据驱动声明 ✗`);
+				}
+			}
+			const hostSrc = String(fs.readFileSync(path.join(LIB, 'index.js'), 'utf8'));
+			if (!/MODE_LIST_API/.test(presetSrc) || !/vssarosModePresets/.test(hostSrc) || !/MODE_LIST_PATH/.test(hostSrc)) {
+				problems.push('模式目录通道不完整：页面要读下发端点、Host 要读 vssarosModePresets 声明 ✗');
+			}
 		}
-		// ③ 切换通道
+		// 切换通道
 		const src = fs.readFileSync(path.join(LIB, 'client.preset.js'), 'utf8');
 		if (!/remote\.agentPresets\.select\(/.test(src)) {
 			problems.push('client.preset.js: 切换必须走官方 ctx.remote.agentPresets.select（无桥环境也能切）✗');
@@ -3198,7 +3244,7 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		if (/bridge\.switchPreset/.test(src)) {
 			problems.push('client.preset.js: 不得回到宿主桥 bridge.switchPreset（dsh desktop / 全窗没有桥 ⇒ 点了没反应）✗');
 		}
-		// ② 注册槽
+		// 注册槽
 		try {
 			const regs = captureRegistration(loaded.exports, makeShell().shell);
 			const hit = regs.some((r) => {
@@ -3209,7 +3255,121 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		} catch (e) {
 			problems.push(`client.preset.js: install() 抛错 — ${String((e && e.message) || e)}`);
 		}
-		notes.push('模式槽守卫：恰好 4 个模式 / 当前名称不冒充（7 例）/ 切换走官方 remote / 注册到 hero 槽');
+		notes.push('模式槽守卫：数据驱动（fixture 目录 + 3 组反向突变 + 零 id 字面量）/ 当前名称不冒充（6 例）/ 切换走官方 remote / 注册到 hero 槽');
+	}
+}
+
+// ── ⑰-b Host 侧模式目录汇总（lib/index.js）────────────────────────────────────
+// 端点在没有 profileContext / pluginManager 时也必须能返回本包基线，否则老构建 / headless 会白屏。
+{
+	try {
+		const host = await import(pathToFileURL(path.join(LIB, 'index.js')).href);
+		if (typeof host.collectModePresets !== 'function') {
+			problems.push('lib/index.js: 缺 collectModePresets（模式目录端点的数据源）✗');
+		} else {
+			const rows = await host.collectModePresets({ get: () => undefined });
+			const ids = (Array.isArray(rows) ? rows : []).map(r => r && r.id);
+			if (!ids.length) {
+				problems.push('lib/index.js: 服务缺席时读不到本包 vssarosModePresets 基线 ✗');
+			}
+			if (new Set(ids).size !== ids.length) {
+				problems.push('lib/index.js: 模式目录出现重复 id ✗');
+			}
+			// ① 前端 fetch 的路径与 Host 注册的路径必须逐字一致（两端各写一遍，改一端另一端不变 ⇒ 菜单静默空 ✗）。
+			const d = makeDocumentStub();
+			const presetChunk = loadChunk('client.preset.js', d, makeWindowStub(d));
+			const api = presetChunk.exports.__test && presetChunk.exports.__test.MODE_LIST_API;
+			if (typeof host.MODE_LIST_PATH !== 'string' || !api || api !== host.MODE_LIST_PATH) {
+				problems.push(`模式目录端点路径两端不一致：前端 ${JSON.stringify(api)} / Host ${JSON.stringify(host.MODE_LIST_PATH)} ✗`);
+			}
+			// ② 端到端：临时 profile 里放一个带 `vssarosModePresets` 的第三方包 ⇒ 必须被合并进目录。
+			//    ★ 这正是 2026-11-21「下拉框看不到 deep-ptc」的反向突变点：只验基线会漏掉整条下发链 ✗。
+			const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-modes-'));
+			try {
+				const writePkg = (name, declared) => {
+					const dir = path.join(tmp, 'node_modules', name);
+					fs.mkdirSync(dir, { recursive: true });
+					fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name, version: '1.0.0', vssarosModePresets: declared }));
+				};
+				fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({
+					dsh: { profile: { bundles: ['fixture-mode-plugin', 'fixture-broken-plugin'] } },
+				}));
+				writePkg('fixture-mode-plugin', [
+					{ id: 'fixture-extra', group: 'third-party', label: '夹具模式', visible: true },
+					{ id: ids[0], group: 'third-party', label: '重名应被忽略', visible: true },
+				]);
+				// 故意不建 fixture-broken-plugin ⇒ 单包读失败不许拖垮整条目录。
+				const merged = await host.collectModePresets({ get: (n) => n === 'profileContext' ? { dir: tmp } : undefined });
+				const rows = Array.isArray(merged) ? merged : [];
+				const extra = rows.filter(r => r && r.id === 'fixture-extra');
+				if (extra.length !== 1 || extra[0].packageName !== 'fixture-mode-plugin' || extra[0].group !== 'third-party') {
+					problems.push('lib/index.js: 第三方插件的 vssarosModePresets 声明没被合并进模式目录 ✗（模式菜单会看不到它）');
+				}
+				if (rows.filter(r => r && r.id === ids[0]).length !== 1) {
+					problems.push('lib/index.js: 同名 id 未去重（本包基线应优先）✗');
+				}
+				if (rows.length !== ids.length + 1) {
+					problems.push(`lib/index.js: 读不到的包影响了其它包 / 目录条数异常（${rows.length} ≠ ${ids.length + 1}）✗`);
+				}
+			} finally {
+				try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* 临时目录清不掉不影响判定 */ }
+			}
+			// ③ **外部锚点**：真实随包插件的声明必须存在且能被合并。
+			//    VENDOR.md 写着"上游整目录替换时记得带回来"，但以前没有任何自动守卫 ⇒
+			//    升级一漏，模式就凭空消失而全链仍绿（质量复盘 P1-A）。
+			const realPkgPath = 'dsh-plugins/dsh-deep-ptc-mode/package.json';
+			const realPkg = JSON.parse(fs.readFileSync(realPkgPath, 'utf8'));
+			const realDeclared = Array.isArray(realPkg.vssarosModePresets) ? realPkg.vssarosModePresets : [];
+			if (!realDeclared.length || realDeclared.some(r => !r || typeof r.id !== 'string' || !r.id.trim() || !r.label || !r.group || r.visible === false)) {
+				problems.push('dsh-deep-ptc-mode/package.json: 缺可见的 vssarosModePresets 声明（上游整目录替换时最易丢 ⇒ 模式会从菜单凭空消失）✗');
+			}
+			const t2 = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-modes-real-'));
+			try {
+				const dir = path.join(t2, 'node_modules', 'dsh-deep-ptc-mode');
+				fs.mkdirSync(dir, { recursive: true });
+				fs.writeFileSync(path.join(dir, 'package.json'), fs.readFileSync(realPkgPath));
+				fs.writeFileSync(path.join(t2, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: ['dsh-deep-ptc-mode'] } } }));
+				const merged = await host.collectModePresets({ get: (n) => n === 'profileContext' ? { dir: t2 } : undefined });
+				const missing = realDeclared.filter(r => r && r.id && !(Array.isArray(merged) ? merged : []).some(m => m.id === r.id && m.packageName === 'dsh-deep-ptc-mode'));
+				if (missing.length) { problems.push(`真实声明没被 Host 合并：${missing.map(r => r.id).join('/')} ✗`); }
+			} finally {
+				try { fs.rmSync(t2, { recursive: true, force: true }); } catch { /* 清理失败不影响判定 */ }
+			}
+			// ④ **真机主路径**：真机靠 `pluginManager.listBundles()` 取名，以前守卫只测 fallback 分支。
+			//    profile 的 bundles 故意留空 ⇒ 只有 listBundles 分支生效才能拿到声明（字段契约一改就红）。
+			const t3 = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-modes-pm-'));
+			try {
+				const good = path.join(t3, 'node_modules', 'fixture-mode-plugin');
+				fs.mkdirSync(good, { recursive: true });
+				fs.writeFileSync(path.join(good, 'package.json'), JSON.stringify({ vssarosModePresets: [
+					{ id: 'fixture-pm', group: 'third-party', label: '主路径模式' },
+					{ id: 'fixture-bare' },
+				] }));
+				// 恶意包名：指向 node_modules 之外的目录，白名单必须拦住它。
+				const evil = path.join(t3, 'evil');
+				fs.mkdirSync(evil, { recursive: true });
+				fs.writeFileSync(path.join(evil, 'package.json'), JSON.stringify({ vssarosModePresets: [{ id: 'fixture-evil' }] }));
+				fs.writeFileSync(path.join(t3, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: [] } } }));
+				const pm = { listBundles: async () => [
+					{ name: 'fixture-mode-plugin', installed: true, enabled: true },
+					{ name: '../../evil', installed: true, enabled: true },
+					{ name: '', installed: true, enabled: true },
+				] };
+				const merged = await host.collectModePresets({ get: (n) => n === 'profileContext' ? { dir: t3 } : n === 'pluginManager' ? pm : undefined });
+				const list = Array.isArray(merged) ? merged : [];
+				if (!list.some(m => m.id === 'fixture-pm')) { problems.push('lib/index.js: pluginManager.listBundles() 主路径没生效（真机升级改字段名会静默丢模式）✗'); }
+				if (list.some(m => m.id === 'fixture-evil')) { problems.push('lib/index.js: 包名未做白名单，`../..` 能逃出 node_modules 读任意 package.json ✗'); }
+				const bare = list.find(m => m.id === 'fixture-bare');
+				if (!bare || bare.group !== 'other' || bare.visible !== true) {
+					problems.push('lib/index.js: catalog 缺省语义未规范化（group/visible）✗');
+				}
+			} finally {
+				try { fs.rmSync(t3, { recursive: true, force: true }); } catch { /* 清理失败不影响判定 */ }
+			}
+			notes.push(`Host 模式目录：基线 ${ids.length} 条 + 第三方声明合并 / 同名去重 / 坏包隔离 / 端点路径一致 / 真实声明锚点 / listBundles 主路径 / 包名白名单 / 缺省语义`);
+		}
+	} catch (e) {
+		problems.push(`lib/index.js: 模式目录汇总装载失败 — ${String((e && e.message) || e)}`);
 	}
 }
 
@@ -3555,11 +3715,38 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		problems.push('client.workbenchNav.js: 缺少"要藏哪几行"的白名单（HIDDEN_LABELS）✗');
 	} else {
 		const hiddenLine = nav.slice(hiddenAt, nav.indexOf('];', hiddenAt));
-		for (const label of ['插件', '自动化任务']) {
+		// ★ 2026-11-21（用户：「左侧栏隐藏 插件、自动化任务、更多」）：三个都钉住。
+		for (const label of ['插件', '自动化任务', '更多']) {
 			if (!hiddenLine.includes(`"${label}"`)) {
 				problems.push(`client.workbenchNav.js: 白名单必须含「${label}」（否则侧栏那一行又露出来了 ✗）`);
 			}
 		}
+		if (!/querySelectorAll\("button:not\(\[aria-label\]\)"\)/.test(nav)) {
+			problems.push('client.workbenchNav.js: 无 aria-label 的官方「更多」行必须按精确文本补藏 ✗');
+		}
+		// ★ 2026-11-21 真机复盘：官方行不是 button[aria-label]，且官方侧栏真实根是
+		//   [data-slot="sidebar"]（preload-dshView 的 CHAT_ONLY_CSS），不是 [data-sidebar-left]。
+		if (!/document\.createTreeWalker\(document\.body, NodeFilter\.SHOW_TEXT\)/.test(nav)) {
+			problems.push('client.workbenchNav.js: 非 button 渲染的官方行必须按文本节点兜底隐藏 ✗');
+		}
+		if (!/getBoundingClientRect\(\)/.test(nav)) {
+			problems.push('client.workbenchNav.js: 不能只用单一子树定位，必须按左栏几何位置兜底 ✗');
+		}
+		if (!/vssaros-hidden-left-rows/.test(nav)) {
+			problems.push('client.workbenchNav.js: 必须有全局 CSS 兜底，避免 React 重渲染时行闪出来 ✗');
+		}
+		if (!/data-slot=/.test(nav)) {
+			problems.push('client.workbenchNav.js: 必须以官方侧栏真实根 [data-slot="sidebar"] 为首选作用域 ✗');
+		}
+		if (!/"Automation tasks"/.test(nav)) {
+			problems.push('client.workbenchNav.js: 必须覆盖官方 schedules 行的英文文案 "Automation tasks" ✗');
+		}
+		if (!/const hideOfficialRows =/.test(nav)) {
+			problems.push('client.workbenchNav.js: 必须有结构性宽匹配（属性 / 短文本 / 整行上溯）✗');
+		}
+	}
+	if (!/const ensureObserver =/.test(nav) || !/DOMContentLoaded/.test(nav)) {
+		problems.push('client.workbenchNav.js: 观察器与生命周期必须能在首帧 body 未就绪后自愈 ✗');
 	}
 	if (!/btn\.style\.display = "none"/.test(nav)) {
 		problems.push('client.workbenchNav.js: 藏行必须是 display:none 那一颗 button ✗');
@@ -3593,7 +3780,7 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	}
 
 	if (!problems.some((p) => /HIDDEN_LABELS|display:none|aria-label|MutationObserver|节流|remove\(\)|vssaros-wb-scheduler/.test(p))) {
-		notes.push('侧栏：隐藏官方「插件」「自动化任务」行（display:none + MutationObserver 节流重贴；只藏行、不删能力；自动化任务由工作台承接）');
+		notes.push('侧栏：隐藏官方「插件」「自动化任务」「更多」行（aria-label + 文本节点 + 左栏几何 + 全局 CSS，MutationObserver 节流重贴；只藏行、不删能力）');
 	}
 }
 

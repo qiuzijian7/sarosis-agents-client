@@ -474,10 +474,23 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 
 	/** 绑定会话；复用的 id 若被别处抢占（Host 报错）⇒ 退回派生 id 再试一次。 */
 	private async _bindSessionWithFallback(opts: { cwd: string; sessionId: string; derived: string; agentPreset?: string }): Promise<string | undefined> {
+		const requested = opts.agentPreset;
 		const attempt = async (id: string): Promise<string | undefined> => {
 			try {
-				const r = await this._dsh.startSession({ cwd: opts.cwd, sessionId: id, agentPreset: opts.agentPreset });
-				this._recordSession(opts.agentPreset, r.sessionId, r.agentPreset ?? undefined);
+				const start = (preset: string | undefined) => this._dsh.startSession({ cwd: opts.cwd, sessionId: id, agentPreset: preset });
+				// ★ 2026-11-21：初始绑定也要有 `_doSwitchWorktree` 那条 preset 类错误兜底。
+				//   以前两次重试都带同一个 agentPreset ⇒ `agent-preset/invalid` 时全败、
+				//   绑定返回 undefined、页面无会话（老会话存着已删的档 / hero 占位值都会踩）。
+				let r;
+				try {
+					r = await start(requested);
+				} catch (e) {
+					const detail = String((e as Error)?.message ?? e);
+					if (!/agent-preset|preset/i.test(detail) || requested === undefined) { throw e; }
+					this._log.warn(`[dshHarness] chat ${this._chatId} 初始绑定 preset 失败(${detail}) ⇒ 用 base preset 重试`);
+					r = await start(undefined);
+				}
+				this._recordSession(requested, r.sessionId, r.agentPreset ?? undefined);
 				return r.sessionId;
 			} catch (e) {
 				this._log.warn(`[dshHarness] session.start failed for chat ${this._chatId} (${id})`, e);

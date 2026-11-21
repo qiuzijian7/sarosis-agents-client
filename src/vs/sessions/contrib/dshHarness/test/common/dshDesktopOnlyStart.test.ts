@@ -26,11 +26,24 @@ import path from 'node:path';
 
 const WMS = 'src/vs/platform/windows/electron-main/windowsMainService.ts';
 const CONTRIB = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarness.contribution.ts';
+const APP = 'src/vs/code/electron-main/app.ts';
+const SHELL = 'src/vs/sessions/electron-browser/dshDesktop.ts';
+const LIFECYCLE = 'src/vs/platform/lifecycle/electron-main/lifecycleMainService.ts';
+const CHANNEL = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts';
 
 function read(rel: string): string {
 	const abs = path.join(process.cwd(), rel);
 	assert.ok(fs.existsSync(abs), 'source missing (cwd changed?): ' + abs);
 	return fs.readFileSync(abs, 'utf8');
+}
+
+/** 源码守卫必须排除注释，否则注释里解释的旧写法会造成假红。 */
+function code(rel: string): string {
+	return read(rel)
+		.replace(/\/\*[\s\S]*?\*\//g, '')
+		.split(/\r?\n/)
+		.filter(line => !/^\s*\/\//.test(line))
+		.join('\n');
 }
 
 suite('启动只露桌面窗口（不许 IDE 闪一下）', () => {
@@ -70,5 +83,62 @@ suite('启动只露桌面窗口（不许 IDE 闪一下）', () => {
 		assert.ok(at > 0, '找不到 app 启动入口');
 		const env = src.slice(at, src.indexOf('\n});', at));
 		assert.match(env, /VSSAROS_START_HIDDEN: '1'/);
+	});
+
+	test('5) B 方案：desktop-only 启动默认开启，且启动入口必须能不创建 IDE 主窗口', () => {
+		const app = read(APP);
+		assert.match(app, /DshDesktopWindowMainService/, '启动入口必须接入主进程 desktop 开窗服务');
+		assert.match(app, /VSSAROS_DESKTOP_ONLY/, '必须有可回退的进程级开关');
+		assert.match(app, /await this\.dshDesktopWindowMainService\.openDesktopWindow\(\);/, 'B 分支必须直接打开 desktop 窗口');
+		assert.match(app, /return \[\];/, 'B 分支必须返回空 CodeWindow 列表（不创建 IDE 主窗口）');
+		const contrib = read(CONTRIB);
+		assert.match(contrib, /\[DshHarnessSettings\.DesktopOnlyStartup\]/, '缺少 desktop-only 开关声明');
+		assert.match(contrib, /default: true/, 'desktop-only 开关必须默认开启');
+	});
+
+	test('6) B 方案轻量壳必须保留 dsh 官方左侧栏（不许 chatOnlyUi=true）', () => {
+		const shell = code(SHELL);
+		assert.match(shell, /chatOnlyUi: false/, 'B 方案是主界面而非 IDE 内嵌聊天框，必须保留官方侧栏/右栏');
+		assert.ok(!/chatOnlyUi:\s*true/.test(shell), 'chatOnlyUi=true 会注入 CSS 隐藏 `[data-slot="sidebar"]` ✗');
+		assert.match(shell, /dshOwnWindow: true/, '自主窗口必须让 dsh 自己决定明暗');
+		assert.match(shell, /isolatedPool: true/, '桌面视图必须使用独立网络分区');
+		assert.match(shell, /\[data-vssaros-wb-tabstrip\]/, '必须等待带官方侧栏的换皮锚点');
+		assert.match(shell, /\[data-vssaros-guide-root\]/, '必须兼容新版 guide 根节点锚点');
+	});
+
+	test('7) B 壳必须先建视图槽、后等 Host，并单次等待换皮锚点', () => {
+		const shell = code(SHELL);
+		const createAt = shell.indexOf('DshHarnessChannelCommand.CreateView');
+		const bootstrapAt = shell.indexOf('DshHarnessChannelCommand.Bootstrap');
+		const waitAt = shell.indexOf('DshHarnessChannelCommand.WaitViewSelector');
+		assert.ok(createAt > 0 && bootstrapAt > createAt && waitAt > bootstrapAt,
+			'顺序必须是 CreateView → Bootstrap → WaitViewSelector：视图槽可与 Host 启动并行准备');
+		assert.match(shell, /const skinSelector = '\[data-vssaros-wb-tabstrip\],\[data-vssaros-guide-root\]'/,
+			'两个换皮锚点必须用一次并集查询等待，不许串行 1.5s + 7.5s');
+		assert.match(shell, /timeoutMs: 5000/, '换皮等待必须有 5s 有界预算');
+		assert.ok(!/timeoutMs: 7500/.test(shell), '旧的 7.5s 串行等待不许回来');
+		assert.match(shell, /DshHarnessChannelCommand\.DisposeView/, 'Bootstrap 失败时必须清理预建视图槽');
+		assert.match(shell, /viewVisible = true/, '换皮就绪/超时后才允许显示视图，避免焦点事件提前露出默认样式');
+	});
+
+	test('8) 关 IDE 不许带走 B 方案 desktop 窗口', () => {
+		const lifecycle = code(LIFECYCLE);
+		assert.match(lifecycle, /private hasSurvivingAppWindow\(\): boolean/,
+			'生命周期层必须有「还有非 CodeWindow 应用窗口」判据');
+		assert.match(lifecycle, /getAllWindowsExcludingOffscreen\(\)/,
+			'判据必须排除 offscreen 窗口，只看真正的应用窗口');
+		const at = lifecycle.indexOf('if (this.windowCounter === 0 && (!isMacintosh || this._quitRequested))');
+		assert.ok(at > 0, '找不到最后一个 CodeWindow 关闭的 shutdown 判据');
+		const body = lifecycle.slice(at, at + 800);
+		assert.match(body, /!this\._quitRequested && this\.hasSurvivingAppWindow\(\)/,
+			'非真退出且 desktop 仍存活时必须保住应用');
+		assert.match(body, /fireOnWillShutdown\(ShutdownReason\.QUIT\)/,
+			'真退出/没有其它窗口时仍必须保留原 shutdown 路径');
+		assert.ok(!/if \(!this\._quitRequested && this\.hasSurvivingAppWindow\(\)\) \{\s*this\.fireOnWillShutdown/.test(body),
+			'不许在 desktop 仍存活时直接 fireOnWillShutdown（会 dispose 掉 desktop ✗）');
+
+		const channel = code(CHANNEL);
+		assert.match(channel, /add\(getActiveDshDesktopWindow\(\)\)/,
+			'关窗事实里的 desktop 计数必须把 B 方案独立窗口算进去，避免误判为最后一个界面');
 	});
 });

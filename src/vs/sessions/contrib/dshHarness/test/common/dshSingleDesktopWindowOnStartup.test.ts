@@ -85,4 +85,15 @@ suite('一次启动只开一扇桌面窗口（IDE 不闪）', () => {
 		assert.ok(!/startHidden: configuration\.isInitialStartup === true && this\._wantsHiddenStart\(\)/.test(src),
 			'旧"只认首个窗口"的写法不许回来（那正是 IDE 闪一下的根因）');
 	});
+
+	test('4) 启动壳 unload 必须复核桌面窗口登记与辅助窗口存活，不许把导航误判成关窗', () => {
+		const src = code(FULLWIN);
+		const at = src.indexOf('bootDisposables.add(auxWindow.onUnload');
+		assert.ok(at > 0, '找不到启动壳的 unload 处理');
+		const body = src.slice(at, at + 2200);
+		assert.match(body, /this\._desktopWindows\.size > 0/, '已有桌面窗口登记时必须跳过退出（换窗/拼装完成）');
+		assert.match(body, /this\._auxWindowService\.getWindow\(windowId\)/, '必须按 windowId 复核辅助窗口是否仍登记');
+		assert.match(body, /currentWindow/, '必须复核当前辅助窗口对象，不能只看旧 win');
+		assert.match(body, /不退出应用/, '确认导航/换窗时要明确跳过退出');
+	});
 });

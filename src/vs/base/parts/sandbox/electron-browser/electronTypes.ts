@@ -138,6 +138,7 @@ export interface WebFrame {
 	 * per-window.
 	 */
 	setZoomLevel(level: number): void;
+	getZoomFactor(): number;
 }
 
 export interface ProcessMemoryInfo {

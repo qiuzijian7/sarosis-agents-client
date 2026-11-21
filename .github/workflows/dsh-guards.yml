@@ -17,6 +17,13 @@ on:
       - 'build/prepack-dsh-runtime.mjs'
       - 'scripts/dsh-plugin-deploy.mjs'
       - 'src/vs/sessions/contrib/dshHarness/**'
+      - 'src/vs/sessions/electron-browser/dshDesktop.html'
+      - 'src/vs/sessions/electron-browser/dshDesktop.ts'
+      - 'src/vs/code/electron-main/app.ts'
+      - 'src/vs/platform/windows/electron-main/windowsMainService.ts'
+      - 'src/vs/platform/launch/electron-main/launchMainService.ts'
+      - 'src/vs/base/parts/sandbox/electron-browser/preload-aux.ts'
+      - 'scripts/start-dev-app.mjs'
       - 'src/vs/sessions/contrib/agentStudio/browser/views/pluginsView.ts'
       - 'src/vs/sessions/contrib/agentStudio/browser/dshPluginCenterHost.ts'
   workflow_dispatch:

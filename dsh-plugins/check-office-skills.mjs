@@ -84,6 +84,12 @@ console.log('[check-office-skills] 本仓 office 技能副本 ↔ 上游 assets 
 			'renderOfficeOverlay 里补这一行；⚠ 不能用 `- insert:`（插件自带 patch 已 insert，同 id 会撞行）'],
 		['overlay 传 runtimePath', cliSrc.includes('runtimePath:'),
 			'renderOfficeOverlay 里给该行 config.runtimePath = officeBase'],
+		// ★ 2026-11-21 真机：dsh 0.2.2-rc.2 的 web-app / sdk-app bundle 已插入 skill-office 等行，
+		//   旧覆盖层又 insert 一份同名包 ⇒ `a skill provider named "dsh-office" is already registered`。
+		['overlay 覆盖官方 skill-office / workspace-dependencies 行', cliSrc.includes('- id: skill-office') && cliSrc.includes('- id: workspace-dependencies'),
+			'0.2.2-rc.2 起官方 bundle 已有这两行；renderOfficeOverlay 改成按 row id 覆盖 config'],
+		['overlay 不重复 insert 官方 office 技能包', !/-\s*insert:[\s\S]*?name:\s*'@deepseek-ai\/dsh-skill-office'/.test(cliSrc),
+			'删掉 renderOfficeOverlay 里的 `- insert:` 官方包行；重复 registerProvider 会让整个 entry 失效'],
 		['插件自带 patch 行（cordis.patch.yml）', pluginPatch.includes('id: vssaros-office-template'),
 			'否则 overlay 的 `- id:` 打空且静默'],
 		// ★ 2026-11-02 真机事故：这**不是**可选加固 —— 少这两行时 7 个 Office 技能会静默消失

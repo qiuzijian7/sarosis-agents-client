@@ -28,90 +28,96 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		const react = require("react");
 
-		/** dsh 自带的 4 个模式（官方 preset id，无前缀）。 */
-		const BUILTIN_MODES = ["standard", "ptc", "minimal", "cordis"];
-		/** 我们的 2 个模式（官方模式的逐字副本 + 我们的模块行/工具面；见 `vssaros-agents/cordis.presets.yml`）。
-		 *  ⚠ `vssaros-full`（标准档·全工具）**已退役**：它与标准模式**逐字相同、只差 denyTools 清单**
-		 *   ⇒ "放开场景类工具"改由**一个运行期开关**承担（工具面预算从 preset 清单改为可切换）✓。 */
-		const OUR_MODES = ["vssaros-standard", "vssaros-ptc"];
 		/**
-		 * 模式白名单（唯一真源 ⇒ 守卫会盯）—— **只有 4 个**（2026-10-21 用户拍板）：
-		 *   `vssaros-standard`（标准模式（VsSaros））/ `vssaros-ptc`（PTC 模式（VsSaros））
-		 *   / `minimal`（极简模式）/ `cordis`（创造模式）。
-		 * ⚠ 官方的 `standard` / `ptc` **故意不列** —— 它们与我们的两个模式是同一件事的两种版本
-		 *   （我们那份 = 官方副本 + 我们的能力模块 + 工具面预算）⇒ 并列只会让人分不清。
-		 *   它们仍在 roster 里（可被 API / 命令面板选中），但**模式菜单里看不到** ✓。
-		 * ⚠ 我们的 `vssaros-full`（标准档·全工具）也不列 —— 与标准模式只差 denyTools 清单，
-		 *   "放开场景类工具"改由**一个开关**承担（工具面预算从 preset 清单改为运行期开关）。
-		 * ★ 剩下的 roster 行一律是 agent（Bot）⇒ 不进这个菜单 ✓。
+		 * ★ 2026-11-21：模式清单**不再写死在页面里**。
+		 * dsh 的 `agentPresets.list()` roster 把 Agent(Bot) 与模式混成同一种条目，且没有 kind/source
+		 * 字段（官方 seat 自己也靠 id 白名单）⇒ 改由 **Host 汇总各插件 package.json 的
+		 * `vssarosModePresets` 声明**，经同源 `/x/chat-surface/api/modes-list` 下发。
+		 * 这里只认下发的数据：加/改一个模式只需改那个插件的声明，前端代码与守卫都不动。
+		 * ⚠ 路由挂在 dsh 自己的 webServer 上 ⇒ dsh desktop / 全窗（无 VsSaros 控制桥）同源可用。
 		 */
-		const MODE_IDS = new Set([...OUR_MODES, "minimal", "cordis"]);
-		/**
-		 * dsh 自带 4 个模式的**本地化名 + 一句说明**。
-		 *
-		 * ⚠ 为什么自己写：官方那套本地化在 `dsh-client-ui-agent-preset` 包内部（`presetDisplayText`），
-		 *   拿不到 ⇒ 直接用 roster 的 name 会退回**内部 id**（"standard / ptc / minimal / cordis" ✗
-		 *   —— 用户一眼看不出是模式）。我们自己给一份中文名 + 一句说明 ⇒ 与界面语言一致 ✓。
-		 *   （只写**简短说明**，不复刻官方的整段文案 ✓。）
-		 */
-		const BUILTIN_MODE_COPY = {
-			standard: { name: "标准模式", desc: "通用档：代码、文件与资料，按需使用检索 / 编辑 / 终端等工具。" },
-			ptc: { name: "PTC 模式", desc: "标准模式之上，工具以批量调用方式呈现，适合筛选 / 整理 / 汇总类任务。" },
-			minimal: { name: "极简模式", desc: "只留终端与图片读取（知识库 / 记忆 / 看板等模块照常可用），适合测试与基线对比。" },
-			cordis: { name: "创造模式", desc: "用对话定制 DSH —— 让 Agent 写插件、加功能；我们的知识库 / 记忆 / 看板等模块同样可用。" },
+		const MODE_LIST_API = "/x/chat-surface/api/modes-list";
+		/** 分组标题只是展示文案，不含任何 preset id；catalog 里出现新 group 时按 key 兜底显示。 */
+		const GROUP_TITLES = {
+			vssaros: "VsSaros 模式（工具面已收敛 + 上下文压缩）",
+			dsh: "dsh 原生（不含 VsSaros 工具面收敛）",
+			"third-party": "第三方模式（随包内置）",
+		};
+
+		/** 把下发的声明表编成索引（纯函数 ⇒ 守卫直接测真实实现，不用复制一份）。 */
+		const modeIndex = (catalog) => {
+			const rows = (Array.isArray(catalog) ? catalog : []).filter((r) => r && typeof r.id === "string" && r.id.trim());
+			const byId = new Map(rows.map((r) => [String(r.id), r]));
+			const visible = new Set(rows.filter((r) => r.visible !== false).map((r) => String(r.id)));
+			const groupOrder = [];
+			const groups = new Map();
+			for (const r of rows) {
+				if (r.visible === false) { continue; }
+				const key = String(r.group || "other");
+				if (!groups.has(key)) { groups.set(key, new Set()); groupOrder.push(key); }
+				groups.get(key).add(String(r.id));
+			}
+			return { rows, byId, visible, groupOrder, groups };
 		};
 
 		/**
-		 * 只留模式（★ 本组件存在的全部理由）。
-		 * ⚠ 放在 **factory 层**（不是 install 内）：守卫与单测都直接引用它 ⇒ 测的就是**真实实现**，
-		 *   不会出现"导出的是一个副本、实现是另一个"的假绿 ✗（记忆：相对比较型断言会恒真 ⇒ 必须钉绝对期望值）。
+		 * ★ 2026-11-21 修正：catalog 拿不到时**不编造菜单**。
+		 * 旧实现按「roster 里 name 缺失」猜官方内置：但 `vssaros-standard` / `vssaros-ptc` /
+		 * 第三方档都带 name ⇒ 降级会丢掉它们，反而把声明为 `visible:false` 的官方档放出来，
+		 * 3 组塌成 1 组，用户看到的是一份**错误**的菜单（比没有菜单更危险）。
+		 * ⇒ 现在返回空索引，由 ModeSeat 渲染一条只读的「模式列表不可用」提示，不冒充任何档。
 		 */
-		const modesOf = (presets) => (presets || []).filter((p) => p && MODE_IDS.has(String(p.id)));
+		const fallbackIndex = () => modeIndex([]);
 
-		/** 已退役、但 roster 里仍在的我们的档（不进菜单；当前会话若挂在它上面要如实显示 ⇒ 不能冒充 Bot）。 */
-		const RETIRED_MODES = ["vssaros-full"];
+		/** 只留下发目录里 visible 的模式；roster 其余行一律是 Agent(Bot) ⇒ 不进菜单。 */
+		const modesOf = (presets, index) => {
+			const idx = index || modeIndex([]);
+			return (presets || []).filter((p) => p && idx.visible.has(String(p.id)));
+		};
 
-		/** 显示名 / 描述（factory 层 ⇒ 菜单渲染与 resolveCurrent 共用同一份 ✓）。 */
-		const labelOf = (p) => {
+		/** 显示名 / 描述：目录优先（中文本地化），其余回落 roster。 */
+		const labelOf = (p, index) => {
 			const id = String((p && p.id) || "");
-			const copy = BUILTIN_MODE_COPY[id];
-			if (copy) { return copy.name; }
+			const declared = index && index.byId.get(id);
+			if (declared && declared.label) { return String(declared.label); }
 			return String((p && (p.name || p.id)) || "");
 		};
-		const descOf = (p) => {
+		const descOf = (p, index) => {
 			const id = String((p && p.id) || "");
-			const copy = BUILTIN_MODE_COPY[id];
-			if (copy) { return copy.desc; }
+			const declared = index && index.byId.get(id);
+			if (declared && declared.desc) { return String(declared.desc); }
 			return (p && typeof p.description === "string" && p.description.trim()) ? p.description.trim() : "";
 		};
 
 		/**
 		 * ★ P0-1（2026-10-22）：当前会话的 preset ⇒ chip 上显示什么。
-		 * 旧实现 `modes.find(id === cur) || modes[0]`：会话跑的**不是**菜单里 4 个模式之一时（以 agent preset
-		 *   打开的 Bot 会话 / 早先用官方 standard·ptc 建的老会话），chip 显示 **modes[0]** —— 按 roster 顺序就是
-		 *   「极简模式」✗✗（菜单里也不打 ✓）⇒ 名不副实。
-		 * 新实现：在**全量 roster** 里查当前 id，按种类给出真实名称：
-		 *   · mode    菜单里的 4 个之一 ⇒ 显示其名；
-		 *   · legacy  官方 standard/ptc、或已退役的 vssaros-full（不在菜单但真实存在）⇒ 显示其名 + 标注；
-		 *   · bot     其余 roster 行（agent 在 dsh 内部以 preset 存在）⇒「Bot · 名字」；
-		 *   · unknown roster 里查无此 id ⇒ 如实显示 id（**不冒充**任何模式）。
-		 * 没有当前值（空白会话）⇒ 默认档（isDefault）⇒ 其次我们的标准模式 ⇒ 最后才是 menu[0]。
+		 * 旧实现 `modes.find(id === cur) || modes[0]` 会把 Bot 会话显示成菜单第一项 ✗。
+		 * 现在按**下发目录**分种类（全都是数据，无 id 硬编码）：
+		 *   · mode    目录里 visible 且在 roster 里 ⇒ 显示目录的 label；
+		 *   · legacy  目录里声明但 visible:false（隐藏的官方档）⇒ 显示其名 + 标注；
+		 *   · bot     其余 roster 行 ⇒「Bot · 名字」；
+		 *   · unknown roster 里查无此 id ⇒ 如实显示 id。
+		 * 没有当前值（空白会话）⇒ 默认档（isDefault）⇒ 其次 vssaros 组 ⇒ 最后 menu[0]。
 		 */
-		const resolveCurrent = (presets, currentId, modes) => {
+		const resolveCurrent = (presets, currentId, modes, index) => {
 			const all = presets || [];
-			const menu = modes || modesOf(all);
+			const idx = index || modeIndex([]);
+			const menu = modes || modesOf(all, idx);
 			const id = String(currentId || "");
 			if (!id) {
 				const d = menu.find((m) => m && m.isDefault)
-					|| menu.find((m) => m && OUR_MODES.indexOf(String(m.id)) >= 0)
+					|| menu.find((m) => m && idx.groups.get("vssaros") && idx.groups.get("vssaros").has(String(m.id)))
 					|| menu[0];
-				return d ? { id: String(d.id), kind: "mode", label: labelOf(d) } : { id: "", kind: "unknown", label: "" };
+				return d ? { id: String(d.id), kind: "mode", label: labelOf(d, idx) } : { id: "", kind: "unknown", label: "" };
 			}
 			const inMenu = menu.find((m) => m && String(m.id) === id);
-			if (inMenu) { return { id, kind: "mode", label: labelOf(inMenu) }; }
+			if (inMenu) { return { id, kind: "mode", label: labelOf(inMenu, idx) }; }
 			const row = all.find((p) => p && String(p.id) === id);
-			if (BUILTIN_MODE_COPY[id]) { return { id, kind: "legacy", label: BUILTIN_MODE_COPY[id].name + "（dsh 原生）" }; }
-			if (RETIRED_MODES.indexOf(id) >= 0) { return { id, kind: "legacy", label: String((row && row.name) || id) }; }
+			const declared = idx.byId.get(id);
+			if (declared) {
+				const suffix = declared.group === "dsh" ? "（dsh 原生）" : "";
+				return { id, kind: "legacy", label: String(declared.label || (row && row.name) || id) + suffix };
+			}
 			if (row) { return { id, kind: "bot", label: "Bot · " + String(row.name || row.id) }; }
 			return { id, kind: "unknown", label: id };
 		};
@@ -217,6 +223,19 @@ window.__ModuleLoader__.load({
 				}
 			};
 
+			/** 模式目录：Host 汇总各插件 `vssarosModePresets` 声明后下发（同源，无桥环境也可用）。
+			 *  拿不到 → 返回空数组，ModeSeat 用 `fallbackIndex` 降级并如实记一句，不假装成功。 */
+			const loadCatalog = () => {
+				if (typeof fetch !== "function") {
+					state.modeCatalogError = "fetch unavailable";
+					return Promise.resolve([]);
+				}
+				return Promise.resolve(fetch(MODE_LIST_API, { credentials: "same-origin", cache: "no-store" }))
+					.then((r) => (r && r.ok && typeof r.json === "function" ? r.json() : null))
+					.then((v) => (v && v.ok && Array.isArray(v.modes) ? v.modes : []))
+					.catch((e) => { state.modeCatalogError = String((e && e.message) || e); return []; });
+			};
+
 			/** 只留模式（factory 层那个 —— 守卫与单测共用同一份实现 ✓）。 */
 
 			/** 当前会话的 preset（宿主推来的 projection）。 */
@@ -254,6 +273,7 @@ window.__ModuleLoader__.load({
 			function ModeSeat(props) {
 				const sid = props && props.sessionId ? props.sessionId : state.sessionId;
 				const [presets, setPresets] = react.useState(null);
+				const [catalog, setCatalog] = react.useState(null);
 				const [open, setOpen] = react.useState(false);
 				const [staged, setStaged] = react.useState("");
 				const [err, setErr] = react.useState(null);
@@ -271,7 +291,11 @@ window.__ModuleLoader__.load({
 
 				react.useEffect(() => {
 					let dead = false;
-					loadRoster().then((list) => { if (!dead) { setPresets(list); } });
+					Promise.all([loadRoster(), loadCatalog()]).then(([list, rows]) => {
+						if (dead) { return; }
+						setPresets(list);
+						setCatalog(rows);
+					});
 					return () => { dead = true; };
 				}, []);
 
@@ -335,11 +359,30 @@ window.__ModuleLoader__.load({
 					return () => { clearTimeout(t); };
 				}, [open]);
 
-				if (!presets) { return null; }
-				const modes = modesOf(presets);
+				if (!presets || !catalog) { return null; }
+				// 目录为空（端点不可用 / 老构建）⇒ **不编造菜单**：只显示一枚只读 chip + 原因。
+				// 旧实现会按 roster 猜出一份错误菜单（丢 VsSaros 档、放出隐藏官方档）⇒ 已废弃。
+				if (catalog.length === 0) {
+					const row = (presets || []).find((p) => p && String(p.id) === String(staged || currentOf(sid)));
+					return react.createElement("button", {
+						type: "button",
+						"data-vssaros-mode-seat": "1",
+						disabled: true,
+						title: state.modeCatalogError || "模式列表不可用（Host 未下发目录）⇒ 请刷新页面或重启 dsh Host",
+						style: {
+							display: "inline-flex", alignItems: "center", gap: 4,
+							padding: "1px 8px", borderRadius: 999, cursor: "default",
+							border: "1px solid var(--dsw-alias-state-error-primary, #f85149)",
+							background: "transparent", color: "var(--dsw-alias-label-secondary, currentColor)",
+							fontSize: 11, lineHeight: "18px", whiteSpace: "nowrap",
+						},
+					}, "⬢ " + (row ? String(row.name || row.id) : "模式") + " ⚠");
+				}
+				const idx = modeIndex(catalog);
+				const modes = modesOf(presets, idx);
 				if (modes.length === 0) { return null; }
-				// ★ P0-1：当前名称在**全量 roster** 里查（不再回落 modes[0] ⇒ 不会把 Bot 会话显示成「极简模式」✗）。
-				const resolved = resolveCurrent(presets, staged || currentOf(sid), modes);
+				// ★ P0-1：当前名称在**全量 roster** 里查（不再回落 modes[0] ⇒ 不会把 Bot 会话冒充成模式 ✗）。
+				const resolved = resolveCurrent(presets, staged || currentOf(sid), modes, idx);
 				const cur = resolved.id;
 				const curLabel = resolved.label || cur;
 
@@ -414,24 +457,15 @@ window.__ModuleLoader__.load({
 						key: "c",
 						style: { flex: "0 0 14px", width: 14, color: m.id === cur ? "var(--dsw-alias-brand-primary, currentColor)" : "transparent" },
 					}, "✓");
-					// -- group: dsh built-in modes vs our "tiers" ------------------------------
-					// Why group (2026-10-21 user report: "cannot tell these modes apart"):
-					// the two groups are DIFFERENT dimensions:
-					//   - dsh built-in 4 = tool-presentation / capability shape
-					//     (general / batch-call / minimal / conversation-customizable);
-					//   - our 3 tiers = OUR capability modules + tool-surface budget
-					//     (knowledge base / memory / board mounted or not, how many tools hidden).
-					// Flattened together the user just sees "7 modes" and cannot tell them apart.
-					// ★ 2026-10-21：分组改成"**差异到底在哪**"（读码+实测的结论）：
-					//   我们的 13 个模块**本来就注册在 host plane（全局）** ⇒ 官方 minimal/cordis 同样继承得到
-					//   （知识库 / 记忆 / 看板 / 工作流 … 都可用 ✓）⇒ 真正的差别只有 preset 级覆盖这四项：
-					//     ① 工具面预算（denyTools：藏 96 个工具 ⇒ 省 ~42k schema token）；② 上下文压缩三件套；
-					//     ③ `working_directory` 工具；④ persona（我们删掉了带 {{cwd}} 的那行 ⇒ 由全局层接管）。
-					//   ⇒ 标题就说这个差别，别让用户以为"原生模式 = 没有我们的能力" ✗。
-					const groups = [
-						{ key: "vssaros", title: "VsSaros 模式（工具面已收敛 + 上下文压缩）", items: modes.filter((m) => OUR_MODES.indexOf(String(m.id)) >= 0) },
-						{ key: "dsh", title: "dsh 原生（工具全开、无额外压缩）", items: modes.filter((m) => OUR_MODES.indexOf(String(m.id)) < 0) },
-					];
+					// -- 分组：完全由下发目录的 `group` 决定 ------------------------------------
+					// 历史背景（2026-10-21 用户报「分不清模式」）：dsh 原生档与 VsSaros 档是两个不同维度，
+					// 摊平了用户只看到一串模式 ⇒ 按「差异在哪」分组。2026-11-21 起组名与成员都来自
+					// `vssarosModePresets` 声明（新增一组不必改这里），标题只是展示文案、按 key 兜底。
+					const groups = idx.groupOrder.map((key) => ({
+						key,
+						title: GROUP_TITLES[key] || "其他模式",
+						items: modes.filter((m) => idx.groups.get(key).has(String(m.id))),
+					}));
 					const rows = [];
 					for (const g of groups) {
 						if (!g.items.length) { continue; }
@@ -455,8 +489,8 @@ window.__ModuleLoader__.load({
 							},
 								check(m),
 								react.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 } },
-									react.createElement("span", { style: { fontWeight: m.id === cur ? 600 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, labelOf(m)),
-									descOf(m) ? react.createElement("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, descOf(m).slice(0, 48)) : null)));
+									react.createElement("span", { style: { fontWeight: m.id === cur ? 600 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, labelOf(m, idx)),
+									descOf(m, idx) ? react.createElement("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, descOf(m, idx).slice(0, 48)) : null)));
 						}
 					}
 					// ★ P0-1：当前会话不在 4 个模式里（Bot 会话 / 老模式）⇒ 菜单里没有 ✓ ⇒ 底部如实说明，
@@ -514,7 +548,7 @@ window.__ModuleLoader__.load({
 		}
 		exports.install = install;
 		// 仅测试用：纯逻辑（模式白名单 / 过滤 / 名称）。
-		exports.__test = { MODE_IDS, BUILTIN_MODES, OUR_MODES, modesOf, resolveCurrent, fitMenuBox, menuPositionStyle };
+		exports.__test = { MODE_LIST_API, GROUP_TITLES, modeIndex, fallbackIndex, modesOf, labelOf, descOf, resolveCurrent, fitMenuBox, menuPositionStyle };
 		return module.exports;
 	}
 });

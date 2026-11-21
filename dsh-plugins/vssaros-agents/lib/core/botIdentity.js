@@ -17,20 +17,17 @@
 //      （空会话可以换 preset —— 换过之后旧记录与当前 preset 对不上 ⇒ 不采信，回落 ③）
 //   ③ 否则按 presetId 反查花名册（`presetToAgent`），查不到返回 botId=null（调用方自行决定兜底）。
 //
-// ⚠ 本文件的 MODE_PRESET_IDS 是真源；客户端 chunk（chat-surface 5 个 chunk）与 vssaros-memory 各有一份
-//   **逐字副本**（它们不能 import 本包），由 dsh-plugins/check-bot-identity.mjs 守卫比对。改这里必须同步改副本。
+// ★ 2026-11-21：模式 id 的**唯一数据真源**是 `dsh-plugins/preset-sync.mjs` 的 MODE_PRESET_IDS，
+//   本文件与 8 份客户端副本都从 `./modePresetIds.generated.js`（`--write-registry` 产物）读取。
+//   chunk 不能 import 跨包模块（purity gate 只放行 react），所以那 8 份是**生成物**而非手抄；
+//   `dsh-plugins/check-bot-identity.mjs` 负责逐字对拍，`preset-sync.mjs` 的 check 负责钉住生成物。
+//   ⇒ 加/删一个模式只改 preset-sync.mjs 一处，再跑一次 `--write-registry`。
+
+import { MODE_PRESET_IDS } from './modePresetIds.generated.js';
+export { MODE_PRESET_IDS };
 
 /** preset id 前缀（与 core/agents.js 的 PRESET_ID_PREFIX 一致）。 */
 export const BOT_PRESET_PREFIX = 'vssaros-';
-
-/**
- * **模式** preset（不是 bot）：官方四个 + 我们的组合版（preset-sync.mjs 生成的 vssaros-standard / -ptc / -full，
- * 以及与官方同名的 -minimal / -cordis 防御）。
- */
-export const MODE_PRESET_IDS = Object.freeze([
-	'standard', 'ptc', 'minimal', 'cordis',
-	'vssaros-standard', 'vssaros-ptc', 'vssaros-full', 'vssaros-minimal', 'vssaros-cordis',
-]);
 
 /** 是不是模式 preset。 */
 export function isModePreset(presetId) {

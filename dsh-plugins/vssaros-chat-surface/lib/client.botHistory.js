@@ -42,7 +42,7 @@ window.__ModuleLoader__.load({
 		const HISTORY_LIMIT = 50;
 
 		/* vssaros:bot-identity v1 —— 逐字副本，真源 vssaros-agents/lib/core/botIdentity.js（守卫 dsh-plugins/check-bot-identity.mjs） */
-		const BOT_MODE_PRESET_IDS = ["standard", "ptc", "minimal", "cordis", "vssaros-standard", "vssaros-ptc", "vssaros-full", "vssaros-minimal", "vssaros-cordis"];
+		const BOT_MODE_PRESET_IDS = ["standard","ptc","minimal","cordis","vssaros-standard","vssaros-ptc"];
 		/** 是不是"可能属于某个 bot"的 preset（vssaros- 前缀且不是模式 preset）。 */
 		function isBotPresetId(presetId) {
 			const id = String(presetId || "").trim();

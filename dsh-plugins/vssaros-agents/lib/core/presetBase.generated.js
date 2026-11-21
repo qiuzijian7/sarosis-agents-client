@@ -1,5 +1,6 @@
 // ⚠ 本文件由 `dsh-plugins/preset-sync.mjs --write-agent-base` 生成，**不要手改**（`node dsh-plugins/preset-sync.mjs` 会判红）。
 //
+// ★ 外部锚点：dsh bundled = 0.2.2-rc.2 / baseline sha256 = e40bb192ed3b8353
 // 每个 agent preset 的**共享基座**（`core/agents.js` 的 `toPresetDefinition` = 本基座 ⊕ 该 agent 的差量）：
 //   · 官方 standard preset（`preset-standard.baseline.yml`）的全部行，去掉官方 persona 行（由 agent 人设行顶替）；
 //   · `preset-vssaros.rows.yml` 里**官方包**（`@deepseek-ai/*`）的补充行；
@@ -33,7 +34,10 @@ export const STANDARD_BASE_ROWS = [
 	},
 	{
 		"id": "tool-fs",
-		"name": "@deepseek-ai/dsh-tool-fs"
+		"name": "@deepseek-ai/dsh-tool-fs",
+		"config": {
+			"applyPatch": false
+		}
 	},
 	{
 		"id": "tool-fs-search",
@@ -52,7 +56,14 @@ export const STANDARD_BASE_ROWS = [
 	},
 	{
 		"id": "skill-filesystem",
-		"name": "@deepseek-ai/dsh-skill-filesystem"
+		"name": "@deepseek-ai/dsh-skill-filesystem",
+		"config": {
+			"customSkillDirs": [
+				{
+					"__jsExpr": "process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills')"
+				}
+			]
+		}
 	},
 	{
 		"id": "tool-skill",
@@ -121,7 +132,10 @@ export const STANDARD_BASE_ROWS = [
 		"config": [
 			{
 				"id": "tool-subagent-control",
-				"name": "@deepseek-ai/dsh-tool-subagent-control"
+				"name": "@deepseek-ai/dsh-tool-subagent-control",
+				"config": {
+					"interrupt": false
+				}
 			},
 			{
 				"id": "tool-subagent",
@@ -129,7 +143,8 @@ export const STANDARD_BASE_ROWS = [
 				"config": {
 					"provider": "spawn",
 					"toolName": "subagent",
-					"modelSelectionSettings": true
+					"modelSelection": true,
+					"modelDiscovery": true
 				}
 			},
 			{
@@ -177,9 +192,15 @@ export const STANDARD_BASE_ROWS = [
 		"name": "@deepseek-ai/dsh-tool-present"
 	},
 	{
+		"id": "tool-office",
+		"name": "@deepseek-ai/dsh-tool-office"
+	},
+	{
 		"id": "tool-plugin-manager",
 		"name": "@deepseek-ai/dsh-plugin-manager/tools",
-		"disabled": true
+		"disabled": {
+			"__jsExpr": "!ctx.get('profileContext')"
+		}
 	},
 	{
 		"id": "tool-plugin-market",

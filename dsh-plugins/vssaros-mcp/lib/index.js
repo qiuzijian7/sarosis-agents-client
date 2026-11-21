@@ -42,6 +42,22 @@ export const name = 'vssaros-mcp';
 export const inject = ['tools'];
 
 const ROUTE_PREFIX = '/x/mcp';
+
+const WEB_ROUTE_OWNERS_KEY = Symbol.for('vssaros.webRouteOwners');
+/** 双 plane 挂载时同一 prefix 只注册一次；effect 撤销时释放，HMR 仍可重新注册。 */
+function registerPageRouteOnce(page, route) {
+	const key = `${route.kind}:${route.path}`;
+	let owners;
+	try { owners = globalThis[WEB_ROUTE_OWNERS_KEY] ??= new Set(); } catch { return page.webServer.register(route); }
+	if (!(owners instanceof Set) || owners.has(key)) {
+		console.log(`[${name}] ${key} 已由另一层注册 ⇒ 跳过（避免 duplicate prefix route）`);
+		return undefined;
+	}
+	owners.add(key);
+	let dispose;
+	try { dispose = page.webServer.register(route); } catch (error) { owners.delete(key); throw error; }
+	return () => { try { dispose?.(); } finally { owners.delete(key); } };
+}
 /** 清单声明的片段路由（`view.kind=section`）。**精确匹配**：本插件只服务这一个片段，别的路径一律 404。 */
 const SECTION_ROUTE = '/x/mcp/section';
 
@@ -593,7 +609,7 @@ export function apply(ctx, config = {}) {
 	// 片段路由：与 memory 的区块同法——Host 自己的鉴权栅栏 + 客户端请求带的 Cookie。
 	// 片段路由（**可选**依赖）：`webServer` / `connection` 只在 web 模板里存在（见静态 `inject` 的注释）。
 	// 不在 web 模板 ⇒ 只是**没有片段** ✓，工具照常可用 ✓。
-	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
+	ctx.inject(['webServer', 'connection'], page => page.effect(() => registerPageRouteOnce(page, {
 		kind: 'prefix',
 		path: ROUTE_PREFIX,
 		handler: async (req, res) => {
@@ -876,7 +892,13 @@ function installRuntimeMount(ctx, config) {
 	};
 	service.ready = service.reconcile();
 	service.ready.catch(warnFailure);
-	ctx.provide?.('vssarosMcpSources', service);
+	try {
+		ctx.provide?.('vssarosMcpSources', service);
+	} catch (error) {
+		// 双 plane 再 apply：host 层已经提供同名服务 ⇒ 复用它，本地这份运行时要停掉避免重复挂载。
+		console.log(`[vssaros-mcp] vssarosMcpSources 已由另一层提供 ⇒ 复用：${String(error?.message ?? error)}`);
+		void service.stop().catch(() => undefined);
+	}
 	if (enabled) {
 		ctx.effect(() => {
 			let polling = false;

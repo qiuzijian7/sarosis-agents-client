@@ -63,6 +63,8 @@ const UPLOAD_TOKEN = process.env.UPLOAD_TOKEN || '';
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
 // 上传文件大小上限（默认 2 GiB，须与 MAX_DOWNLOAD_SIZE 一致；可用环境变量覆盖）
 const MAX_UPLOAD_SIZE = Number(process.env.MAX_UPLOAD_SIZE) || 2 * 1024 * 1024 * 1024;
+// 可选组件清单（媒体 / Office / Whisper）；由 build/saros/package-components.mjs 生成
+const COMPONENTS_MANIFEST_PATH = process.env.COMPONENTS_MANIFEST_PATH || path.join(DOWNLOADS_DIR, 'components', 'manifest.json');
 
 // ---- 历史版本归档（供官网「历史版本下载」）----------------------------------
 // 归档形状：DOWNLOADS_DIR/archive/<版本标识>/<安装包文件名>
@@ -582,6 +584,24 @@ const server = http.createServer(async (req, res) => {
 	if (url.pathname === '/' || url.pathname === '/health') {
 		res.writeHead(200, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ ok: true, service: 'vssaros-update-server', mode: GH_REPO ? 'github' : 'manifest' }));
+		return;
+	}
+
+	// 可选组件清单：客户端首启后台安装器读取（媒体 / Office / Whisper）
+	if (url.pathname === '/api/components' || url.pathname === '/api/components/manifest.json') {
+		if (req.method !== 'GET' && req.method !== 'HEAD') {
+			res.writeHead(405, { Allow: 'GET, HEAD, OPTIONS' }); res.end(); return;
+		}
+		res.setHeader('Cache-Control', 'no-store');
+		try {
+			const body = fs.readFileSync(COMPONENTS_MANIFEST_PATH);
+			res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+			if (req.method === 'HEAD') { res.end(); } else { res.end(body); }
+		} catch (e) {
+			console.error('[components] 清单读取失败:', e);
+			res.writeHead(404, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'components manifest not found', path: COMPONENTS_MANIFEST_PATH }));
+		}
 		return;
 	}
 

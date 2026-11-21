@@ -56,13 +56,15 @@ const MANIFEST_PATH = process.env.MANIFEST_PATH || path.join(__dirname, 'manifes
 // 静态下载目录：默认 manifest.json 同级的 ../downloads，可用 DOWNLOADS_DIR 覆盖
 const DOWNLOADS_DIR = process.env.DOWNLOADS_DIR || path.resolve(__dirname, '..', 'downloads');
 // 单文件下载大小上限（默认 512MB），防止误传大文件耗尽内存
-const MAX_DOWNLOAD_SIZE = Number(process.env.MAX_DOWNLOAD_SIZE) || 512 * 1024 * 1024;
+const MAX_DOWNLOAD_SIZE = Number(process.env.MAX_DOWNLOAD_SIZE) || 2 * 1024 * 1024 * 1024;
 // 上传端点鉴权 token（流水线 POST /admin/upload 需在 X-Upload-Token 头携带）
 const UPLOAD_TOKEN = process.env.UPLOAD_TOKEN || '';
 // 对外公开基础 URL（用于拼接下载 url；留空则用请求 Host 头推导）
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
-// 上传文件大小上限（默认 512MB）
-const MAX_UPLOAD_SIZE = Number(process.env.MAX_UPLOAD_SIZE) || 512 * 1024 * 1024;
+// 上传文件大小上限（默认 2GB）
+const MAX_UPLOAD_SIZE = Number(process.env.MAX_UPLOAD_SIZE) || 2 * 1024 * 1024 * 1024;
+// 可选组件清单（媒体 / Office / Whisper）；由 build/saros/package-components.mjs 生成
+const COMPONENTS_MANIFEST_PATH = process.env.COMPONENTS_MANIFEST_PATH || path.join(DOWNLOADS_DIR, 'components', 'manifest.json');
 
 // ---- 历史版本归档（供官网「历史版本下载」）----------------------------------
 // 归档形状：DOWNLOADS_DIR/archive/<版本标识>/<安装包文件名>
@@ -567,6 +569,24 @@ const server = http.createServer(async (req, res) => {
 	if (url.pathname === '/' || url.pathname === '/health') {
 		res.writeHead(200, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ ok: true, service: 'vssaros-update-server', mode: GH_REPO ? 'github' : 'manifest' }));
+		return;
+	}
+
+	// 可选组件清单：客户端首启后台安装器读取（媒体 / Office / Whisper）
+	if (url.pathname === '/api/components' || url.pathname === '/api/components/manifest.json') {
+		if (req.method !== 'GET' && req.method !== 'HEAD') {
+			res.writeHead(405, { Allow: 'GET, HEAD, OPTIONS' }); res.end(); return;
+		}
+		res.setHeader('Cache-Control', 'no-store');
+		try {
+			const body = fs.readFileSync(COMPONENTS_MANIFEST_PATH);
+			res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+			if (req.method === 'HEAD') { res.end(); } else { res.end(body); }
+		} catch (e) {
+			console.error('[components] 清单读取失败:', e);
+			res.writeHead(404, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'components manifest not found', path: COMPONENTS_MANIFEST_PATH }));
+		}
 		return;
 	}
 

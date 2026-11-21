@@ -31,7 +31,7 @@ import { PRUNE_LIST, VIRTUAL_STORE_HEAVY_RE } from './saros/prune-list.mjs';
 import { SEED_GENERATOR_REVISION, archiveSeedPlugin, relativizeSeedPaths } from './saros/seed-package.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const UNSCOPED_VENDORED = new Set(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar']);
+const UNSCOPED_VENDORED = new Set(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar', 'dsh-deep-ptc-mode']);
 const manifestPath = join(root, 'dsh-plugins', 'dsh-compat.json');
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 

@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-agents",
-  "version": "0.2.391",
+  "version": "0.2.392",
   "description": "VsSaros Bots module for DeepSeek Harness: registers ~/.vssaros/agents/<id>/.agent.md (built-in and custom roots) as dsh agent presets with persona and per-session model selection; persona hot switching and lifecycle tools (agent_list / agent_open_session / agent_switch_persona / agent_stop / agent_message / agent_read_chat); assignment runtime with a durable ledger; IM channels (Feishu / Telegram / Discord / WeCom) with a durable outbox; multi-bot group chats (lib/rooms.js: group_relay, member shadow sessions, agent-rooms.json with a single-writer lease); cross-plugin team bus (Symbol.for('vssaros.team')). Version history: CHANGELOG.md. 0.2.390（2026-11-14 飞书 IM 会话归属）：ensureAgentSession 新建会话改为带 workspaceId（取 workspaceRegistry.list() 首个工作区；无则 ensure(dataRoot)；再无退 cwd，与 cwd 互斥），并对新建/复用两条路径做幂等 attachSession 兜底 ⇒ 会话进 workspace.sessionIds，不再成为侧栏孤儿。run-agents-check 新增 12 项行为断言（归属/幂等/失败不阻断/反向突变）。",
   "private": true,
   "license": "MIT AND Apache-2.0",
@@ -39,6 +39,7 @@
     "lib/core/memoryLimits.js",
     "lib/core/persona.js",
     "lib/core/presetBase.generated.js",
+    "lib/core/modePresetIds.generated.js",
     "lib/core/relay.js",
     "lib/core/toolNames.js",
     "lib/core/zip.js",

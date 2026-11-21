@@ -215,7 +215,8 @@ import { DshRightbarCdpRelay } from '../../sessions/contrib/dshHarness/electron-
 import { DesktopControlRelay } from '../../sessions/contrib/dshHarness/electron-main/desktopControlRelay.js';
 import { DesktopControlPresence } from '../../sessions/contrib/dshHarness/electron-main/desktopControlPresence.js';
 import { DshViewHost } from '../../sessions/contrib/dshHarness/electron-main/dshViewHost.js';
-import { DSH_HARNESS_CHANNEL } from '../../sessions/contrib/dshHarness/common/dshHarness.js';
+import { DshDesktopWindowMainService, focusDshDesktopWindow } from '../../sessions/contrib/dshHarness/electron-main/dshDesktopWindowMainService.js';
+import { DSH_HARNESS_CHANNEL, DshHarnessSettings } from '../../sessions/contrib/dshHarness/common/dshHarness.js';
 import { KbDocConvertChannel } from '../../sessions/contrib/agentStudio/electron-main/kbDocConvertChannel.js';
 import { VSSAROS_LLM_CHANNEL } from '../../sessions/contrib/agentStudio/common/llmBridge.js';
 import { IWebContentExtractorService } from '../../platform/webContentExtractor/common/webContentExtractor.js';
@@ -240,6 +241,7 @@ export class CodeApplication extends Disposable {
 	private windowsMainService: IWindowsMainService | undefined;
 	private auxiliaryWindowsMainService: IAuxiliaryWindowsMainService | undefined;
 	private nativeHostMainService: INativeHostMainService | undefined;
+	private dshDesktopWindowMainService: DshDesktopWindowMainService | undefined;
 
 	constructor(
 		private readonly mainProcessNodeIpcServer: NodeIPCServer,
@@ -524,6 +526,10 @@ export class CodeApplication extends Disposable {
 
 			// Mac only event: open new window when we get activated
 			if (!hasVisibleWindows) {
+				// B 方案：已有 desktop 窗口时只聚焦它，不额外创建 IDE 主窗口。
+				if (process.env['VSSAROS_DESKTOP_ONLY'] === '1' && this.dshDesktopWindowMainService?.focus()) {
+					return;
+				}
 				await this.windowsMainService?.openEmptyWindow({ context: OpenContext.DOCK });
 			}
 		});
@@ -1007,7 +1013,7 @@ export class CodeApplication extends Disposable {
 
 	// Vox 口播视频节点（Vox.DirectorStage）本地 pipeline 执行：
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/voxLaunchChannel.ts。
-	this._register(new VoxLaunchChannel(this.logService, this.configurationService));
+	this._register(new VoxLaunchChannel(this.logService, this.configurationService, this.environmentMainService.userDataPath));
 
 	// 飞书 CLI（@larksuite/cli）探测 / 安装 / 升级：
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/larkCliChannel.ts。
@@ -1995,6 +2001,8 @@ export class CodeApplication extends Disposable {
 			{
 				userDataPath: this.environmentMainService.userDataPath,
 				isBuilt: this.environmentMainService.isBuilt,
+				// 可选组件（媒体 / Office / Whisper）的下载源与更新检查同源。
+				updateUrl: this.productService.updateUrl,
 				requestQuit: (willRestart: boolean) => lifecycleMainService.quit(willRestart),
 			},
 			accessor.get(IWindowsMainService),
@@ -2002,6 +2010,16 @@ export class CodeApplication extends Disposable {
 			this.logService,
 		));
 		mainProcessElectronServer.registerChannel(DSH_HARNESS_CHANNEL, dshHarnessChannel);
+		// B 方案：主进程直接建 desktop 窗口。服务与 channel 同生命周期；全局 hook 让平台层
+		// 单实例 handoff 无需反向依赖 sessions 即可聚焦已有 desktop 窗口。
+		this.dshDesktopWindowMainService = this._register(new DshDesktopWindowMainService(
+			accessor.get(IWindowsMainService),
+			accessor.get(IAuxiliaryWindowsMainService),
+			lifecycleMainService,
+			this.environmentMainService,
+			this.logService,
+		));
+		(globalThis as { __vssarosFocusDshDesktopWindow?: () => boolean }).__vssarosFocusDshDesktopWindow = focusDshDesktopWindow;
 		// ★ 2026-11-07（P0 · 单一浏览器实例）：右栏浏览器的 CDP 中转 ⇒ Host 的 `browser` 工具操作的就是人在右栏
 		//   看到的那一页（同一个 WebContentsView、同一份 Global 登录态）。loopback + 每次启动的随机 token +
 		//   方法白名单；Host 从 `<userData>/dsh-run/rightbar-cdp.json` 取端点（见 dshRightbarCdpRelay.ts）。
@@ -2011,7 +2029,7 @@ export class CodeApplication extends Disposable {
 			productService: this.productService,
 			log: line => this.logService.info(`[dshHarness] ${line}`),
 			// 2026-11-07（组合方案）：工具要页面而右栏还没有视图时，中转建一个隐藏的共享视图，挂在最近活动的窗口下
-			ownerWindowId: () => (this.windowsMainService?.getLastActiveWindow() ?? this.windowsMainService?.getWindows()[0])?.id,
+			ownerWindowId: () => (this.windowsMainService?.getLastActiveWindow() ?? this.windowsMainService?.getWindows()[0])?.id ?? this.dshDesktopWindowMainService?.windowId,
 		}));
 		void dshRightbarCdpRelay.start();
 
@@ -2076,18 +2094,60 @@ export class CodeApplication extends Disposable {
 		mainProcessElectronServer.registerChannel(ipcUtilityProcessWorkerChannelName, utilityProcessWorkerChannel);
 	}
 
+	/**
+	 * B 方案开关：默认打包版裸启动直接进入 desktop-only；带 URL/文件目标时仍按需打开 IDE。
+	 * `VSSAROS_DESKTOP_ONLY=0/false` 可一键回退到旧的「隐藏 IDE + 自动弹 desktop」路径。
+	 */
+	private shouldUseDesktopOnlyStartup(initialProtocolUrls: IInitialProtocolUrls | undefined): boolean {
+		const explicit = process.env['VSSAROS_DESKTOP_ONLY']?.trim().toLowerCase();
+		if (explicit === '0' || explicit === 'false') {
+			return false;
+		}
+		if (explicit === '1' || explicit === 'true') {
+			return true;
+		}
+		if (this.configurationService.getValue<boolean>(DshHarnessSettings.DesktopOnlyStartup) === false) {
+			return false;
+		}
+		if (initialProtocolUrls?.urls.length || initialProtocolUrls?.openables.length) {
+			return false;
+		}
+		const args = this.environmentMainService.args;
+		if (args['agents'] === true || process.env['VSSAROS_START_HIDDEN'] === '1') {
+			return true;
+		}
+		const hasTarget = args._.length > 0 || !!args['folder-uri'] || !!args['file-uri'] || !!args['diff'] || !!args['merge'];
+		if (hasTarget) {
+			return false;
+		}
+		return this.environmentMainService.isBuilt;
+	}
+
 	private async openFirstWindow(accessor: ServicesAccessor, initialProtocolUrls: IInitialProtocolUrls | undefined): Promise<ICodeWindow[]> {
 		const windowsMainService = this.windowsMainService = accessor.get(IWindowsMainService);
 		this.auxiliaryWindowsMainService = accessor.get(IAuxiliaryWindowsMainService);
 
 		const context = isLaunchedFromCli(process.env) ? OpenContext.CLI : OpenContext.DESKTOP;
 		const args = this.environmentMainService.args;
+		const desktopOnly = this.shouldUseDesktopOnlyStartup(initialProtocolUrls);
+		process.env['VSSAROS_DESKTOP_ONLY'] = desktopOnly ? '1' : '0';
 
 		// If launched solely for cross-app secret sharing, don't open any windows
 		if (args['share-secrets-with-agents-app']) {
 			const hasOtherArgs = args._.length > 0 || args['folder-uri'] || args['file-uri'];
 			if (!hasOtherArgs) {
 				return [];
+			}
+		}
+
+		if (desktopOnly && this.dshDesktopWindowMainService) {
+			try {
+				await this.dshDesktopWindowMainService.openDesktopWindow();
+				this.logService.info('[dshDesktopOnly] 启动完成：未创建 IDE 主窗口，仅创建 dsh desktop 窗口');
+				return [];
+			} catch (error) {
+				this.logService.error(`[dshDesktopOnly] 直接创建 desktop 窗口失败，回退到旧启动路径：${String((error as Error)?.message ?? error)}`);
+				process.env['VSSAROS_DESKTOP_ONLY'] = '0';
 			}
 		}
 

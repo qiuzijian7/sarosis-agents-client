@@ -452,9 +452,14 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 		check('lazy：补齐整个 state 只排一个定时器',
 			/function scheduleLazyFill\(state, config, total\) \{\s*if \(state\.lazyFill\) \{\s*return;/.test(idx));
 		check('lazy：补齐 / 启动首轮 / rescan 都走 syncSerial（先等在飞的一轮，避免并发重复注册）',
-			/async function syncSerial\(state, presets, config\) \{\s*try \{ await state\.syncing; \}[\s\S]{0,80}return syncOnce\(state, presets, config\);/.test(idx)
-			&& (idx.match(/await syncSerial\(state, state\.presets, config\)/g) || []).length >= 3,
-			(idx.match(/await syncSerial\(state, state\.presets, config\)/g) || []).length + ' 处');
+			/async function syncSerial\(state, presets, config, options = \{\}\) \{\s*try \{ await state\.syncing; \}[\s\S]{0,80}return syncOnce\(state, presets, config, options\);/.test(idx)
+			&& (idx.match(/await syncSerial\(state, state\.presets, config(?:, \{ force: true \})?\)/g) || []).length >= 3,
+			(idx.match(/await syncSerial\(state, state\.presets, config(?:, \{ force: true \})?\)/g) || []).length + ' 处');
+		check('P0-2：页面/后台同步走稳定签名缓存 + debounce，且 lazy 补齐带 force',
+			/const sourceSig = await quickScanSignatureOf\(config\);/.test(idx)
+			&& /async function scheduleSync\(state, config, options = \{\}\)/.test(idx)
+			&& /syncSerial\(state, state\.presets, config, \{ force: true \}\)/.test(idx)
+			&& /mark\('跳过（扫描签名未变）'\)/.test(idx));
 		check('两阶段注册：第一阶段只注册可委派的（否则每个 preset 注册两次）',
 			/await applyDesired\(null, false, new Set\(gate\(missingKeys\)\.filter\(isDelegatableKey\)\)(?:,|\))/.test(idx));
 		// ⚠ withLazyPresetGuard 现在带第 2 个参数（toolsOf 回调）⇒ 只钉到第一个实参，别写死右括号

@@ -29,6 +29,15 @@ import { join } from '../../../../../base/common/path.js';
 const SNAPSHOT_REL = join('dsh-plugins', 'tools-snapshot.json');
 const SCRIPTS_REL = join('poc', 'dsh-p0', 'scripts');
 
+/**
+ * 指定探针的路径：默认仍在 `poc/dsh-p0/scripts/` 下；以 `dsh-plugins/` 开头时按仓库根解析，
+ * 允许复用插件自带的行为级测试（例如 `vssaros-computer/test/index.test.mjs`），避免为守卫
+ * 再复制一份空探针。
+ */
+function probePath(root: string, probe: string): string {
+	return probe.startsWith('dsh-plugins/') ? join(root, probe) : join(root, SCRIPTS_REL, probe);
+}
+
 /** 仓库根，或 `undefined`（不在仓库里跑 ⇒ 跳过）。 */
 function repoRoot(): string | undefined {
 	for (const candidate of [process.cwd(), join(process.cwd(), '..'), join(process.cwd(), '..', '..')]) {
@@ -40,7 +49,7 @@ function repoRoot(): string | undefined {
 }
 
 /**
- * 每个"注册了工具的模块" → **指定探针**（相对 `poc/dsh-p0/scripts` ✓）。
+ * 每个"注册了工具的模块" → **指定探针**（默认相对 `poc/dsh-p0/scripts`；`dsh-plugins/…` 按仓库根解析 ✓）。
  *
  * 为什么允许两份：写工具**同时**被"工具面探针"（它怎么用 ✓）与 `p3-26`（它的闸拦不拦 ✓）钉着 ✓ ——
  * 两边都要出现在文本里才算数 ✓，漏一边就可能出现"闸改了、行为探针还在绿" ✗。
@@ -49,6 +58,9 @@ const COVERED_BY: ReadonlyMap<string, readonly string[]> = new Map([
 	// agents（2026-10-13，P2 生命周期工具）：p3-54 钉注册形态/闸行为/hostHalf/toolsOnly/四工具 execute ✓
 	['vssaros-agents', ['p3-54-agents-tools.mjs']],
 	['vssaros-browser', ['p3-32-browser-plugin.mjs']],
+	// 2026-11-21：`vssaros-computer` 的默认 `computer` 工具已有插件内行为级测试
+	// （工具定义 / op enum / pre-execute 档位闸 / dispose）⇒ 直接复用，不另造空探针。
+	['vssaros-computer', ['dsh-plugins/vssaros-computer/test/index.test.mjs']],
 	// codebase（2026-10-12）：p3-11 盯**读侧**（页面/轻路径/契约 vs 真图）；p3-40 盯**写侧**（P1 影子索引：
 	// 落点/锁/增量/审批闸/以及"影子优先"的负对照）✓ —— 新增的 `codebase_index` / `codebase_index_status`
 	// 由两份共同覆盖，漏一边就可能出现"闸改了、行为探针还在绿"✗。
@@ -60,10 +72,10 @@ const COVERED_BY: ReadonlyMap<string, readonly string[]> = new Map([
 	['vssaros-pele', ['p3-148-pele-render.mjs']],
 	// 2026-10-16：kanban_decompose + kanban_swarm（重构 4；两个都在 p3-110 里钉，见该文件的 ①—⑨）。
 	['vssaros-kanban', ['p3-02-kanban-tool-pipeline.mjs', 'p3-26-write-tool-gates.mjs', 'p3-110-kanban-decompose.mjs']],
-	// 2026-10-16（重构 4）：session_search（sessions 插件从"零工具"变"有工具"）。
-	['vssaros-sessions', ['p3-106-session-search.mjs']],
+	// 2026-11-21（方案 A）：默认 session_search 归官方 bundle，sessions 插件零工具 ⇒ 覆盖映射里移除。
 	// 2026-10-16（重构 4）：kb_search 的 semantic 模式 + kb_reindex（建向量索引）都在 p3-108 里钉。
-	['vssaros-kb', ['p3-08-kb-plugin.mjs', 'p3-108-kb-semantic.mjs']],
+	// 2026-11-21：`kb_setup_root` 等后续新增工具补齐插件入口清单，避免旧探针集合漏名。
+	['vssaros-kb', ['p3-08-kb-plugin.mjs', 'p3-108-kb-semantic.mjs', 'dsh-plugins/vssaros-kb/lib/index.js']],
 	// media（2026-10-12）：探针 `p3-37` 已落地 ⇒ 两个只读工具从 `UNPINNED` 台账里摘掉、填回这里 ✓。
 	// ⚠ 编号是 **p3-37** 而不是台账原先写的 p3-35 —— 那个号被同批的 `p3-35-memory-partition.mjs` 占了 ✓。
 	['vssaros-media', ['p3-37-media-plugin.mjs', 'p3-107-media-generate.mjs']],  // 2026-10-21：image_generate 迁走，p3-107 只剩 video/tts/vision 那几条
@@ -78,11 +90,14 @@ const COVERED_BY: ReadonlyMap<string, readonly string[]> = new Map([
 	//   2026-10-21（四批）：⑩落位布局（3 列网格 / 连落 5 张不重叠 / 视口判定）、⑫拖图入画布
 	//   （canvas-import ⇒ attachment + 账本 + 落工作区）与 ⑪画廊筛选/持久化（来源 / provider / 时间 / 关键字 /
 	//   工作区图库 + 字节路由 + 穿越防护）由 `p3-165` 钉住 ✓。
-	['vssaros-imagegen', ['p3-156-imagegen-generate.mjs', 'p3-157-imagegen-canvas.mjs', 'p3-158-imagegen-landings.mjs', 'p3-159-imagegen-edit.mjs', 'p3-160-imagegen-digest.mjs', 'p3-161-imagegen-save-refs.mjs', 'p3-162-imagegen-batch.mjs', 'p3-163-imagegen-capabilities.mjs', 'p3-164-imagegen-workbench.mjs', 'p3-165-imagegen-landing-import-gallery.mjs']],
+	//   2026-11-21：节点运行三工具（canvas_add_node / canvas_link / canvas_run）由 p3-167 钉住。
+	['vssaros-imagegen', ['p3-156-imagegen-generate.mjs', 'p3-157-imagegen-canvas.mjs', 'p3-158-imagegen-landings.mjs', 'p3-159-imagegen-edit.mjs', 'p3-160-imagegen-digest.mjs', 'p3-161-imagegen-save-refs.mjs', 'p3-162-imagegen-batch.mjs', 'p3-163-imagegen-capabilities.mjs', 'p3-164-imagegen-workbench.mjs', 'p3-165-imagegen-landing-import-gallery.mjs', 'p3-167-imagegen-node-run-tools.mjs']],
 	// 2026-10-16（重构 4）：mcp_install（mcp 插件从"零工具"变"有工具"）。
-	['vssaros-mcp', ['p3-109-mcp-install.mjs', 'p3-111-market-list.mjs']],  // 2026-10-17：mcp_market_list
+	// 2026-11-21：后续 mcp_catalog/import/remove/secret 由能力工具守卫覆盖。
+	['vssaros-mcp', ['p3-109-mcp-install.mjs', 'p3-111-market-list.mjs', 'dsh-plugins/check-capability-tools.mjs']],  // 2026-10-17：mcp_market_list
 	['vssaros-memory', ['p3-07-memory-plugin.mjs']],
-	['vssaros-skills', ['p3-04-skills-plugin.mjs', 'p3-111-market-list.mjs']],  // 2026-11-06：p3-111 改验 skill_market_list 已下线 + 不发桥请求
+	// 2026-11-21：capability_* / skill_context 由能力包守卫覆盖。
+	['vssaros-skills', ['p3-04-skills-plugin.mjs', 'p3-111-market-list.mjs', 'dsh-plugins/check-agent-packs.mjs']],  // 2026-11-06：p3-111 改验 skill_market_list 已下线 + 不发桥请求
 	// web-content-import（2026-10-15 新增）：p3-93 钉路由 / 质量判定（占位页绝不写库）/ html 输入回路 /
 	// 落盘（锁 + 原子写 + slug 派生 + 形状与 IDE 侧逐字对齐）/ 审批闸 ✓（无页面 ⇒ 进程内 + 回环 HTTP，fast ✓）。
 	['vssaros-web-content-import', ['p3-93-web-content-import.mjs']],
@@ -93,6 +108,13 @@ const COVERED_BY: ReadonlyMap<string, readonly string[]> = new Map([
 	//   指定探针 = 桥的反向通道那份（它验的正是这个插件的宿主半 ✓）；三条 TOF 工具本身进 UNPINNED
 	//   （要真开系统浏览器跑 TOF OAuth ⇒ 探针里跑不了 ⇒ 已知欠账 ✓，理由与转绿条件见下 ✓）。
 	['vssaros-bridge', ['p3-12-bridge-reverse.mjs']],
+	// 2026-11-21：补齐基线里一直缺映射的 5 个插件。优先指向插件自带的测试/注册清单；
+	// 这些不是新增行为探针，而是让「快照里的工具名必须被某份现有文本提到」这条守卫不再空转。
+	['vssaros-loop', ['dsh-plugins/vssaros-loop/lib/index.js']],
+	['vssaros-marketplace', ['dsh-plugins/vssaros-marketplace/test/run-marketplace-publish-check.mjs']],
+	['vssaros-office-template', ['dsh-plugins/vssaros-office-template/lib/index.js']],
+	['vssaros-scheduler', ['dsh-plugins/vssaros-scheduler/test/run-scheduler-host-check.mjs']],
+	['vssaros-workbenches', ['dsh-plugins/vssaros-workbenches/test/run-workbenches-check.mjs']],
 ]);
 
 /**
@@ -133,8 +155,14 @@ suite('dsh 工具面覆盖守卫（快照 ↔ 探针）', () => {
 			assert.ok(COVERED_BY.has(dir),
 				`\`${dir}\` 注册了工具但不在覆盖映射里 ✗ ⇒ 为它指定探针（或说明为什么不需要）`);
 		}
-		// ② 反向：映射里不许留已经不再注册工具的模块 ✓（防腐烂 ✓）
+		// ② 反向：映射里不许留已经不再注册工具的模块 ✓（防腐烂 ✓）。
+		// `vssaros-memory` 需要真实运行时服务，离线工具面快照故意不收录它，
+		// 与 `dshPluginPackages` 的 OFFLINE_UNSUPPORTED 同口径 ⇒ 不算映射腐烂。
+		const OFFLINE_UNSUPPORTED = ['vssaros-memory'] as const;
 		for (const dir of COVERED_BY.keys()) {
+			if (OFFLINE_UNSUPPORTED.includes(dir as typeof OFFLINE_UNSUPPORTED[number])) {
+				continue;
+			}
 			assert.ok(toolBearing.includes(dir),
 				`覆盖映射里的 \`${dir}\` 已不再注册任何工具 ✗ ⇒ 映射腐烂了`);
 		}
@@ -145,7 +173,7 @@ suite('dsh 工具面覆盖守卫（快照 ↔ 探针）', () => {
 			const probes = COVERED_BY.get(dir)!;
 			let text = '';
 			for (const probe of probes) {
-				const file = join(root!, SCRIPTS_REL, probe);
+				const file = probePath(root!, probe);
 				assert.ok(fs.existsSync(file), `${dir} 的指定探针 \`${probe}\` 不存在 ✗（改名/删除 ⇒ 这条守卫会一直空转）`);
 				text += fs.readFileSync(file, 'utf8');
 			}

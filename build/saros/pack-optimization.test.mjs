@@ -33,6 +33,9 @@ function fixture(t) {
 	write('staging/resources/app/package.json', '{}');
 	write('staging/resources/app/dsh-plugins/dsh-compat.json', JSON.stringify({ bundled: '0.2.2-rc.2' }));
 	write('staging/resources/app/dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh/lib/bin.js');
+	write('staging/resources/app/out/vs/sessions/electron-browser/dshDesktop.html');
+	write('staging/resources/app/out/vs/sessions/electron-browser/dshDesktop.js');
+	write('staging/resources/app/out/vs/sessions/contrib/dshHarness/electron-main/dshDesktopWindowMainService.js');
 	return { root, write, staging: path.join(root, 'staging'), repo: path.join(root, 'repo') };
 }
 
@@ -196,7 +199,7 @@ test('staging requires successful packaging, current identity and unchanged entr
 	f.write('staging/resources/app/extensions/agent-studio/out/extension.js', 'current-extension');
 	assert.throws(() => verifyStaging(f.staging, f.repo, identity), /ENOENT/);
 	recordStaging(f.staging, f.repo, identity);
-	assert.equal(verifyStaging(f.staging, f.repo, identity).files.length, 4);
+	assert.equal(verifyStaging(f.staging, f.repo, identity).files.length, 7);
 	assert.throws(() => verifyStaging(f.staging, f.repo, { ...identity, commit: 'b'.repeat(40) }), /not packaged successfully/);
 	assert.throws(() => verifyStaging(f.staging, f.repo, { ...identity, productVersion: 'other' }), /not packaged successfully/);
 	f.write('staging/resources/app/out/main.js', 'previous-build');
@@ -300,12 +303,18 @@ test('actual prepack pruning removes seed engine copies but keeps runtime engine
 	const engineRel = 'node_modules/.pnpm/@deepseek-ai+libreoffice-kit-win32-x64@1.0/node_modules/engine/program.dll';
 	const runtimeEngine = f.write(`staging/resources/app/dsh-runtime/0.2.2-rc.2/${engineRel}`);
 	const seedEngine = f.write(`staging/resources/app/dsh-runtime/0.2.2-rc.2/profile-seed/profiles/vssaros/${engineRel}`);
+	const runtimeWasm = f.write('staging/resources/app/dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/libreoffice-kit-wasm/assets/engine.wasm');
+	const seedWasm = f.write('staging/resources/app/dsh-runtime/0.2.2-rc.2/profile-seed/profiles/vssaros/node_modules/@deepseek-ai/libreoffice-kit-wasm/assets/engine.wasm');
+	const seedVirtualWasm = f.write('staging/resources/app/dsh-runtime/0.2.2-rc.2/profile-seed/profiles/vssaros/node_modules/.pnpm/@deepseek-ai+libreoffice-kit-wasm@1.0/node_modules/engine.wasm');
 	const speech = f.write('staging/resources/app/dsh-runtime/0.2.2-rc.2/profile-seed/profiles/vssaros/node_modules/.pnpm/sherpa-onnx-win-x64@1.0/speech.node');
 	prune(runtime);
 	prune(runtime, 'profile seed');
 	assert.equal(fs.existsSync(runtimeEngine), true);
+	assert.equal(fs.existsSync(runtimeWasm), false);
 	prune(profile, 'profile seed');
 	assert.equal(fs.existsSync(seedEngine), false);
+	assert.equal(fs.existsSync(seedWasm), false);
+	assert.equal(fs.existsSync(seedVirtualWasm), false);
 	assert.equal(fs.existsSync(runtimeEngine), true);
 	assert.equal(fs.existsSync(speech), true);
 	assert.deepEqual(cleanupCalls, [profile]);
@@ -463,12 +472,16 @@ test('filtered staging refresh replaces stale plugin files and excludes developm
 	assert.match(source, /refresh: true, filter: shippedDshPluginPath/);
 });
 
-test('CI exposes mode/target/budgets while keeping offline defaults and archives JSON reports', () => {
+test('CI defaults to the smaller standard/user package and archives JSON reports', () => {
 	const source = fs.readFileSync(path.join(ROOT, '.ci/package-win-exe.yml'), 'utf8');
-	assert.match(source, /SAROS_PACK_MODE:\s*\n\s*value: offline/);
-	assert.match(source, /SAROS_SETUP_TARGETS:\s*\n\s*value: both/);
+	assert.match(source, /SAROS_PACK_MODE:\s*\n\s*value: standard/);
+	assert.match(source, /SAROS_SETUP_TARGETS:\s*\n\s*value: user/);
 	assert.match(source, /SAROS_MAX_EXE_MB:/);
 	assert.match(source, /SAROS_MAX_EXE_GROWTH_PERCENT:/);
+	assert.match(source, /SAROS_MAX_UPLOAD_MB:\s*\n\s*value: '2048'/);
+	assert.match(source, /SAROS_MEDIA_MODE:\s*\n\s*value: external/);
+	// 2026-11-21：Office 改为随包，组件不再依赖自有服务器；只有显式改回 1 才裁剪。
+	assert.match(source, /VSSAROS_SKIP_OFFICE_RUNTIME:\s*\n\s*value: '0'/);
 	assert.match(source, /SAROS_PACK_BASELINE_REPORT:/);
 	assert.match(source, /SAROS_RELEASE_DOWNLOAD_BASE_URL:/);
 	assert.match(source, /filePath: \.build\/pack-reports\/\*\*\/\*\.json/);
@@ -701,12 +714,20 @@ test('EXE generation hard gate and target parsing fail closed after earlier stag
 	const verify = fs.readFileSync(path.join(ROOT, '.ci/scripts/verify-staging.ps1'), 'utf8');
 	assert.match(verify, /Staging verification receipt written/);
 	assert.doesNotMatch(verify, /kb-feishu-sync|kb-build/);
+	const strip = fs.readFileSync(path.join(ROOT, 'build/saros/strip-before-pack.mjs'), 'utf8');
+	assert.match(strip, /SAROS_MEDIA_MODE === 'external'/);
+	assert.match(strip, /VSSAROS_SKIP_OFFICE_RUNTIME/);
+	const media = fs.readFileSync(path.join(ROOT, '.ci/scripts/bundle-ffmpeg.ps1'), 'utf8');
+	assert.match(media, /SAROS_MEDIA_MODE -eq 'external'/);
 	assert.match(generate, /--test-timeout=\d+/);
 	assert.match(generate, /--test-concurrency=1/);
 	assert.match(generate, /try \{ \$setupAssets = ConvertFrom-Json/);
 	assert.match(generate, /Assert-SetupAssets \$setupAssets \$expectedTargetCount/);
 	assert.match(upload, /try \{ \$setupAssets = ConvertFrom-Json/);
 	assert.match(upload, /Invalid installer target count/);
+	assert.match(upload, /\$maxUploadMB = 2048/);
+	assert.match(upload, /\[int\]::TryParse\(\$env:SAROS_MAX_UPLOAD_MB/);
+	assert.match(upload, /\$uploadLimitText = \[string\]\$maxUploadMB/);
 	assertOrdered(whisper, '--check-staging', '$stagingBin');
 });
 

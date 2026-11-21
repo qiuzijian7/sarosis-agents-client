@@ -63,7 +63,9 @@ suite('启动前补回随包插件缺失的自带文件', () => {
 	test('2) supervisor 必须在 spawn 之前调用它，且随包根从 modulePluginDirs 反推', () => {
 		const src = stripComments(read(SUPERVISOR));
 
-		const at = src.indexOf('const args = buildHostArgs(');
+		// ⚠ 启动参数现在是 `['--import', …, ...buildHostArgs(...)]`（sessionIdentity preload 加入后改过），
+		//   别再拿 `const args = buildHostArgs(` 当锚点 ⇒ 那个字符串早就不在代码里了。
+		const at = src.indexOf('...buildHostArgs(');
 		assert.ok(at > 0, '找不到 spawn 之前那行');
 		const iRepair = src.indexOf('repairBundledPluginFiles(', at);
 		const iSpawn = src.indexOf('spawn(node.path, args', at);
@@ -79,5 +81,19 @@ suite('启动前补回随包插件缺失的自带文件', () => {
 		assert.match(rootBody, /dirname\(/, '必须取父目录');
 		assert.ok(!/listBundledPlugins/.test(rootBody),
 			'不许用 listBundledPlugins 当随包根（它只列模块插件 ⇒ 会漏 dsh-kb 这类伴生插件 ✗）');
+	});
+
+	test('3) 运行时装完插件也要立刻自愈（2026-11-21 真机：30 entries did not activate）', () => {
+		const src = stripComments(read(SUPERVISOR));
+		const at = src.indexOf('private async _repairProfileAfterInstall(');
+		assert.ok(at > 0, 'spec / 本地目录安装装完必须体检自愈（否则装 A 弄坏 B，只能等下次启动）');
+		const end = src.indexOf('\n\tprivate ', at + 10);
+		const body = src.slice(at, end > at ? end : at + 3000);
+		assert.match(body, /repairBundledPluginFiles\(/, '要补回随包插件自带文件');
+		assert.match(body, /repairProfileDeps\(/, '要补嵌套依赖副本缺的文件');
+		assert.match(body, /_repairBrokenProfileLinks\(/, '要修 pnpm 删旧目录留下的断链');
+		assert.match(body, /_missingBundledPluginEntries\(/, '要按 main 核对随包插件入口还在不在');
+		const calls = src.match(/_repairProfileAfterInstall\(dsh, profile, env/g) ?? [];
+		assert.ok(calls.length >= 2, `spec 安装与本地目录安装都要调用（实测 ${calls.length} 处）`);
 	});
 });

@@ -127,6 +127,33 @@ export function bundledBinaryCandidates(
 	return bundledFileCandidates(executableName(name, platform), BUNDLED_REL_DIR, REPO_REL_DIR, opts);
 }
 
+/** winget / Homebrew / 发行版包管理器的默认安装目录（不依赖调用方 PATH）。 */
+export function systemBinaryCandidates(
+	name: MediaBinaryName, opts: { env?: Readonly<Record<string, string | undefined>>; platform?: string },
+): string[] {
+	const platform = opts.platform ?? (typeof process !== 'undefined' ? process.platform : 'win32');
+	const env = opts.env ?? {};
+	const file = executableName(name, platform);
+	const out: string[] = [];
+	const push = (candidate: string | undefined): void => {
+		if (candidate && !out.some(existing => existing.toLowerCase() === candidate.toLowerCase())) { out.push(candidate); }
+	};
+	if (platform === 'win32') {
+		if (env.LOCALAPPDATA) { push(path.join(env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links', file)); }
+		if (env.ProgramFiles) { push(path.join(env.ProgramFiles, 'ffmpeg', 'bin', file)); }
+	} else if (platform === 'darwin') {
+		push(`/opt/homebrew/bin/${file}`);
+		push(`/usr/local/bin/${file}`);
+		push(`/opt/local/bin/${file}`);
+	} else {
+		push(`/usr/bin/${file}`);
+		push(`/usr/local/bin/${file}`);
+		push(`/snap/bin/${file}`);
+		if (env.HOME) { push(path.join(env.HOME, '.local', 'bin', file)); }
+	}
+	return out;
+}
+
 /**
  * 「随包文件」的候选绝对路径（二进制与 whisper 模型共用同一套定位规则：
  * 打包 = `<resourcesPath>/saros/<子目录>/`，dev = 从 appRoot 向上找 `build/saros/<子目录>/`）。
@@ -214,6 +241,13 @@ export async function resolveMediaBinary(
 	for (const candidate of candidates) {
 		if (await pathUsable(ctx.fileService, candidate)) {
 			return { name, command: candidate, source: 'bundled', path: candidate };
+		}
+	}
+
+	// ③.5 官方包管理器默认目录（GUI 进程的 PATH 经常不包含 WinGet Links / Homebrew）。
+	for (const candidate of systemBinaryCandidates(name, ctx)) {
+		if (await pathUsable(ctx.fileService, candidate)) {
+			return { name, command: candidate, source: 'path', path: candidate };
 		}
 	}
 

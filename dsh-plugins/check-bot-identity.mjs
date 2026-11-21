@@ -32,11 +32,32 @@ const writer = await load('vssaros-agents/lib/botIdentityWriter.js');
 
 console.log('── ① 模式 preset 清单单一口径 ──');
 const truth = JSON.stringify([...core.MODE_PRESET_IDS]);
-check('真源含 vssaros-full / vssaros-ptc / vssaros-standard', ['vssaros-full', 'vssaros-ptc', 'vssaros-standard'].every(id => core.MODE_PRESET_IDS.includes(id)));
+check('真源含在用的 VsSaros 档（vssaros-ptc / vssaros-standard）', ['vssaros-ptc', 'vssaros-standard'].every(id => core.MODE_PRESET_IDS.includes(id)));
 // 2026-11-03：vssaros-memory 整套下线并归档 ⇒ 上面三条「副本 == 真源」的对账断言随插件一起移除。
 
-// ★ 2026-11-03：client.botSettingsBtn.js（右上角 ⚙）与 client.agents.js（Bots 工作台）已随功能下线删除
-const CHUNKS = ['client.capsule.js', 'client.welcome.js', 'client.conversationViews.js', 'client.botEntry.js', 'client.botHistory.js', 'client.sessions.js'];
+// ★ 2026-11-21 收敛：真源只有 `preset-sync.mjs` 的 MODE_PRESET_IDS 一份，8 份副本是生成物。
+//   按用户口径「老会话直接删除、不做兼容」，清掉 vssaros-full / vssaros-minimal / vssaros-cordis
+//   三个幽灵 id（它们的 preset 定义早已不存在）。⇒ 老会话若仍存这些 id 会被判成 Bot 且打不开，
+//   属于需要清理的旧数据，不再为它保留任何别名/迁移分支。
+{
+	const catalog = (JSON.parse(read('vssaros-chat-surface/package.json')).vssarosModePresets || []).map(r => r.id);
+	const generated = [...read('vssaros-agents/cordis.presets.yml').matchAll(/^\s+id: (vssaros-[\w-]+)\s*$/gm)].map(m => m[1]);
+	const known = new Set([...catalog, ...generated]);
+	const unexplained = [...core.MODE_PRESET_IDS].filter(id => !known.has(id));
+	check('真源里没有来源不明的 id（每个档都要能在 catalog / preset 生成物里找到）', unexplained.length === 0, unexplained.join(','));
+	const sync = await load('preset-sync.mjs');
+	check('真源 == preset-sync.mjs 的 MODE_PRESET_IDS（唯一数据真源）',
+		JSON.stringify([...core.MODE_PRESET_IDS]) === JSON.stringify([...sync.MODE_PRESET_IDS]),
+		`botIdentity=${truth} / preset-sync=${JSON.stringify([...sync.MODE_PRESET_IDS])}`);
+	const drift = sync.botIdentityProblems();
+	check('8 份身份副本与真源一致（生成物不许手改）', drift.length === 0, drift.join(' | '));
+	check('已删除的幽灵 id 不许复活', !core.MODE_PRESET_IDS.some(id => ['vssaros-full', 'vssaros-minimal', 'vssaros-cordis'].includes(id)));
+}
+
+// ★ 2026-11-21 更正：client.botSettingsBtn.js 确已下线，但 client.agents.js **仍在**
+//   （package.json 的 files 里、被 lib/client.js 的 PART_CHUNKS 装载、带完整身份副本）
+//   ⇒ 以前漏出守卫，副本改了不会有人发现。
+const CHUNKS = ['client.capsule.js', 'client.welcome.js', 'client.conversationViews.js', 'client.botEntry.js', 'client.botHistory.js', 'client.sessions.js', 'client.agents.js'];
 const START = '/* vssaros:bot-identity v1';
 const END = '/* /vssaros:bot-identity */';
 const blockOf = (text) => {
@@ -64,7 +85,7 @@ check(CHUNKS.length + ' 个 chunk 的副本块逐字一致（忽略缩进）', C
 	const vmBlock = blockOf(read('vssaros-memory/lib/vssaros-bot.js'));
 	check('vssaros-memory/lib/vssaros-bot.js：含身份副本块且与 chat-surface 副本逐字一致', !!vmBlock && vmBlock === first);
 	const vm = await load('vssaros-memory/lib/vssaros-bot.js');
-	const vmCases = [['vssaros-coder', true], ['vssaros-full', false], ['vssaros-ptc', false], ['standard', false], ['vssaros-', false], ['', false]];
+	const vmCases = [['vssaros-coder', true], ['vssaros-ptc', false], ['standard', false], ['vssaros-', false], ['', false]];
 	check('vssaros-memory 副本与 Host 判据对拍（isBot）', vmCases.every(([p, want]) => vm.sessionBotOf({ agentPreset: p }).isBot === want && core.resolveSessionBot({ agentPreset: p }).isBot === want));
 	check('vssaros-memory：botKey = slugify(记录 botId) = preset 后缀', vm.botOfAgent({ session: { header: { agentPreset: 'vssaros-camelcase-bot' } } }, { stateOf: (_s, k) => (k === 'vssaros-bot' ? { botId: 'CamelCase.Bot', presetId: 'vssaros-camelcase-bot' } : undefined) })?.key === 'camelcase-bot');
 }
@@ -75,8 +96,8 @@ const CASES = [
 	[{ agentPreset: 'vssaros-coder' }, 'preset 推断'],
 	[{ agentPreset: 'vssaros-coder', identity: { botId: 'Coder.Bot', presetId: 'vssaros-coder' } }, '记录一致 ⇒ 记录'],
 	[{ agentPreset: 'vssaros-coder', identity: { botId: 'old', presetId: 'vssaros-writer' } }, '空会话换过 preset ⇒ 旧记录不采信'],
-	[{ agentPreset: 'vssaros-full' }, 'vssaros-full 是模式'],
 	[{ agentPreset: 'vssaros-ptc', identity: { botId: 'x', presetId: 'vssaros-ptc' } }, '模式 preset 有记录也不是 bot'],
+	[{ agentPreset: 'vssaros-standard' }, 'VsSaros 默认档是模式'],
 	[{ agentPreset: 'standard' }, '官方模式'],
 	[{ agentPreset: 'vssaros-' }, '只有前缀'],
 	[{ agentPreset: '' }, '空'],
@@ -166,7 +187,7 @@ console.log('── ⑤ Host 侧会话归属收口（第 3 步合并 preset 的�
 	const r2 = live.sessionRowOf(cacheRec('vssaros-shared', { botId: 'coder', presetId: 'vssaros-shared' }), 's2', 2).row;
 	const r3 = live.sessionRowOf(cacheRec('vssaros-coder'), 's3', 3).row;
 	const r4 = live.sessionRowOf(cacheRec('vssaros-b', { botId: 'a', presetId: 'vssaros-a' }), 's4', 4).row;
-	const r5 = live.sessionRowOf(cacheRec('vssaros-full', { botId: 'x', presetId: 'vssaros-full' }), 's5', 5).row;
+	const r5 = live.sessionRowOf(cacheRec('vssaros-standard', { botId: 'x', presetId: 'vssaros-standard' }), 's5', 5).row;
 	check('sessionRowOf：记录一致 ⇒ botId', r1.botId === 'writer' && r2.botId === 'coder');
 	check('sessionRowOf：无记录 / 记录与 preset 不一致 / 模式 preset ⇒ botId=null', r3.botId === null && r4.botId === null && r5.botId === null);
 	check('共用一个 preset 的两个 bot 会话分得开（第 3 步的前提）', live.rowBelongsTo(r1, 'writer') && !live.rowBelongsTo(r1, 'coder') && live.rowBelongsTo(r2, 'coder'));

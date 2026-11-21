@@ -84,12 +84,17 @@ suite('profile 断链必须自愈', () => {
 	test('3) 必须在 dedupe 之后、spawn 之前调用（dedupe 自己会产生链接！）', () => {
 		const src = code(SUP);
 		const iDedupe = src.indexOf('await this._dedupeSharedPackages(dsh, profile, env);');
-		const iHeal = src.indexOf('await this._repairBrokenProfileLinks(dsh, profile, env);');
 		const iSpawn = src.indexOf('spawned pid');
-		assert.ok(iDedupe > 0 && iHeal > 0, '两处调用都要在');
-		assert.ok(iHeal > iDedupe, '自愈必须在 dedupe **之后**（dedupe 会新建联接，自己也可能做出断链）');
+		assert.ok(iDedupe > 0, '找不到启动流程里的 dedupe 调用');
+		// ★ 2026-11-21：装完插件也会自愈（`_repairProfileAfterInstall`，在文件前部）
+		//   ⇒ 不能再拿「第一处调用」当启动流程那处，否则守卫会被合法的新调用点骗红。
+		const heals = [...src.matchAll(/await this\._repairBrokenProfileLinks\(dsh, profile, env\);/g)]
+			.map(m => m.index ?? 0);
+		assert.ok(heals.length > 0, '至少要调用一次断链自愈');
+		assert.ok(heals.some(i => i > iDedupe),
+			'启动流程里必须有一次自愈在 dedupe **之后**（dedupe 会新建联接，自己也可能做出断链）');
 		if (iSpawn > 0) {
-			assert.ok(iHeal < iSpawn, '自愈必须在 Host spawn 之前');
+			assert.ok(heals.every(i => i < iSpawn), '所有断链自愈都必须在 Host spawn 之前');
 		}
 	});
 });

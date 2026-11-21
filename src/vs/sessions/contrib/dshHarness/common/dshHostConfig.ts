@@ -178,6 +178,68 @@ export function hostOverlayFileName(kind: DshHostOverlayKind, id: string): strin
 	return `${DSH_HOST_OVERLAY_PREFIX[kind]}-${id}.yml`;
 }
 
+/**
+ * 把多条覆盖层文本并成**一个** `--patch` 文件（2026-11-21）。
+ *
+ * 约束来自 dsh loader：同一个 patch 文件里多个顶层 `- insert:` 块只有第一个生效。
+ * 旧实现直接 `mergedParts.join('\n')`，于是 skills / office / MCP 的 insert 行会互相遮蔽，
+ * 某些机器还因同一官方包被 insert 两次报 `a skill provider named "dsh-office" is already registered`。
+ *
+ * 这里按行解析：所有 `- insert:` 子行收进**唯一一个** insert 块并按 row id 去重；其余
+ * `- id:` 覆盖项保持原顺序排在后面（id 覆盖必须在 insert 之后才不会打空）。`!!js` 表达式
+ * 与注释只是原样搬运，不做 YAML 解析/求值 ⇒ 不引入第二套语义 ✓。
+ */
+export function mergeHostOverlayTexts(parts: readonly string[]): string {
+	const nonInsert: string[] = [];
+	const insertRows: string[] = [];
+	const seenInsertIds = new Set<string>();
+	for (const part of parts) {
+		const lines = part.split(/\r?\n/);
+		const starts: number[] = [];
+		for (let i = 0; i < lines.length; i++) {
+			if (/^- /.test(lines[i])) { starts.push(i); }
+		}
+		if (!starts.length) {
+			nonInsert.push(...lines);
+			continue;
+		}
+		if (starts[0] > 0) {
+			nonInsert.push(...lines.slice(0, starts[0]));
+		}
+		for (let s = 0; s < starts.length; s++) {
+			const from = starts[s];
+			const to = s + 1 < starts.length ? starts[s + 1] : lines.length;
+			const block = lines.slice(from, to);
+			if (!/^- insert:\s*$/.test(block[0].trim())) {
+				nonInsert.push(...block);
+				continue;
+			}
+			// 子行以 4 空格缩进的 `- id:` 开头；一个子行一直吃到下一个同级 `- `。
+			let i = 1;
+			while (i < block.length && !/^ {4}- /.test(block[i])) { i++; }
+			while (i < block.length) {
+				if (!/^ {4}- /.test(block[i])) { i++; continue; }
+				const start = i++;
+				while (i < block.length && !/^ {4}- /.test(block[i])) { i++; }
+				const child = block.slice(start, i);
+				const id = /^\s+- id:\s*(.+?)\s*$/m.exec(child.join('\n'))?.[1]?.trim();
+				if (id && seenInsertIds.has(id)) { continue; }
+				if (id) { seenInsertIds.add(id); }
+				insertRows.push(...child);
+			}
+		}
+	}
+	const output: string[] = [];
+	if (insertRows.length) {
+		output.push('- insert:', ...insertRows);
+	}
+	if (nonInsert.length) {
+		if (output.length) { output.push(''); }
+		output.push(...nonInsert);
+	}
+	return `${output.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s*$/, '')}\n`;
+}
+
 /** 一条待写盘的覆盖层。 */
 export interface IDshHostOverlay {
 	readonly kind: DshHostOverlayKind;
@@ -277,9 +339,11 @@ export function renderHostOverlays(config: IDshHostConfig): readonly IDshHostOve
 	if (sandboxMode && sandboxRoot) {
 		out.push({ kind: 'sandbox', text: renderSandboxOverlay(sandboxMode, sandboxRoot) });
 	}
-	// Office 运行时（2026-11-02）：两个官方包由**插入行**挂载，因此独立成一条覆盖层
-	//（一个 patch 文件里多个 `- insert:` 只有第一个生效 ⇒ 不能并进 skills 那份）。
-	// base / node / cli 全部由主进程算好（Host 读不到产品源码、也不该猜 PATH）。
+	// Office 运行时（2026-11-02；2026-11-21 改为按官方 row id 覆盖）：
+	// 0.2.2-rc.2 的 `dsh-web-app` / `dsh-sdk-app` bundle 已经插入 `skill-office`、
+	// `workspace-dependencies`、`office-kit` 三行；再 `- insert:` 同名官方包会让
+	// `registerProvider("dsh-office")` 跑两次 ⇒ 整个 entry 失效。这里只覆盖 config ✓。
+	// base / node / cli 仍由主进程算好（Host 读不到产品源码、也不该猜 PATH）。
 	const office = config.office;
 	if (office) {
 		const officeBase = trimmed(office.base);

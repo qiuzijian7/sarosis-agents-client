@@ -129,6 +129,14 @@ export class LaunchMainService implements ILaunchMainService {
 	}
 
 	private async startOpenWindow(args: NativeParsedArgs, userEnv: IProcessEnvironment): Promise<void> {
+		// B 方案：desktop-only 启动时第二次裸启动只聚焦已有 desktop，不创建 IDE 主窗口。
+		const noTarget = args._.length === 0 && !args['folder-uri'] && !args['file-uri'] && !args['diff'] && !args['merge'];
+		if (process.env['VSSAROS_DESKTOP_ONLY'] === '1' && noTarget && this.windowsMainService.getWindowCount() === 0) {
+			const focused = (globalThis as { __vssarosFocusDshDesktopWindow?: () => boolean }).__vssarosFocusDshDesktopWindow?.();
+			if (focused) {
+				return;
+			}
+		}
 		// [Saros] Dev-mode "New Window": a second instance launched from the taskbar
 		// jump list passes the app path as argv[1] (bare electron needs it to load the
 		// app). That path is NOT a folder the user asked to open — drop it so we create

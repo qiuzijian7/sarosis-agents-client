@@ -62,6 +62,22 @@ export const name = 'vssaros-codebase';
 export const inject = ['tools'];
 
 const ROUTE_PREFIX = '/x/codebase';
+
+const WEB_ROUTE_OWNERS_KEY = Symbol.for('vssaros.webRouteOwners');
+/** 双 plane 挂载时同一 prefix 只注册一次；effect 撤销时释放，HMR 仍可重新注册。 */
+function registerPageRouteOnce(page, route) {
+	const key = `${route.kind}:${route.path}`;
+	let owners;
+	try { owners = globalThis[WEB_ROUTE_OWNERS_KEY] ??= new Set(); } catch { return page.webServer.register(route); }
+	if (!(owners instanceof Set) || owners.has(key)) {
+		console.log(`[${name}] ${key} 已由另一层注册 ⇒ 跳过（避免 duplicate prefix route）`);
+		return undefined;
+	}
+	owners.add(key);
+	let dispose;
+	try { dispose = page.webServer.register(route); } catch (error) { owners.delete(key); throw error; }
+	return () => { try { dispose?.(); } finally { owners.delete(key); } };
+}
 // ⚠ 这是**声明**的工具名清单（页面自诊断那一栏用它 filter 注册表 ✓）。2026-10-12 加 `codebase_snippet`
 // 时把它**导出来** ✓ —— 于是探针能拿"声明 == 注册"**互相对账** ✓（本仓已有两处栽在"两处名单各写一份"✗：
 // workflow 与 kb ✓；这里趁加工具一次治掉 ✓）。
@@ -2911,7 +2927,7 @@ export function apply(ctx, config = {}) {
 
 	// 页面路由（**可选**依赖）：`webServer` / `connection` 只在 web 模板里存在（见静态 `inject` 的注释）。
 	// 不在 web 模板 ⇒ 只是**没有页面** ✓，工具照常可用 ✓。
-	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
+	ctx.inject(['webServer', 'connection'], page => page.effect(() => registerPageRouteOnce(page, {
 		kind: 'prefix',
 		path: ROUTE_PREFIX,
 		handler: async (req, res) => {

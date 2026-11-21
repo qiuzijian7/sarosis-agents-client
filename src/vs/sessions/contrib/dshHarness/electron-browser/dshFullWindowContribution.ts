@@ -1833,9 +1833,26 @@ export class DshFullWindowContribution extends Disposable {
 		bootDisposables.add(auxWindow.onUnload(() => {
 			bootProgress.dispose();
 			const timer = setTimeout(() => {
+				// ★★ 2026-11-21（真机 logs/20261119T221605：启动后约 10s 一闪退出）：
+				//   `onUnload` 在 about:blank 导航/换窗时同样会触发，旧的 `win` 对象此时
+				//   `closed/document.readyState` 不可靠 ⇒ 曾被误判成"用户关闭桌面窗口"而退出整个 app。
+				//   `_openComposed` 的关窗处理已有 `_desktopWindows.size` 判据；这里再按 windowId
+				//   复核辅助窗口登记，确认窗口真的没了才允许走启动期退出。
+				if (this._desktopWindows.size > 0) {
+					this._log.info('[dshHarness] 启动壳 unload 后仍有桌面窗口登记 ⇒ 换窗/导航，不退出应用');
+					return;
+				}
+				const currentAuxWindow = this._auxWindowService.getWindow(windowId);
+				const currentWindow = currentAuxWindow?.window;
 				let alive = false;
-				try { alive = !win.closed && !!win.document && String(win.document.readyState) !== ''; } catch { alive = false; }
-				if (alive) { return; }
+				try { alive = !!currentWindow && !currentWindow.closed; } catch { alive = false; }
+				if (!alive) {
+					try { alive = !win.closed && !!win.document; } catch { alive = false; }
+				}
+				if (alive) {
+					this._log.info('[dshHarness] 启动壳 unload 后窗口仍活着 ⇒ 导航/重载，不退出应用');
+					return;
+				}
 				closedWhileBooting = true;
 				bootCancellation.cancel();
 				this._desktopBootDisposables.delete(bootDisposables);

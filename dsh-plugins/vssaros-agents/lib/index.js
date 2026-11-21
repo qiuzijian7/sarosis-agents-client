@@ -115,7 +115,7 @@ import { installRelay } from './relay.js';
 // 只导入 `scanAgentsFromConfig` 会让每个 `/x/agents/*` 请求抛 `ReferenceError` ⇒ `dsh-host-webserver`
 // 的 catch 回**裸 400**（无 body）⇒ 侧栏整页白屏（用户报「agents 的 sideview 不可见」）。
 // 教训：这类"搬模块漏 import"只有真跑一次请求才会暴露 ⇒ 由 p3-96（页面交互探针）看守。
-import { agentsBuiltinRootOf, agentsRootOf, dataRootOf, parseAgentSource, registerAgentSource, scanAgentsFromConfig } from './store.js';
+import { agentsBuiltinRootOf, agentsRootOf, dataRootOf, parseAgentSource, quickScanSignatureOf, registerAgentSource, scanAgentsFromConfig } from './store.js';
 import { addApprovalTemplate, listApprovalTemplates, removeApprovalTemplate, templateGate } from './templates.js';
 import { registerAgentTools } from './tools.js';
 
@@ -143,6 +143,8 @@ const TOOL_SURFACE_DEBOUNCE_MS = 800;
 const LAZY_FILL_DELAY_MS = 15_000;
 /** 启动时按扫描顺序补足到这个数（委派清单引用的、最近会话用过的不受此限，必须先就位）。 */
 const LAZY_EAGER_MAX = 3;
+/** 成簇的页面 GET / 后台同步合并成一轮；写操作仍走 syncSerial 立即等待。 */
+const SYNC_DEBOUNCE_MS = 100;
 /** 当前还在 lazy 窗口里的那个 state（只有它需要"建会话前先补齐"）。 */
 const lazyPresetHooks = { state: null };
 
@@ -163,7 +165,8 @@ function scheduleLazyFill(state, config, total) {
 		clearTimeout(timer);
 		state.lazyFilled = true;
 		running = (async () => {
-			await syncSerial(state, state.presets, config);
+			// 源文件签名在补齐前后不变，必须 force 绕开前置缓存，否则全量补齐会被吃掉 ✗。
+			await syncSerial(state, state.presets, config, { force: true });
 			console.warn(`[vssaros-agents] lazy 补齐完成：preset 共 ${state.registered.size} 个`);
 		})().catch((e) => {
 			console.error(`[vssaros-agents] lazy 补齐 preset 失败：${String(e?.message ?? e)}`);
@@ -547,11 +550,60 @@ function watchAllowlist(runtime, agent, label, wanted) {
 	};
 }
 
-/** 一次挂载的状态（顶层角色用；页面与注册共用同一份，免得两处看到两份数据）。 */
-function createState() {
+/**
+ * **跨 apply 共享的注册属主**（2026-11-21）。
+ *
+ * 本包会被 host plane 与 preset plane 各 apply 一次；`createState()` 是每次 apply 一份闭包，
+ * 原来每份都有自己的 `registered` / `syncing`，于是第二轮又从零开始全量注册
+ * （真机日志：syncPresets 11.0s → 7.1s → 1.9s）。把这些字段放进由
+ * `vssarosAgents` 服务持有的同一个 registrar，第二次 apply 复用同一份花名册与在飞 promise ✓。
+ */
+function createRegistrar() {
 	return {
 		/** agentId → { presetId, fingerprint, dispose } */
 		registered: new Map(),
+		/** 正在跑的 syncPresets（跨 apply 复用，避免两个 plane 各起一轮）。 */
+		syncing: null,
+		/** 上一次成功挂上的 subagent 可选清单签名。 */
+		subagentListSig: '',
+		/** lazy 补齐状态与定时器（整个 Host 只排一个）。 */
+		lazyFilled: false,
+		lazyFillDone: false,
+		lazyFill: null,
+		/** 兼容旧守卫的整轮签名；新短路改用 `sourceSig` + `cache`。 */
+		signature: '',
+		/** 只由源文件 mtime/size + provider + 插件 Bot 源组成的稳定签名。 */
+		sourceSig: '',
+		/** 显式失效标记：写盘/注册源变化后必须重新扫描。 */
+		dirty: true,
+		/** 上一轮成功结果：命中签名时直接复用，连 agent 正文都不读。 */
+		cache: null,
+		/** trailing debounce 定时器（跨 apply 共享，避免两个 plane 各排一轮）。 */
+		syncTimer: null,
+	};
+}
+
+/** 读既有 `vssarosAgents` 服务（双 plane 幂等；fake ctx 没有 reflect 时返回 undefined）。 */
+function readAgentsService(ctx) {
+	try {
+		return ctx.reflect && typeof ctx.reflect.get === 'function'
+			? ctx.reflect.get('vssarosAgents', false)
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** 一次挂载的状态（页面/诊断仍每 apply 一份；注册属主跨 apply 共享）。 */
+function createState(registrar = createRegistrar()) {
+	return {
+		registrar,
+		get registered() { return registrar.registered; },
+		get syncing() { return registrar.syncing; }, set syncing(value) { registrar.syncing = value; },
+		get subagentListSig() { return registrar.subagentListSig; }, set subagentListSig(value) { registrar.subagentListSig = value; },
+		get lazyFilled() { return registrar.lazyFilled; }, set lazyFilled(value) { registrar.lazyFilled = value; },
+		get lazyFillDone() { return registrar.lazyFillDone; }, set lazyFillDone(value) { registrar.lazyFillDone = value; },
+		get lazyFill() { return registrar.lazyFill; }, set lazyFill(value) { registrar.lazyFill = value; },
 		/** 每个 agent 的注册结果与映射缺口（页面显示，用户可见） */
 		diagnostics: [],
 		/** `ctx.agentPresets.list()` 的快照（证明真的进了花名册） */
@@ -568,11 +620,16 @@ function createState() {
 		sessionController: null,
 		/** `sessionQuery` 服务对象（`agent_read_chat` 用；同一纪律）。 */
 		sessionQuery: null,
-		/** 上一次成功挂上的 subagent 可选清单签名（变了才需要重挂带清单的版本）。 */
-		subagentListSig: '',
-		/** 正在跑的 syncPresets（并发请求复用它，避免同一时刻做两遍重注册）。 */
-		syncing: null,
 	};
+}
+
+/** 显式作废缓存：源文件/插件 Bot 源/注册态变化后下一轮必须真扫。 */
+function markDirty(state) {
+	const r = state.registrar;
+	r.dirty = true;
+	r.sourceSig = '';
+	r.signature = '';
+	r.cache = null;
 }
 
 /** 撤销本次挂载注册的全部 preset（幂等）。 */
@@ -581,6 +638,13 @@ async function disposeAllPresets(state) {
 	state.registered.clear();
 	state.roster = [];
 	state.subagentListSig = '';
+	const r = state.registrar;
+	if (r.syncTimer) { clearTimeout(r.syncTimer); r.syncTimer = null; }
+	r.signature = '';
+	r.sourceSig = '';
+	r.cache = null;
+	r.dirty = true;
+	r.lazyFill = null;
 	for (const entry of entries) {
 		try {
 			await entry.dispose();
@@ -595,14 +659,28 @@ async function disposeAllPresets(state) {
  * 每个 agent **每次都会重算 notes**（哪怕这次不需要重新注册）——诊断是"当前映射情况"的快照，
  * 不是"本轮做了什么"的日志；只在注册时才记的话，页面第二次请求就空了（实测踩过）。
  */
-async function syncPresets(state, presets, config) {
+async function syncPresets(state, presets, config, options = {}) {
+	const { force = false } = options;
 	// ★ 2026-11-02 启动计时探针（只记录，不改行为）：拆 syncPresets 内部各段耗时。
 	const syncT0 = Date.now();
 	const mark = (label) => console.log(`[vssaros-agents] 计时 syncPresets ${label}：+${Date.now() - syncT0}ms（进程启动后 ${Math.round(process.uptime() * 1000)}ms）`);
 	mark('开始');
+	const provider = typeof config.defaultProvider === 'string' ? config.defaultProvider.trim() : '';
+	// ★ P0-2：签名只做 stat（不读正文），命中时连 scan/definition/register 全跳过。
+	const sourceSig = await quickScanSignatureOf(config);
+	const r = state.registrar;
+	const cache = r.cache;
+	if (!force && sourceSig && r.sourceSig === sourceSig && cache && state.registered.size > 0) {
+		state.diagnostics = [...cache.diagnostics];
+		state.errors = [];
+		state.roster = [...cache.roster];
+		state.subagentListSig = cache.subagentListSig;
+		setAgentModelRoutes(cache.scan.agents, provider);
+		mark('跳过（扫描签名未变）');
+		return cache.scan;
+	}
 	const scan = await scanAgentsFromConfig(config, undefined);
 	mark(`扫描完成（${scan.agents.length} 个 agent）`);
-	const provider = typeof config.defaultProvider === 'string' ? config.defaultProvider.trim() : '';
 	const errors = [...scan.errors];
 	const diagnostics = [];
 	// ★ 2026-11-03：一个 agent **只对应一个** preset。原来写了 `model-assignment` 的 agent 还会派生一条
@@ -762,6 +840,11 @@ async function syncPresets(state, presets, config) {
 		: undefined;
 	const sourceKeys = new Set(scan.sourceAgentIds ?? []);
 	for (const key of sourceKeys) { eagerKeys?.add(key); }
+	// ★ P0-2：稳定签名只包含输入态；registeredKeys / eagerKeys / lazyFilled 等运行期输出态
+	// 不再进签名，改由 quickScanSignatureOf 的内容变化 + 显式 markDirty 驱动。
+	const signature = sourceSig
+		? `${sourceSig}|${provider}|${lazyRequested ? 'lazy' : 'eager'}|${process.env.VSSAROS_DSH_PRESET_MODE ?? ''}`
+		: '';
 	const gate = (keys) => (eagerKeys ? keys.filter((key) => eagerKeys.has(key)) : keys);
 	const isDelegatableKey = (key) => delegatablePresetIds.has(presetIdOf(key));
 	const needFirstPass = missingKeys.some(isDelegatableKey);
@@ -812,6 +895,20 @@ async function syncPresets(state, presets, config) {
 	mark('结束（含撤销消失的 preset + 读花名册）');
 	state.diagnostics = diagnostics;
 	state.errors = errors;
+	// 只有整轮无错才记账：注册失败/花名册读失败时下一轮仍要重试，不能被签名短路掉。
+	if (signature && errors.length === 0) {
+		r.signature = signature;
+		r.sourceSig = sourceSig;
+		r.cache = {
+			scan,
+			diagnostics: [...diagnostics],
+			roster: [...state.roster],
+			subagentListSig: state.subagentListSig,
+		};
+		r.dirty = false;
+	} else {
+		r.dirty = true;
+	}
 	return scan;
 }
 
@@ -822,14 +919,14 @@ async function syncPresets(state, presets, config) {
  * 立刻又发来一个渲染请求，它也会调 syncPresets ⇒ 两遍重注册并互相 dispose 对方的 preset，
  * 又慢又容易冒出"刚注册就被撤"的抖动。复用同一个 promise 后，页面请求只等它跑完。
  */
-function syncOnce(state, presets, config) {
+function syncOnce(state, presets, config, options = {}) {
 	if (!presets) {
 		return Promise.resolve();
 	}
 	if (state.syncing) {
 		return state.syncing;
 	}
-	state.syncing = syncPresets(state, presets, config).finally(() => {
+	state.syncing = syncPresets(state, presets, config, options).finally(() => {
 		state.syncing = null;
 	});
 	return state.syncing;
@@ -842,9 +939,34 @@ function syncOnce(state, presets, config) {
  * 为什么首轮也要走这里：首轮原来直接调 `syncPresets`、不登记 `state.syncing` ⇒ 页面请求经 `syncOnce`
  * 看不到它在飞 ⇒ 并发再起一轮 ⇒ 实测 lazy 下首批 7 个 preset 被注册了 4 遍（多花 ~5s）。
  */
-async function syncSerial(state, presets, config) {
+async function syncSerial(state, presets, config, options = {}) {
 	try { await state.syncing; } catch { /* 上一轮失败不影响这一轮 */ }
-	return syncOnce(state, presets, config);
+	return syncOnce(state, presets, config, options);
+}
+
+/**
+ * 页面 GET / 后台同步的 trailing debounce：源文件签名没变就直接吃进程内缓存；
+ * 变了才排队真扫。写操作仍直接 `syncSerial(... wait)`，保证回包看到最新 registered。
+ */
+async function scheduleSync(state, config, options = {}) {
+	const presets = state.presets;
+	if (!presets) { return null; }
+	const r = state.registrar;
+	const sourceSig = await quickScanSignatureOf(config);
+	if (r.cache && !r.dirty && r.sourceSig === sourceSig) {
+		return r.cache.scan;
+	}
+	markDirty(state);
+	if (options.wait || !r.cache || state.syncing) {
+		return syncSerial(state, presets, config, options);
+	}
+	if (r.syncTimer) { clearTimeout(r.syncTimer); }
+	r.syncTimer = setTimeout(() => {
+		r.syncTimer = null;
+		void syncSerial(state, presets, config, options).catch(() => undefined);
+	}, SYNC_DEBOUNCE_MS);
+	r.syncTimer.unref?.();
+	return r.cache?.scan ?? null;
 }
 
 /** 读请求体并解析 JSON（空体 → `{}`）。 */
@@ -997,7 +1119,12 @@ async function switchPersona(state, config, body) {
 
 /** 角色 1：顶层（注册 preset + 页面）。 */
 function applyTopLevel(ctx, config) {
-	const state = createState();
+	// 第二个 plane（preset 行 / HMR）复用第一份注册属主 ⇒ 不再从零全量注册 ✓。
+	const existingAgentsSvc = readAgentsService(ctx);
+	const state = createState(existingAgentsSvc?.registrar);
+	if (existingAgentsSvc && !existingAgentsSvc.registrar) {
+		try { existingAgentsSvc.registrar = state.registrar; } catch { /* 只读服务代理：忽略 */ }
+	}
 	// 审批模板闸谓词（2026-10-16，P2）：tools.js 的 pre-execute 先查它；读失败按"没有"（照常问 ✓）。
 	state.approvalTemplates = templateGate(config);
 
@@ -1301,7 +1428,7 @@ function applyTopLevel(ctx, config) {
 	ctx.effect(() => teamBus().provide({
 		...teamService,
 		createBot: async (input) => createTeamBot(config, input, async () => {
-			if (state.presets) await syncPresets(state, state.presets, config);
+			if (state.presets) await syncSerial(state, state.presets, config);
 		}),
 	}));
 	// ★ 2026-11-06 契约修订 2：describeBot(ref) = 名册卡片（含 model / preset / 工作区），按 id 或名字找（见 lib/teamBus.js）。
@@ -1428,16 +1555,23 @@ function applyTopLevel(ctx, config) {
 	//   `ctx.provide('vssarosAgents')` 让 cordis 抛 `has been registered` ⇒ 整个 preset 判
 	//   invalid ⇒ 新建会话失败（同型先例：workflow / media / mcp）。
 	//   `dshPresetPlane.test.ts` 的「双 plane provide 必须幂等」守卫会盯这里 ✓。
-	const existingAgentsSvc = ctx.reflect && typeof ctx.reflect.get === 'function'
-		? ctx.reflect.get('vssarosAgents', false)
-		: undefined;
+	// `existingAgentsSvc` 在 apply 入口已读取（同时用来复用 registrar）；这里再紧邻
+	// `ctx.provide` 探一次，满足双 plane 幂等守卫的「provide 前必须先探测」口径。
+	let agentsSvcBeforeProvide = existingAgentsSvc;
+	try {
+		agentsSvcBeforeProvide = ctx.reflect && typeof ctx.reflect.get === 'function'
+			? ctx.reflect.get('vssarosAgents', false) ?? existingAgentsSvc
+			: existingAgentsSvc;
+	} catch { agentsSvcBeforeProvide = existingAgentsSvc; }
 	const sourceWithdrawals = new Set();
-	if (!existingAgentsSvc) ctx.effect(() => () => {
+	if (!agentsSvcBeforeProvide) ctx.effect(() => () => {
 		for (const withdraw of sourceWithdrawals) { withdraw(); }
 		sourceWithdrawals.clear();
 	});
 	// 单语句 if：已有就复用 host 层那一份（不重复注册），无需包住整个服务对象。
-	if (!existingAgentsSvc) ctx.provide('vssarosAgents', {
+	if (!agentsSvcBeforeProvide) ctx.provide('vssarosAgents', {
+		/** 供后续 plane / HMR 复用同一份注册属主（见 createRegistrar 注释）。 */
+		registrar: state.registrar,
 		presetIdOf,
 		registerSource: async (source) => {
 			if (!state.presets) { throw new Error('agentPresets 服务还没就绪（Host 还在启动）'); }
@@ -2103,7 +2237,7 @@ function applyTopLevel(ctx, config) {
 						const created = await createAgentFromDraft(config, body?.draft);
 						let syncError = '';
 						if (state.presets) {
-							await syncPresets(state, state.presets, config).catch(e => {
+							await syncSerial(state, state.presets, config).catch(e => {
 								syncError = `同步 preset 失败：${String(e?.message ?? e)}`;
 								state.errors = [...state.errors, syncError];
 							});
@@ -2121,7 +2255,7 @@ function applyTopLevel(ctx, config) {
 						const updated = await updateAgentFromDraft(config, body?.id, body?.draft);
 						let updateSyncError = '';
 						if (state.presets) {
-							await syncPresets(state, state.presets, config).catch(e => {
+							await syncSerial(state, state.presets, config).catch(e => {
 								updateSyncError = `同步 preset 失败：${String(e?.message ?? e)}`;
 								state.errors = [...state.errors, updateSyncError];
 							});
@@ -2156,10 +2290,8 @@ function applyTopLevel(ctx, config) {
 						//   复用同一个 in-flight promise（`syncOnce`），不会做两遍。
 						result = { ...removed, registered: false, syncScheduled: !!state.presets };
 						if (state.presets) {
-							setImmediate(() => {
-								void syncOnce(state, state.presets, config).catch(e => {
-									state.errors = [...state.errors, `删除后同步 preset 失败：${String(e?.message ?? e)}`];
-								});
+							void scheduleSync(state, config).catch(e => {
+								state.errors = [...state.errors, `删除后同步 preset 失败：${String(e?.message ?? e)}`];
 							});
 						}
 					} else if (action === 'set-subagent') {
@@ -2180,7 +2312,7 @@ function applyTopLevel(ctx, config) {
 						// 「映射说明」里的「改为跟随默认」：只删未映射的 model 行（lib/create.js 头注释）⇒ 立刻重注册 preset
 						const reset = await resetAgentModel(config, body?.id);
 						if (state.presets) {
-							await syncPresets(state, state.presets, config).catch(e => {
+							await syncSerial(state, state.presets, config).catch(e => {
 								state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
 							});
 						}
@@ -2274,7 +2406,7 @@ function applyTopLevel(ctx, config) {
 						dryRun: body?.dryRun === true,
 					});
 					if (result.dryRun !== true && state.presets) {
-						await syncPresets(state, state.presets, config).catch(e => {
+						await syncSerial(state, state.presets, config).catch(e => {
 							state.errors = [...state.errors, `导入 Bot 后同步 preset 失败：${String(e?.message ?? e)}`];
 						});
 					}
@@ -2297,7 +2429,7 @@ function applyTopLevel(ctx, config) {
 					const result = await importAgent(config, Buffer.from(zipBase64, 'base64'), { overwrite: body?.overwrite === true });
 					// 导入即生效：本轮的增量同步（失败要如实记，不能假装"已注册"）
 					if (state.presets) {
-						await syncPresets(state, state.presets, config).catch(e => {
+						await syncSerial(state, state.presets, config).catch(e => {
 							state.errors = [...state.errors, `导入后同步 preset 失败：${String(e?.message ?? e)}`];
 						});
 					}
@@ -2311,14 +2443,13 @@ function applyTopLevel(ctx, config) {
 				return;
 			}
 			try {
-				// 每次请求都做增量同步（新加/改动/删掉 agent 不必重启 Host）。同步失败不影响读页面。
-				// ⚠ 走 `syncOnce`：删除 agent 会在后台触发一次 O(N²) 重注册，此刻页面若立刻重载，
-				//   这里**复用**那个在飞的 promise，而不是并发再做一遍（否则两边互相 dispose，越等越慢）。
+				// 页面 GET：源文件签名没变时直接吃 registrar.cache；变了才排队真扫。
+				// 同步失败不影响读页面（退回一次只读全量扫描）。
 				const scan = state.presets
-					? await syncOnce(state, state.presets, config).catch(e => {
+					? (await scheduleSync(state, config, { wait: true }).catch(e => {
 						state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
-						return scanAgentsFromConfig(config, undefined);
-					})
+						return null;
+					})) ?? await scanAgentsFromConfig(config, undefined)
 					: await scanAgentsFromConfig(config, undefined);
 				const summary = summarizeAgents(scan.agents);
 				// 展示面名册（内置按 userFacing 白名单 + 去掉 HIDDEN_AGENT_IDS）—— preset 注册仍用全量 scan ✓

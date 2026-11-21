@@ -1,6 +1,6 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 150,
+  "total": 149,
   "plugins": {
     "vssaros-agents": [
       {
@@ -1352,7 +1352,7 @@
           "video_url",
           "withTranscript"
         ],
-        "descriptionHash": "76ead9d018ec"
+        "descriptionHash": "69fb6ad941fc"
       },
       {
         "name": "video_generate",
@@ -1485,19 +1485,6 @@
           "title"
         ],
         "descriptionHash": "60244bd7866d"
-      }
-    ],
-    "vssaros-sessions": [
-      {
-        "name": "session_search",
-        "required": [
-          "query"
-        ],
-        "params": [
-          "limit",
-          "query"
-        ],
-        "descriptionHash": "7e7008800ddc"
       }
     ],
     "vssaros-skills": [
@@ -1659,6 +1646,7 @@
         "name": "content_import",
         "required": [],
         "params": [
+          "downloadModel",
           "html",
           "images",
           "maxChars",

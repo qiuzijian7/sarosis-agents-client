@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../lib/client.conversationViews.js', import.meta.url), 'utf8');
+const dependencies = await readFile(new URL('../lib/client.dependencies.js', import.meta.url), 'utf8');
 const start = source.indexOf('function BotConfigCard(props)');
 const end = source.indexOf('\n\t\tfunction SkillsView', start);
 assert.ok(start >= 0 && end > start);
@@ -32,6 +33,17 @@ function fixture(hasOverrides = true, confirmed = true) {
 	render();
 	return { render, find, posts, refs, get reloads() { return reloads; }, data };
 }
+
+test('dsh left-sidebar settings includes dependency components flow and bridge actions', () => {
+	assert.match(dependencies, /function DependenciesSection\(\)/);
+	assert.match(dependencies, /data-vssaros-dependencies-section/);
+	assert.match(dependencies, /pageBridge\.componentsStatus\(\)/);
+	assert.match(dependencies, /pageBridge\.installComponent\(id/);
+	assert.match(dependencies, /settings\.section/);
+	for (const label of ['检测', '官方源', '安装', '校验', '生效', '依赖与组件']) {
+		assert.ok(dependencies.includes(label), `设置分区安装流程缺「${label}」`);
+	}
+});
 
 test('Bot settings saves tools/MCP bindings and exposes reset only for actual overrides', async () => {
 	const f = fixture();

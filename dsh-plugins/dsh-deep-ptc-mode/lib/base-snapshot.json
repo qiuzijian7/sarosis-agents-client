@@ -1,0 +1,13 @@
+{
+  "source": "@deepseek-ai/dsh-base/cordis.patch.yml",
+  "verifiedUpstream": "0.2.2-rc.1",
+  "bash": {
+    "name": "@deepseek-ai/dsh-bash-sandbox",
+    "config": {
+      "timeoutMs": 60000
+    }
+  },
+  "pwsh": {
+    "name": "@deepseek-ai/dsh-pwsh-sandbox"
+  }
+}

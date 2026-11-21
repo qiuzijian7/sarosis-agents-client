@@ -22,7 +22,12 @@
   `/plugins/@vssaros/<pkg>/client.*.js?rev=<12位>`。
 - **随包 vendored 的第三方包**也放在本目录，包名保留上游名：`vssaros-archify/`（`@tt-a1i/archify-dsh`）、
   `dsh-ego-browser/`（2026-11-19 起内置）、`dsh-vision-router/` 与 `dsh-better-sidebar/`
-  （同为 2026-11-19 起内置）。
+  （同为 2026-11-19 起内置）、`dsh-deep-ptc-mode/`（2026-11-21 起默认安装）。
+  ⚠ 最后一个是 **Agent 预设插件**：模式清单不在前端代码里 —— 各插件在 `package.json` 的
+  `vssarosModePresets` 里自声明，`vssaros-chat-surface` 的 Host 半汇总后经
+  `/x/chat-surface/api/modes-list` 同源下发；`client.preset.js` 零 preset id、只按数据渲染。
+  用户仍需新建会话选中「深度 PTC 模式」才生效；默认 preset 仍是 `vssaros-standard`（native）。
+  它与官方 PTC 预设的派生关系、与本仓 `vssaros-ptc` 的模块差异及真机核对要点见该目录 `VENDOR.md`。
   它们没有 `vssaros.module`，走 `dshHostSupervisor` 的**伴生插件**清单；
   provenance / 升级流程见各自目录的 `VENDOR.md`。
   ⚠ 后三个目录名不带 `vssaros-` 前缀 ⇒ 构建期种子在 `build/prepack-dsh-runtime.mjs` 的

@@ -72,8 +72,8 @@ suite('打包暂存区的 dsh-plugins 必须每次刷新', () => {
 		const at = s.indexOf('resources/app/dsh-runtime/${bundledVersion}');
 		assert.ok(at > 0, '找不到 dsh-runtime 的 ensureDir 调用');
 		const end = s.indexOf(');', at);
-		assert.match(s.slice(at, end), /\{\s*refresh:\s*true\s*\}/,
-			'dsh-runtime 必须 `{ refresh: true }` —— 同版本重建时旧副本会让 profile-seed 永远进不了包 ✗');
+		assert.match(s.slice(at, end), /\{\s*refresh:\s*true(?:\s*\}|\s*,)/,
+			'dsh-runtime 必须 `{ refresh: true }`（可带 filter）—— 同版本重建时旧副本会让 profile-seed 永远进不了包 ✗');
 		// 种子门禁：暂存里必须真的有某个 profile 的 package.json
 		const gate = s.indexOf('随包 dsh-runtime 缺 profile-seed');
 		assert.ok(gate > 0, '缺少 profile-seed 门禁');

@@ -662,6 +662,7 @@ const child = spawn(EXE, args, {
 		VSCODE_CLI: '1',
 		VSCODE_SKIP_PRELAUNCH: '1',
 		VSSAROS_START_HIDDEN: '1',
+		VSSAROS_DESKTOP_ONLY: '1',
 		ELECTRON_ENABLE_LOGGING: '1',
 		ELECTRON_ENABLE_STACK_DUMPING: '1',
 		// 让主进程的 runJournal 把 START/EXIT/PREV-DIED 标成 launcher（与 launch.json 那两条的

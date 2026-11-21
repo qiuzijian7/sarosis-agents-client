@@ -56,6 +56,18 @@ export interface IDshMcpParseResult {
 /** dsh 的 serverName 约束（`dsh-mcp-client` 的字段说明）。 */
 const SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
 
+/**
+ * 远程 HTTP MCP 的**单次启动连接预算**（2026-11-21，日志 `20261121T151449`）。
+ *
+ * `dsh-mcp-client.apply()` 会 `await connection.ready`；若远端 401 / 版本协商失败，
+ * 这个等待会卡在「模板解析 + 协商 + 连接 + 初次工具同步」整条链上，拖慢 Host ready。
+ * 设置 `startupTimeoutMs` 后，首次失败会被有界放弃，后台重连策略仍保留；用户 MCP 配置
+ * 与服务器可用性语义不变，只是不再让「一个外部服务器不通」拖住整个应用首屏 ✓。
+ *
+ * 只给 `streamable-http`：stdio 起本地进程的时间差异更大，不套同一个短预算。
+ */
+export const MCP_REMOTE_STARTUP_TIMEOUT_MS = 2_000;
+
 /** 被 VsSaros/上游 `mcp.json` 允许、但 dsh 侧没有对应传输的类型。 */
 const UNSUPPORTED_TRANSPORTS: Readonly<Record<string, string>> = {
 	sse: 'dsh 的 dsh-mcp-client 只支持 stdio 与 streamable-http，不支持 sse',
@@ -370,6 +382,10 @@ export function renderMcpOverlay(servers: readonly IDshMcpServerSpec[]): string 
 						lines.push(`          ${key}: ${yamlScalar(value)}`);
 					}
 				}
+				// 外部 HTTP 服务不通时，别让 `apply()` 的首连等待把 Host ready 拖住。
+				// `failOnStartupError: false`（默认值，显式写出便于核对）⇒ 失败只记录，后台重连照旧。
+				lines.push(`        startupTimeoutMs: ${MCP_REMOTE_STARTUP_TIMEOUT_MS}`);
+				lines.push('        failOnStartupError: false');
 			}
 		}
 	}

@@ -1,0 +1,7 @@
+# Host-side settings register a scoped deep-ptc preset.
+- insert:
+    - id: deep-ptc-settings
+      name: dsh-deep-ptc-mode
+      config:
+        environment: auto
+        wslDistribution: ''

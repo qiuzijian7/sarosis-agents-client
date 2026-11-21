@@ -74,13 +74,19 @@ suite('桌面窗口：等 mux 路由就绪再发起会话', () => {
 			'status 必须带上 muxReady（否则渲染进程无从判断 ✗）');
 
 		// 探测成功的那一支：置位 + 再广播一次 status（不然渲染进程永远看不到变化 ✗）
+		const publishAt = src.indexOf('private _publishMuxReady(');
+		assert.ok(publishAt > 0, '找不到 _publishMuxReady ✗');
+		const publish = src.slice(publishAt, src.indexOf('\n\tprivate ', publishAt + 1));
+		const iSet = publish.indexOf('this._muxReady = true;');
+		assert.ok(iSet > 0, '探测到路由后必须置 _muxReady = true ✗');
+		assert.ok(publish.indexOf('this._setStatus(', iSet) > iSet,
+			'置位后必须再广播一次 status（否则状态变化传不到渲染进程 ✗）');
 		const probeAt = src.indexOf('private async _probeMuxAfterReady(');
 		assert.ok(probeAt > 0, '找不到 _probeMuxAfterReady ✗');
 		const probe = src.slice(probeAt, src.indexOf('\n\tprivate ', probeAt + 1));
-		const iSet = probe.indexOf('this._muxReady = true;');
-		assert.ok(iSet > 0, '探测到路由后必须置 _muxReady = true ✗');
-		assert.ok(probe.indexOf('this._setStatus(', iSet) > iSet,
-			'置位后必须再广播一次 status（否则状态变化传不到渲染进程 ✗）');
+		assert.match(probe, /early = false/, '提前探测必须保留显式开关');
+		assert.match(probe, /this\._muxProbePending = result;/, 'starting 期间探测成功必须暂存结果');
+		assert.match(probe, /this\._publishMuxReady\(result\);/, 'running 期间探测成功必须立即发布');
 
 		// 复用既有 Host：那个 Host 早就 ready 过 ⇒ 路由必然已注册 ⇒ 直接就绪
 		assert.ok(/this\._reused = true;[\s\S]{0,400}this\._muxReady = true;/.test(src),

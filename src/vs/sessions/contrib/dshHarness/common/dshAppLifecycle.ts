@@ -15,11 +15,16 @@
  * "关 IDE 把 desktop 一起带走" 与 "关 desktop 后 IDE 被亮出来" 两种事故 ✗。
  * 现在判据只有一处（本文件）、只吃两个数字（可见的 IDE 窗口数 / 存活的桌面窗口数）⇒ 可表驱动断言 ✓。
  *
- * ⚠ 两个物理约束（决定了规则怎么落地，不能照字面"真关"）：
+ * ⚠ 两个物理约束（决定了 A 方案规则怎么落地，不能照字面"真关"）：
  *   · 桌面窗口是 IDE 主窗口用 `window.open` 开的**辅助窗口**（没有 `noopener`）⇒ 真销毁主窗口时
  *     Chromium 会把它一起收掉 ⇒ 规则 ③ 里的"关 IDE"只能做成**隐藏**（用户视角一样：那一扇没了）；
  *   · 隐藏窗口不计入 Electron 的 `window-all-closed` ⇒ 规则 ①②的"关 app"必须**显式 quit**，
  *     指望默认退出会留下"没有界面却活着"的隐形进程 ✗。
+ *
+ * ★ B 方案（desktop-only）：desktop 由主进程直接创建，**不是** `window.open` 子窗口；
+ *   关 IDE 真销毁不会带走 desktop，但 `windowCounter === 0` 仍会触发 `onWillShutdown`。
+ *   因此 `LifecycleMainService` 必须在「还有非 CodeWindow 应用窗口」时保住应用，
+ *   由 desktop 自己的关闭路径决定何时真正退出 ✓。
  */
 
 /** 关窗那一刻的事实（都由主进程数出来，不猜）。 */

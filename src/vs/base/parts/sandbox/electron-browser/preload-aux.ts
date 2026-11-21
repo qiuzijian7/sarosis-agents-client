@@ -33,6 +33,19 @@
 				validateIPC(channel);
 
 				return ipcRenderer.invoke(channel, ...args);
+			},
+
+			// B 方案的轻量 desktop 壳复用 ElectronIPCClient：它需要监听 `vscode:message`。
+			on(channel: string, listener: (...args: unknown[]) => void): void {
+				if (validateIPC(channel)) {
+					ipcRenderer.on(channel, listener as Parameters<typeof ipcRenderer.on>[1]);
+				}
+			},
+
+			removeListener(channel: string, listener: (...args: unknown[]) => void): void {
+				if (validateIPC(channel)) {
+					ipcRenderer.removeListener(channel, listener as Parameters<typeof ipcRenderer.removeListener>[1]);
+				}
 			}
 		},
 
@@ -45,6 +58,10 @@
 				if (typeof level === 'number') {
 					webFrame.setZoomLevel(level);
 				}
+			},
+
+			getZoomFactor(): number {
+				return webFrame.getZoomFactor();
 			}
 		}
 	};

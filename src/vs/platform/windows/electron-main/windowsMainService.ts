@@ -319,6 +319,11 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 	 * `showWindow`，另有 20s / 45s 两级兜底 ✓。
 	 */
 	private _wantsHiddenStart(): boolean {
+		// B 方案：启动时根本不建 IDE 主窗口；后续按需打开的 IDE 必须可见。
+		if (process.env['VSSAROS_DESKTOP_ONLY'] === '1') {
+			this.logService.info('[windowsManager] wantsHiddenStart=false（desktop-only 启动：IDE 仅在按需打开时创建且必须可见）');
+			return false;
+		}
 		const args = this.environmentMainService.args;
 		if (args['agents'] === true || process.env['VSSAROS_START_HIDDEN'] === '1') {
 			return true;
