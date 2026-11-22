@@ -71,6 +71,9 @@ const vscodeResourceIncludes = [
 	// Workbench
 	'out-build/vs/code/electron-browser/workbench/workbench.html',
 	'out-build/vs/sessions/electron-browser/sessions.html',
+	// dsh desktop-only shell（HTML 与其引用的 JS 都必须显式随包）
+	'out-build/vs/sessions/electron-browser/dshDesktop.html',
+	'out-build/vs/sessions/electron-browser/dshDesktop.js',
 
 	// Electron Preload
 	'out-build/vs/base/parts/sandbox/electron-browser/preload.js',
