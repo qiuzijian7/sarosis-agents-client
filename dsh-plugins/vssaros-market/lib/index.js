@@ -33,6 +33,7 @@ import {
 import { createRemoteReader } from './remoteCatalog.js';
 import { MarketInstallError, resolveInstallTarget } from './installTargets.js';
 import { incompatibleMessage, inspectPackage, mergePolicies, normalizePolicy, policyVerdict } from './inspect.js';
+import { ensureWritableProfile, sharedProfileDir } from './profileWritable.js';
 
 export const name = 'vssaros-market';
 export const inject = [];
@@ -385,6 +386,8 @@ export function apply(ctx, config = {}) {
 
 	/** 回落通道：Host 自己的 pluginManager。**如实**判结果：`application:failed` / 带错误码 = 失败。 */
 	async function installViaHost(mgr, target) {
+		// 回落通道绕过了 IDE 主进程 ⇒ 共享只读 profile 要在 Host 内自己先物化（否则 pnpm 写安装目录）。
+		await ensureWritableProfile(sharedProfileDir());
 		const requestId = `vssaros-market-${Date.now()}`;
 		const res = await mgr.installBundle(target.pluginSpec, { requestId });
 		const shaped = shapeChange(res, target.pluginSpec, { requestId });
@@ -431,6 +434,8 @@ export function apply(ctx, config = {}) {
 			return { ok: false, error: '这个工作台不是从工作台市场装的（没有安装记录）', code: 'no_install_record' };
 		}
 		try {
+			// 与 installViaHost 同一条防线：卸载同样会让 pnpm 重写 node_modules。
+			await ensureWritableProfile(sharedProfileDir());
 			const res = await mgr.removeBundle(record.pluginName);
 			const shaped = shapeChange(res, record.pluginName);
 			if (shaped.application === 'failed' || res?.error) {

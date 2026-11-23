@@ -34,6 +34,7 @@
 
 import { existsSync, readFileSync, promises as fsp } from 'fs';
 import { dirname, join } from '../../../../base/common/path.js';
+import { copyDirectoryConcurrently } from './dshConcurrentCopy.js';
 
 /** profile 里的版本标记（轻量，只记是哪个 dsh 版本建的插件层）。 */
 export const PROFILE_RUNTIME_MARKER_REL = join('.vssaros', 'runtime-version.json');
@@ -101,6 +102,11 @@ export function planProfileRuntimeSync(input: IProfileRuntimeSyncInput): Profile
  * ⇒ `dereference: true`：跟随链接复制成真实文件/目录，不需要任何特殊权限 ✓。
  *   代价：解引用后体积/耗时变大（实测 575MB → 3.1GB / 约 10 分钟），只在首启或版本升级各一次；
  *   `_repairSeededStoreMetadata` 随后会校正 `.modules.yaml`（含 pnpm 11 的 JSON 写法）。
+ *
+ * 2026-11-23（安装版首启太慢）：`fsp.cp` 逐文件串行，3 万多个小文件还要逐个过 Defender ⇒ 首启几分钟。
+ *   换成 `copyDirectoryConcurrently`（worker 池并发 `copyFile`），语义仍对齐
+ *   `fsp.cp(src, dest, { recursive: true, dereference: true, force: true })`：解引用、覆盖、失败向上冒；
+ *   目录认领与失败回滚留在本函数，没有跟着实现一起换。
  */
 export async function copyProfileSeed(seedDir: string, destDir: string): Promise<void> {
 	// 先校验种子 manifest：坏种子不许在目标位置留下一个会被 init/stamp 误认成"已完成"的目录。
@@ -113,7 +119,7 @@ export async function copyProfileSeed(seedDir: string, destDir: string): Promise
 	await fsp.mkdir(dirname(destDir), { recursive: true });
 	await fsp.mkdir(destDir);
 	try {
-		await fsp.cp(seedDir, destDir, { recursive: true, dereference: true, force: true });
+		await copyDirectoryConcurrently(seedDir, destDir, { dereference: true });
 	} catch (e) {
 		// 只有认领成功者会清理由它自己刚建的半成品目录。
 		await fsp.rm(destDir, { recursive: true, force: true }).catch(() => undefined);

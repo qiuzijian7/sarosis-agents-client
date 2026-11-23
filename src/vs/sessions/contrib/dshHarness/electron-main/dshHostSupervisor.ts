@@ -57,6 +57,7 @@ import { readPreferredHostPort, reclaimLoopbackPort, rememberHostPort, resolveHo
 import { reapOrphanHosts } from './dshHostReaper.js';
 import { repairBundledPluginFiles, repairProfileDeps } from './dshProfileDepsRepair.js';
 import { copyProfileSeed, planProfileRuntimeSync, profileSeedDirFor, readProfileRuntimeVersion, syncProfilePluginLayer, writeProfileRuntimeMarker } from './dshProfileRuntimeSync.js';
+import { createSharedProfile, isSharedProfile, isSharedSeedInRuntimeTree, materializeSharedProfile, removeProfileSafely, sharedProfileEnabled, unlinkSharedNodeModules } from './dshSharedProfile.js';
 import { DshRuntimeError, DshRuntimeManager, injectBundledPnpm, IResolvedDsh, IResolvedNode, sanitizedEnv } from './dshRuntimeManager.js';
 import { IDshHealthReport, IHostActivity, summarizeHealth } from '../common/dshUpgrade.js';
 // ★ 2026-10-19：内置 agent 的**代码真源**（`getBuiltinAgents`）与它到 md 的序列化（`buildAgentMd`）。
@@ -736,6 +737,7 @@ export class DshHostSupervisor extends Disposable {
 		try {
 			await this._ensureProfile(node, dsh, profile, env);
 			await this._repairSeededStoreMetadata(profileDir);
+			await this._materializeIfShared(profileDir);
 			this._appendLog(`spec install: ${cleanSpec} (was ${previousVersion ?? 'absent'})`);
 			// 走到真正执行安装这一步 ⇒ 与 `_ensurePlugin` 同一口径：任何**已经在跑**的 Host 内存里都不会有它
 			//   （新装的 entry 在旧进程里 `failed to import` 且永久不可用）⇒ 下次 start 不接管旧进程 ✓。
@@ -795,6 +797,7 @@ export class DshHostSupervisor extends Disposable {
 		try {
 			await this._ensureProfile(node, dsh, profile, env);
 			await this._repairSeededStoreMetadata(profileDir);
+			await this._materializeIfShared(profileDir);
 			this._appendLog(`${label} install: ${name}@${bundledVersion || '?'} (was ${previousVersion ?? 'absent'})`);
 			const after = await this._ensurePlugin(name, dir, node, dsh, profile, env, label);
 			const problems = await this._repairProfileAfterInstall(dsh, profile, env, label);
@@ -1272,6 +1275,15 @@ export class DshHostSupervisor extends Disposable {
 			}
 
 			await this._ensureProfile(node, dsh, profile, env);
+			// 共享态把标记交给 Host：主进程/channel 的写路径已在各入口物化，但 Host 内插件
+			// （如工作台市场的 pluginManager 回落通道）看不到主进程，只能凭这两个变量自己先物化。
+			{
+				const sharedDir = this._profileDir(profile, env);
+				if (await isSharedProfile(sharedDir)) {
+					env.VSSAROS_PROFILE_SHARED = '1';
+					env.VSSAROS_PROFILE_DIR = sharedDir;
+				}
+			}
 			// 种子拷贝（或历史遗留）会带着**构建期**的 pnpm 元数据：node_modules/.modules.yaml 的
 			// virtualStoreDir 指向 seed 自己的路径 → 之后每次 `dsh plugin add` 都 ERR_PNPM_UNEXPECTED_STORE
 			// （实测伴生插件全部升不上去，dev 实例长期跑旧插件）。这里装插件前无条件校正一次
@@ -1434,6 +1446,8 @@ export class DshHostSupervisor extends Disposable {
 			// ★ 2026-10-21：版本错配自检（profile 已装 vs 随包）—— 漏装/不同代要**在日志里点名**。
 			this._auditBundledVersions(plugins, pluginProfileDir);
 			if (wants.length) {
+				// 共享态首启 `wants` 正常为空（种子里已预装伴生插件）⇒ 不物化；真要装就先落可写副本。
+				await this._materializeIfShared(pluginProfileDir);
 				// 真的执行了安装动作（升级既有 / 补装缺失）⇒ 置标记：下一次 `start()` 不接管旧 Host
 				// （旧进程内存里是旧代码 / 缺这个包，见 `_pluginsStale` 的注释）✓。
 				this._pluginsStale = true;
@@ -2474,6 +2488,8 @@ export class DshHostSupervisor extends Disposable {
 			const backup = `${dir}.bak-runtime-${plan.from.replace(/[^0-9A-Za-z.-]/g, '_')}-${Date.now()}`;
 			this._progress('版本变更：正在同步内置运行时，可能需要几分钟，请勿关闭窗口');
 			this._appendLog(`profile runtime ${plan.from} → ${dsh.version}：备份到 ${basename(backup)} 并从 ${plan.seedDir} 同步插件层`);
+			// 共享态先摘掉依赖树联接：否则同步失败时的递归清理会顺着 junction 删到安装目录。
+			await unlinkSharedNodeModules(dir);
 			const { restoredUserData } = await syncProfilePluginLayer(plan.seedDir, dir, backup);
 			if (!existsSync(manifest)) {
 				throw new Error(`profile 插件层同步后缺 package.json（备份：${backup}）`);
@@ -2486,8 +2502,31 @@ export class DshHostSupervisor extends Disposable {
 		// plan.kind === 'init'：profile 不存在 —— 构建期预置的种子（有就整目录本地复制，零下载）
 		this._progress('首次启动：正在准备后台服务，可能需要几分钟，请勿关闭窗口');
 		if (plan.seedDir) {
-			this._progress('正在从内置副本初始化 profile（本地拷贝，无需下载）…');
 			const t0 = Date.now();
+			// 2026-11-23：默认仍是完整复制（`copyProfileSeed`，已换并发实现）；
+			// `VSSAROS_PROFILE_SHARED=1` 走共享首启 —— 只复制可写层，依赖树用指向随包种子的只读
+			// junction，首启不再复制 3 万多个文件。shared 失败先退回完整复制，再不行才走 web 模板。
+			// 同树才允许 shared：跨树会让 `@deepseek-ai` 作用域下的包出现两份模块实例（`instanceof` 失效）。
+			const sharedAllowed = sharedProfileEnabled() && await isSharedSeedInRuntimeTree(plan.seedDir, dsh.bin);
+			if (sharedProfileEnabled() && !sharedAllowed) {
+				this._appendLog(`shared seed not in the same runtime tree as dsh (${plan.seedDir} vs ${dsh.bin}); falling back to a full copy to avoid cross-tree duplicate module instances`);
+			}
+			if (sharedAllowed) {
+				this._progress('正在从内置副本初始化 profile（共享只读运行时，无需下载）…');
+				try {
+					await createSharedProfile(plan.seedDir, dir);
+					if (existsSync(manifest)) {
+						await writeProfileRuntimeMarker(dir, dsh.version);
+						this._appendLog(`profile seeded as SHARED (read-only node_modules junction) in ${Date.now() - t0} ms (${plan.seedDir})`);
+						return;
+					}
+					this._appendLog('shared profile seed incomplete; falling back to a full copy');
+				} catch (e) {
+					this._appendLog(`shared profile seed failed (${String((e as Error)?.message ?? e)}); falling back to a full copy`);
+				}
+				await removeProfileSafely(dir); // 清掉 shared 半成品（含 junction），别让下面的完整复制误认目录已被认领
+			}
+			this._progress('正在从内置副本初始化 profile（本地拷贝，无需下载）…');
 			try {
 				// ⚠ 必须用 copyProfileSeed（dereference: true）：仓库种子里 .pnpm 有 6097 个 symlink，
 				//   裸 fsp.cp 在 Windows 非管理员下会 EPERM ⇒ 首启崩溃（2026-11-09 真机）。
@@ -2512,6 +2551,32 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	/**
+	 * 给「经 channel / Host 的写操作」用：共享态先物化，否则 pluginManager / pnpm 会写进安装目录。
+	 * 非共享态（或没有 `node_modules`）是 no-op。
+	 */
+	async ensureProfileWritable(): Promise<void> {
+		const { profile, dshHome } = this._resolveProfileAndHome();
+		const env = sanitizedEnv(dshHome ? { DSH_HOME: dshHome } : {});
+		await this._materializeIfShared(this._profileDir(profile, env));
+	}
+
+	/**
+	 * 共享态 → 可写副本（延迟物化）。首启 shared 时 `wants` 通常为空（种子里已预装伴生插件），
+	 * 所以正常首启永远不物化；只有真要装/卸/升级插件、需要写 `node_modules` 时才走到这里。
+	 * 物化后补一次元数据校正（shared 态一直跳过），随后按 owned 口径运行。
+	 */
+	private async _materializeIfShared(profileDir: string): Promise<void> {
+		if (!(await isSharedProfile(profileDir))) {
+			return;
+		}
+		this._progress('首次变更插件：正在把共享运行时落为可写副本，可能需要几分钟…');
+		const t0 = Date.now();
+		await materializeSharedProfile(profileDir);
+		this._appendLog(`shared profile materialized in ${Date.now() - t0} ms`);
+		await this._repairSeededStoreMetadata(profileDir);
+	}
+
+	/**
 	 * 校正 profile 里 pnpm 的虚拟店元数据。
 	 *
 	 * 种子是构建期在**仓库目录**里 install 出来的，`node_modules/.modules.yaml` 记的是那个目录的
@@ -2523,6 +2588,10 @@ export class DshHostSupervisor extends Disposable {
 	 * 只改路径字段、不动 store 内容 —— 仍然零下载。已存在且正确的 profile 是 no-op。
 	 */
 	private async _repairSeededStoreMetadata(profileDir: string): Promise<void> {
+		// 共享态的 node_modules 指向安装目录（只读）：校正会写进随包运行时，一律跳过；物化后再补。
+		if (await isSharedProfile(profileDir)) {
+			return;
+		}
 		const file = join(profileDir, 'node_modules', '.modules.yaml');
 		if (!existsSync(file)) {
 			return;
@@ -2573,6 +2642,11 @@ export class DshHostSupervisor extends Disposable {
 	 * 把 profile 弄成缺包）；任何失败都只记日志，**绝不阻断启动**（退回文件级仍然是可用的）。
 	 */
 	private async _dedupeSharedPackages(dsh: IResolvedDsh, profile: string, env: NodeJS.ProcessEnv): Promise<void> {
+		// 共享态的 node_modules 整体是只读联接：替换其中的包等于写安装目录，必须跳过。
+		// 代价：种子里的 dsh-app-boot 与运行时可能两份实例 ⇒ HMR 实时启停退回文件级；要恢复就先物化。
+		if (await isSharedProfile(this._profileDir(profile, env))) {
+			return;
+		}
 		const nodeModules = join(this._profileDir(profile, env), 'node_modules');
 		for (const pkg of DSH_SHARED_INSTANCE_PACKAGES) {
 			const runtimeCopy = resolveSiblingPackage(dsh.bin, pkg);

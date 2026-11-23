@@ -1676,6 +1676,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				if (!this._supervisor.listPlugins().some(p => p.name === name)) {
 					throw new Error(`[dshHarness] setDshBundleEnabled: profile 里没有这个插件：${name}`);
 				}
+				// 组合包启停走 Host 实时重组时可能写依赖树（文件级兜底只改 package.json，物化也无害）。
+				await this._supervisor.ensureProfileWritable();
 				const bridge = this._supervisor.bridge;
 				if (bridge) {
 					const r = await bridge.call<IBridgePluginChangeResult>(DshBridgeMethod.BundleSetEnabled, { name, enabled: a.enabled }, 60_000);
@@ -1791,6 +1793,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					throw new Error('[dshHarness] installDshPlugin: 需要 { spec, requestId }（requestId 用于取消与进度关联）');
 				}
 				const a = arg as IBridgeInstallArgs;
+				// Host 内 installBundle 直接写 profile 的 node_modules：共享态先物化，否则写进安装目录。
+				await this._supervisor.ensureProfileWritable();
 				const bridge = this._supervisor.bridge;
 				if (!bridge) {
 					throw new Error('[dshHarness] installDshPlugin: 控制桥不可用（Host 未运行或伴生插件未装）');
@@ -1820,6 +1824,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					throw new Error('[dshHarness] removeDshPlugin: 需要 { name: 包名 }');
 				}
 				const a = arg as IBridgeRemoveArgs;
+				// 同上：removeBundle 也会让 pnpm 重写 node_modules，共享态先物化。
+				await this._supervisor.ensureProfileWritable();
 				const bridge = this._supervisor.bridge;
 				if (!bridge) {
 					throw new Error('[dshHarness] removeDshPlugin: 控制桥不可用（Host 未运行或伴生插件未装）');

@@ -51,6 +51,31 @@ if (!manifest.versions?.some(v => v.version === version)) {
 
 
 const target = join(root, 'dsh-runtime', version);
+
+/**
+ * 首启**必装**的官方 bundle 清单（与 `dshHostSupervisor` 的伴生清单同源）。
+ *
+ * 2026-11-23（安装版首启太慢定位）：`@deepseek-ai/dsh-experimental-session-search` 是 2026-11-21
+ * 方案 A 起必须显式装进 profile 的官方 bundle，但它一直没进这个清单 ⇒ 种子里没有 ⇒
+ * 首启 `wants.length ≥ 1` ⇒ 共享只读 profile 立刻物化，shared 首启拿不到收益。
+ * ⇒ 清单与「首启必装对账」共用同一份，漏一个都会在构建期报出来，而不是等用户首启再装。
+ * 定义在主流程之前：`buildProfileSeed` 会被文件上方的主流程提前调用（TDZ 坑）。
+ */
+const OFFICIAL_BUNDLES = [
+	'dsh-web-app',
+	'dsh-experimental-session-search',
+	'dsh-experimental-voice-input-bundle',
+	// ⚠ `dsh-experimental-schedule-bundle` 不属首启必装：2026-10-31 起已明确**不再安装**
+	// （与自建 `vssaros-scheduler` 抢同一个 `schedule` 服务键），不能放进这张对账清单。
+	'dsh-experimental-forge-bundle',
+	'dsh-experimental-forge',
+	'dsh-experimental-forge-github',
+	'dsh-experimental-forge-session',
+	'dsh-experimental-client-ui-forge',
+	'dsh-experimental-worktree',
+	'dsh-skill-office',
+	'dsh-tool-workspace-dependencies',
+];
 const bin = join(target, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
 const force = process.argv.includes('--force');
 
@@ -343,6 +368,32 @@ function seedPluginGaps(profileDir, wantPlugins) {
 	return gaps;
 }
 
+/**
+ * 首启 wants = 0 的构建期守卫：上面这些官方包必须**连包带版本**落在种子里。
+ * 只按 `wantPlugins` 对账（seedPluginGaps）看不出「清单本身漏了首启必装项」，所以单列这一道。
+ */
+function assertSeedCoversStartupBundles(profileDir, runtimeDir) {
+	const gaps = [];
+	for (const name of OFFICIAL_BUNDLES) {
+		const installed = join(profileDir, 'node_modules', '@deepseek-ai', name, 'package.json');
+		if (!existsSync(installed)) {
+			gaps.push(`${name}（种子里缺失）`);
+			continue;
+		}
+		const runtime = join(runtimeDir, 'node_modules', '@deepseek-ai', name, 'package.json');
+		if (existsSync(runtime)) {
+			const want = JSON.parse(readFileSync(runtime, 'utf8')).version;
+			const got = JSON.parse(readFileSync(installed, 'utf8')).version;
+			if (want !== got) {
+				gaps.push(`${name}（应 ${want}，实为 ${got}）`);
+			}
+		}
+	}
+	if (gaps.length) {
+		throw new Error(`种子未覆盖首启必装官方包（首启 wants > 0，会触发物化/需要 pnpm）：${gaps.join('、')}`);
+	}
+}
+
 /** 在 <target>/profile-seed 里建好 vssaros profile（含伴生插件 + 全部模块插件 + web 模板依赖）。 */
 async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	const { cpSync, mkdirSync, writeFileSync } = await import('node:fs');
@@ -375,27 +426,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		// ⚠ 2026-10-19：这里原先只收 `vssaros.module` ⇒ foundation / kb-refs / browser / unreal /
 		//   archify 全漏（种子装上后那些插件一激活就抛"foundation 服务未绑定"✗）。
 		...discoverRepoPluginDirs(join(root, 'dsh-plugins')),
-		// dsh 运行时自带的**官方 bundle**（随 dsh 版本分发，仓库里没有）：web-app + 语音输入 + 调度。
-		// 与宿主 `DSH_WEB_APP_BUNDLE_NAME` / `DSH_VOICE_BUNDLE_PLUGIN_NAME` / `DSH_SCHEDULE_BUNDLE_PLUGIN_NAME`
-		// 同一批；漏了它们首启要 `dsh plugin add`（**需 pnpm**）⇒ "首启零下载"就破了 ✗✗。
-		// ⚠ web-app 尤其不能漏：它提供 `webServer` / `connection` 两个服务，缺了 bridge / chat-surface /
-		//   codebase / memory 全部永远 pending ⇒ Host 直接退出 code 1（见 `dshHostSupervisor` 的注释）。
-		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-web-app'),
-		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-voice-input-bundle'),
-		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-schedule-bundle'),
-		// ★ 2026-11-17（官方 Forge UI）：worktree 的 **GUI + 模型工具**统一由 forge-bundle 装配。
-		//   它的 `cordis.patch.yml` 一次插入 6 行（worktree runtime / tool-worktree / forge /
-		//   forge-github / forge-session / forge-panel=client-ui-forge），是唯一带 UI 的入口。
-		//   ⚠ 独立组合包 `dsh-experimental-tool-worktree` 也声明了 `dsh.bundle.patch` ⇒
-		//     **绝不能放进 pluginSources**（会被 `dsh plugin add` 追加进 bundles，与 forge-bundle
-		//     插出重复的 worktree / tool-worktree id）；它只作为 dependency 由 pnpm 解析。
-		//   ⚠ 下面 5 个本地包都没有 `dsh.bundle.patch` ⇒ 只进 dependencies，不进 bundles。
-		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-forge-bundle'),
-		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-forge'),
-		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-forge-github'),
-		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-forge-session'),
-		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-client-ui-forge'),
-		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-worktree'),
+		...OFFICIAL_BUNDLES.map(name => join(runtimeDir, 'node_modules', '@deepseek-ai', name)),
 	].filter(p => existsSync(join(p, 'package.json')));
 	const wantPlugins = {};
 	for (const src of pluginSources) {
@@ -631,6 +662,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		}
 		throw new Error(`profile 种子里还有 ${remainingDangling.length} 个悬空链接 ⇒ gulp 的 vinyl-fs stat 会 ENOENT（本次出包必须失败）`);
 	}
+	assertSeedCoversStartupBundles(profileDir, runtimeDir);
 	writeFileSync(markerPath, JSON.stringify({ generatorRevision: SEED_GENERATOR_REVISION, dsh: dshVersion, plugins: wantPlugins, createdAt: new Date().toISOString() }, undefined, 2));
 	console.log(`[prepack-dsh] profile seed ready (${Math.round(dirSize(seed) / 1024 / 1024)} MB)；覆盖全部 ${Object.keys(wantPlugins).length} 个随包插件 ✓`);
 	if (acceptedVersionGates.size) {
