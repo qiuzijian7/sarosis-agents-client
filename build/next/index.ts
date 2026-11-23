@@ -117,6 +117,8 @@ const codeEntryPoints = [
 	'vs/code/electron-utility/sharedProcess/sharedProcessMain',
 	'vs/code/electron-browser/workbench/workbench',
 	'vs/sessions/electron-browser/sessions',
+	// dsh desktop-only 壳：HTML 通过 ./dshDesktop.js 直接加载，必须是独立入口
+	'vs/sessions/electron-browser/dshDesktop',
 ];
 
 // Web entry points (used in server-web and vscode-web)
@@ -279,6 +281,8 @@ const desktopResourcePatterns = [
 	'vs/code/electron-browser/workbench/workbench-dev.html',
 	'vs/sessions/electron-browser/sessions.html',
 	'vs/sessions/electron-browser/sessions-dev.html',
+	// dsh desktop-only 壳（dshDesktop.js 由下方 codeEntryPoints 打包）
+	'vs/sessions/electron-browser/dshDesktop.html',
 	'vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html',
 	'vs/workbench/contrib/webview/browser/pre/*.html',
 
