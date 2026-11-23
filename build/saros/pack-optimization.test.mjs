@@ -484,6 +484,11 @@ test('CI defaults to the smaller standard/user package and archives JSON reports
 	assert.match(source, /SAROS_PACK_BASELINE_REPORT:/);
 	assert.match(source, /SAROS_RELEASE_DOWNLOAD_BASE_URL:/);
 	assert.match(source, /filePath: \.build\/pack-reports\/\*\*\/\*\.json/);
+	// 复用构建机工作区时，checkout 的 -x clean 会删除 node_modules/.build/dsh-runtime，
+	// 实测占用 11m41s；应改由 align-workspace 的 git clean -fd 保留 ignored 缓存。
+	assert.match(source, /enableGitClean: false/);
+	assert.match(source, /enableGitCleanIgnore: false/);
+	assert.match(source, /align-workspace\.ps1/);
 });
 
 test('prepack pins compatible official tools, disables optional peer auto-install, and keeps final config portable', () => {
@@ -657,7 +662,7 @@ test('fresh and reused runtime entry paths discover every unscoped vendored plug
 test('Windows CI executable steps use ASCII names and explicit UTF8 charset', () => {
 	const source = fs.readFileSync(path.join(ROOT, '.ci/package-win-exe.yml'), 'utf8');
 	const steps = source.split(/\n\s{6}-\s/).slice(1).filter(block => /\n\s+run:/.test(block));
-	assert.equal(steps.length, 14);
+	assert.equal(steps.length, 15);
 	for (const step of steps) {
 		const name = /(?:^|\n)\s*name: ([^\r\n]+)/.exec(step)?.[1];
 		assert.ok(name && /^[\x00-\x7f]+$/.test(name), 'step name must not inject GBK-sensitive bytes');

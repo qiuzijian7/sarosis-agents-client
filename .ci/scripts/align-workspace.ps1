@@ -13,8 +13,9 @@
 
   ⚠ 刻意**不**写死"回到 origin/main"：流水线允许按任意分支触发（branches: ['*']），
     写死 main 会在分支构建时把代码拉回主线 ⇒ 只对齐"checkout 实际给出的那个提交" ✓
-  ⚠ `git clean -fd` 会删**未跟踪**文件 ⇒ CI 里安全（checkout 下来的都是已跟踪文件），
-    但**本地**跑要小心 ⇒ 提供 -DryRun 开关先看会删什么 ✓
+  ⚠ `git clean -fd` 会删**未跟踪**文件，但**不带 -x** ⇒ 不会删除 node_modules /
+    .build / dsh-runtime / out* 这些 ignored 构建缓存，checkout 不再花 10+ 分钟清缓存。
+    但**本地**跑仍要小心未跟踪源码 ⇒ 提供 -DryRun 开关先看会删什么 ✓
 #>
 param([switch]$DryRun)
 $ErrorActionPreference = 'Stop'

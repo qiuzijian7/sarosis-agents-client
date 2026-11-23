@@ -105,6 +105,16 @@ stages:
         name: Checkout source
         with:
           refName: main
+          # 蓝盾 checkout 默认 `git clean -fd -x` 会删除 node_modules / .build /
+          # dsh-runtime / out*，上一轮实测耗时 11m41s。这里关掉 checkout 的 clean，
+          # 由下面的 align 步骤只清未跟踪源码（-fd，不带 -x），保留 ignored 构建缓存。
+          enableGitClean: false
+          enableGitCleanIgnore: false
+      - name: Align workspace (keep build caches)
+        with:
+          charsetType: UTF_8
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/align-workspace.ps1'
+        shell: powershell
       - name: Set version
         id: ZXb4BJ
         with:
