@@ -14,7 +14,10 @@
  *      （不另抄一份 ⇒ 以后加构件只改一处 ⇒ 清单不会漂移）；
  *   2) 逐项检查构建输出目录里**哨兵文件**是否真的在（`ensureDir` 的 sentinel）——
  *      ⚠ 不能只信"自愈时打了 ✅"：复制可能失败/被覆盖 ⇒ 这里**独立复核**；
- *   3) 再加几项"不在 ensureDir 里、但同样不能少"的东西（主进程产物、随包插件目录…）。
+ *   3) 再加几项"不在 ensureDir 里、但同样不能少"的东西（主进程产物、随包插件目录…）；
+ *   4) 按安装根预算检查安装后最长路径（Windows，默认上限 250）——
+ *      超过就拒绝出包，避免 Inno 的 `restartreplace` 在用户机器上报 `MoveFile 错误 3`。
+ *      可用 `VSSAROS_INSTALL_ROOT` 覆盖估算用的安装根。
  *
  * 失败 ⇒ `exit(1)` ⇒ **打包中止**（Inno Setup 拿不到一个缺件的产物）。
  *
@@ -24,7 +27,7 @@
  */
 
 import { closeSync, existsSync, openSync, readSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkDshRuntime } from './check-dsh-runtime.mjs';
 
@@ -92,6 +95,19 @@ function resolveBuildDir() {
 
 let buildDir = resolveBuildDir();
 const APP_SUB = appSubOf(buildDir) || WIN_APP_SUB;
+
+/**
+ * 安装后路径预算（2026-11-23）。
+ *
+ * `dsh-runtime/profile-seed` 里有 `.pnpm` 深层副本；用户装到
+ * `D:\Programs\VsSarosis` 时最长路径已到 258，Inno 的 `restartreplace` 再给旧文件加
+ * `old_*` 临时名就超过 Win32 MAX_PATH，升级报 `MoveFile 失败；错误代码 3`。
+ *
+ * 这里按「默认系统安装根」估算；可用 `VSSAROS_INSTALL_ROOT` 换成本机/CI 的真实安装根。
+ * 250 是留给 `old_*` / 临时名 / 目录尾分隔符的余量，不是 MAX_PATH 本身。
+ */
+const MAX_INSTALLED_PATH = 250;
+const INSTALL_ROOT_BUDGET = (process.env.VSSAROS_INSTALL_ROOT || 'C:\\Program Files\\VsSaros').replace(/[\\/]+$/, '');
 
 /** 把「Windows 口吻」的相对路径翻译成当前平台的真实相对路径。 */
 function toStagingRel(rel) {
@@ -355,6 +371,71 @@ if (!existsSync(join(appDir, 'out/main.js'))) {
 	if (stale.length) {
 		problems.push(`随包 dsh-runtime 含构建残留 ${stale.slice(0, 3).join('、')}${stale.length > 3 ? ` 等 ${stale.length} 项` : ''}`
 			+ '；清理 dsh-runtime/<version>/*.deleting-* 并重跑 strip-before-pack.mjs 后再打包');
+	}
+}
+
+/**
+ * ④-b 安装后路径长度门禁（2026-11-23）。
+ *
+ * 仅 Windows 生效：Inno 的 `restartreplace` 会把旧文件改名成 `old_*` 再替换；
+ * `profile-seed/.pnpm` 的最长路径本身已接近 260，安装根再长一点就会在用户机器上
+ * 报 `MoveFile 失败；错误代码 3`。这里按安装根预算逐文件算出安装后路径，超过即拒绝出包。
+ */
+function longestInstalledPath(appDir) {
+	let worst = '';
+	const walk = (dir) => {
+		let entries;
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch (error) {
+			// 连枚举都失败通常说明路径已经超限/目录损坏；fail-closed，不要带病出包。
+			problems.push(`安装路径扫描失败：${dir}（${error.message}）`);
+			return;
+		}
+		for (const entry of entries) {
+			// pnpm 的 node_modules 链接/junction 不跟：路径长度按真实文件算，避免循环。
+			if (entry.isSymbolicLink()) {
+				continue;
+			}
+			const abs = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				walk(abs);
+				continue;
+			}
+			const rel = relative(buildDir, abs);
+			const installed = `${INSTALL_ROOT_BUDGET}\\${rel}`;
+			if (installed.length > worst.length) {
+				worst = installed;
+			}
+		}
+	};
+	walk(appDir);
+	return worst;
+}
+
+if (APP_SUB === WIN_APP_SUB) {
+	const longest = longestInstalledPath(appDir);
+	if (longest && longest.length > MAX_INSTALLED_PATH) {
+		problems.push(`安装后最长路径 ${longest.length} 字符 > ${MAX_INSTALLED_PATH}：${longest}`
+			+ `\n     修法：缩短 profile-seed 目录结构，或把 profile-seed 打成压缩包再安装；`
+			+ '不要把 dsh-runtime 放回带 restartreplace 的主 [Files] 行（会报 MoveFile 错误 3）');
+	}
+}
+
+/**
+ * ④-c 安装器接线守卫：dsh-runtime 必须保持"单独复制 + 不带 restartreplace"。
+ * 否则以后合并回主 [Files] 行时，长路径 MoveFile 错误 3 会再次复发。
+ */
+if (APP_SUB === WIN_APP_SUB) {
+	const iss = readFileSync(join(ROOT, 'build/win32/code.iss'), 'utf8');
+	const sourceLines = iss.split(/\r?\n/).filter(line => /^\s*Source:\s*"/.test(line));
+	const runtimeCopy = sourceLines.find(line => line.includes('resources\\app\\dsh-runtime\\*'));
+	const mainCopy = sourceLines.find(line => line.includes('Source: "*"'));
+	if (!runtimeCopy || runtimeCopy.includes('restartreplace')) {
+		problems.push('code.iss：dsh-runtime 必须单独复制且不带 restartreplace（否则长路径升级会报 MoveFile 错误 3）');
+	}
+	if (!mainCopy || !mainCopy.includes('\\resources\\app\\dsh-runtime,\\resources\\app\\dsh-runtime\\**')) {
+		problems.push('code.iss：主 [Files] 行必须排除 resources\\app\\dsh-runtime 与它的子树');
 	}
 }
 
