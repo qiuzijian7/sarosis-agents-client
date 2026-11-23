@@ -537,6 +537,35 @@
 		);
 	}
 
+	/** ★ 2026-11-23：升级备份 / 回滚抽屉（投影真源在 Host 侧 upgradeBackup.js）。 */
+	function RollbackDrawer(props) {
+		var s = props.state || {};
+		var data = window.MarketplaceState.groupRollbackPoints(s.items);
+		return h(Drawer, {
+			title: '可回滚版本',
+			subtitle: '升级前的旧版本备份（恢复时当前版本会先留档）',
+			onClose: props.onClose
+		},
+			h('div', { className: 'vs-mp-prev-note' },
+				'这里列的是 .upgrade-backup 里的备份点；恢复不会删除备份，可重复回滚。恢复内容可能需要刷新页面或重启 Host 才完全生效。'),
+			s.error ? h('div', { className: 'vs-mp-msg error' }, String(s.error)) : null,
+			data.groups.length
+				? h('ul', { className: 'vs-mp-safe-list' }, data.groups.map(function (g) {
+					return h('li', { key: 'rb-' + g.key },
+						h('span', null, String(g.id) + (g.kind ? ' · ' + g.kind : '') + ' · ' + g.points.length + ' 个备份点 · 最近 ' + String(g.latest.ts)),
+						h('button', {
+							className: 'vs-mp-btn', disabled: !!s.busy,
+							onClick: function () { props.onRestore(g.key, g.latest.ts); }
+						}, s.busy ? '处理中…' : '恢复最近版本')
+					);
+				}))
+				: h('div', { className: 'vs-mp-empty small' }, '暂无可回滚版本（升级过的商品才会出现在这里）。'),
+			s.note ? h('div', { className: 'vs-mp-prev-ok' }, String(s.note)) : null,
+			h('div', { className: 'vs-mp-drawer-actions' },
+				h('button', { className: 'vs-mp-btn primary', onClick: props.onClose }, '关闭'))
+		);
+	}
+
 	/** 把 base64 包体落成浏览器下载（JSON 通道内完成，不新增 Host 路由）。 */
 	function downloadPortable(base64, filename) {
 		var bin = atob(String(base64 || ''));
@@ -979,6 +1008,8 @@
 		// ★ 2026-11-10 P0：安装预览与安全模式
 		var _preview = useState(null); var preview = _preview[0]; var setPreview = _preview[1];
 		var _safeMode = useState(null); var safeMode = _safeMode[0]; var setSafeMode = _safeMode[1];
+		// ★ 2026-11-23：升级备份 / 可回滚版本抽屉
+		var _rollback = useState(null); var rollback = _rollback[0]; var setRollback = _rollback[1];
 		// ★ 2026-11-10 P2：离线便携包
 		var _portable = useState(null); var portable = _portable[0]; var setPortable = _portable[1];
 		// ★ 2026-11-10：商城页签下的「已安装」折叠组数据（与商品列表分开取）
@@ -1512,10 +1543,38 @@
 				hasBackup: failed.length > 0, busy: false,
 				note: failed.length ? '部分恢复失败，记录已保留：' + failed.join('、') : '已恢复 ' + names.length + ' 个插件；重启 Host 后生效',
 				error: ''
-			});
-		}
+				});
+				}
 
-		// ★ 2026-11-10 P2：离线便携包（导出 / 两步导入）
+				// ★ 2026-11-23：升级备份 / 回滚（同源直调 Host 的 marketplace op，不经过 IDE 桥）
+				async function openRollback() {
+				var res = await action('rollbackList', {});
+				if (!res || res.ok === false) {
+				setRollback({ items: [], busy: false, error: String((res && res.error) || '列不出可回滚版本') });
+				return;
+				}
+				setRollback({ items: Array.isArray(res.items) ? res.items : [], busy: false, error: '' });
+				}
+				async function restoreRollbackPoint(key, ts) {
+				if (!rollback || rollback.busy) { return; }
+				var grouped = window.MarketplaceState.groupRollbackPoints(rollback.items);
+				var point = window.MarketplaceState.pickRollbackPoint(grouped.groups, key, ts);
+				if (!point) { return; }
+				setRollback(Object.assign({}, rollback, { busy: true, note: '', error: '' }));
+				var res = await action('rollbackRestore', { kind: point.kind, storeId: point.id, ts: point.ts });
+				if (!res || res.ok === false) {
+				setRollback(Object.assign({}, rollback, { busy: false, error: String((res && res.error) || '恢复失败') }));
+				return;
+				}
+				var fresh = await action('rollbackList', {});
+				setRollback({
+				items: (fresh && Array.isArray(fresh.items)) ? fresh.items : rollback.items,
+				busy: false, error: '',
+				note: '已把 ' + point.id + ' 恢复到 ' + point.ts + ' 的备份；当前版本已留档，可再次回滚'
+				});
+				}
+
+				// ★ 2026-11-10 P2：离线便携包（导出 / 两步导入）
 		function patchPortable(patch) {
 			setPortable(function (prev) { return Object.assign({}, prev || {}, patch); });
 		}
@@ -1667,6 +1726,7 @@
 					h('details', { className: 'vs-mp-more' }, h('summary', { className: 'vs-mp-btn' }, '更多'), h('div', { className: 'vs-mp-more-menu' },
 						h('button', { className: 'vs-mp-btn', onClick: function () { void openMcpConfig(); } }, 'MCP 配置'),
 						h('button', { className: 'vs-mp-btn', onClick: function () { void openSafeMode(); } }, '安全模式'),
+					h('button', { className: 'vs-mp-btn', onClick: function () { void openRollback(); } }, '可回滚版本'),
 						h('button', { className: 'vs-mp-btn', onClick: function () { void openPortable(); } }, '便携包'),
 						h('button', { className: 'vs-mp-btn', onClick: function () { readClient.invalidate(); setMsg(null); void refreshInstalled(); void fetchRanking(); void fetchPage(1, false); } }, '刷新'))),
 					h('button', { className: 'vs-mp-btn primary', onClick: function () { void openPublish(); } }, '发布')
@@ -1765,6 +1825,12 @@
 				onClose: function () { setSafeMode(null); },
 				onEnter: function () { void enterSafeMode(); },
 				onRestore: function () { void restoreSafeMode(); }
+			}) : null,
+
+			rollback ? h(RollbackDrawer, {
+				state: rollback,
+				onClose: function () { setRollback(null); },
+				onRestore: function (key, ts) { void restoreRollbackPoint(key, ts); }
 			}) : null,
 
 			portable ? h(PortableDrawer, {

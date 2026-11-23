@@ -20,8 +20,9 @@
  *   · 编辑命令不能只作用于一个 webContents ⇒ 走新的 `DshHarnessChannelCommand.DesktopMenuAction`，
  *     主进程找当前聚焦的 WebContentsView 再 `sendInputEvent`（composer 自己管历史栈，
  *     `webContents.undo()` 会跳过它 ✗ —— 参考工程 sendEditingKey 的注释同口径）。
- *   · 参考工程的「连接手机 / 以安全模式重启 / 显示 Harness 日志」在本仓没有对应能力
- *     ⇒ **不放进来**，避免"点了没反应"（本仓高频缺陷形态）。
+ *   · 参考工程的「连接手机 / 显示 Harness 日志」本仓没有对应能力 ⇒ 不放进来（避免点了没反应）。
+ *   · 「以安全模式重启」2026-11-23 已补齐：本仓没有启动期隔离 Profile，改为
+ *     「停用第三方插件 → 重启 Harness → 恢复插件并重启」的可逆组合（见 common/dshSafeMode.ts）。
  */
 
 import type { IContextMenuItem } from '../../../../base/parts/contextmenu/common/contextmenu.js';
@@ -49,7 +50,7 @@ export function isDshDesktopMenuAction(value: unknown): value is DshDesktopMenuA
 
 /** 渲染侧直接执行的宿主命令（不需要主进程视图操作）。 */
 export const dshDesktopMenuCommands = [
-	'restart', 'toggleFullscreen', 'checkForUpdates', 'about', 'quit',
+	'restart', 'restartSafeMode', 'restorePlugins', 'toggleFullscreen', 'checkForUpdates', 'about', 'quit',
 ] as const;
 export type DshDesktopMenuCommand = (typeof dshDesktopMenuCommands)[number];
 
@@ -129,6 +130,10 @@ export function dshDesktopMenuTemplate(
 
 	return [
 		command('restart', '重启 Harness', 'Restart Harness', 'Ctrl+Shift+R'),
+		// ★ 2026-11-23：补齐 dsh 官方标题栏的「以安全模式重启」，并给一条可逆的恢复路径。
+		//   两项都有真实动作（common/dshSafeMode.ts + DshHarnessService），不是点了没反应的占位。
+		command('restartSafeMode', '以安全模式重启…', 'Restart in Safe Mode…'),
+		command('restorePlugins', '恢复插件并重启', 'Restore Plugins and Restart'),
 		sep,
 		{
 			label: zh ? '视图' : 'View',

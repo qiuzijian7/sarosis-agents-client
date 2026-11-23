@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { isVersionNewer as versionIsNewer } from './dshVersion.js';
+
 /**
  * 「profile 已装版本」vs「随包版本」的**版本错配审计**（纯逻辑、无 I/O）。
  *
@@ -100,42 +102,12 @@ export function auditBundledPluginVersions(entries: readonly IBundledPluginVersi
  *   · 主次修订全等时：**没有 prerelease 的更大**（`1.0.0` > `1.0.0-rc.1`）；
  *     两边都有 prerelease ⇒ 字符串比较（够用，且不会把 `rc.2` 判成比 `rc.1` 旧）。
  * 读不懂的版本（含字母/格式异常）⇒ 返回 false（**保守：不据此跳过安装**，宁可多装一次也别漏装）。
+ *
+ * ★ 2026-11-23：实现收敛到 `common/dshVersion.ts`，与 app 升级闸门、随包插件状态判定
+ *   共用同一套口径（含预发布）；这里保留导出与保守语义，调用方不变。
  */
 export function isVersionNewer(a: string | undefined, b: string | undefined): boolean {
-	if (!a || !b || a === b) {
-		return false;
-	}
-	const parse = (v: string) => {
-		const [core, pre] = v.split('-', 2);
-		const nums = core.split('.');
-		if (!nums.length || nums.some(n => !/^\d+$/.test(n))) {
-			return undefined;
-		}
-		return { nums: nums.map(n => Number(n)), pre };
-	};
-	const pa = parse(a);
-	const pb = parse(b);
-	if (!pa || !pb) {
-		return false;
-	}
-	const len = Math.max(pa.nums.length, pb.nums.length);
-	for (let i = 0; i < len; i++) {
-		const x = pa.nums[i] ?? 0;
-		const y = pb.nums[i] ?? 0;
-		if (x !== y) {
-			return x > y;
-		}
-	}
-	if (pa.pre === pb.pre) {
-		return false;
-	}
-	if (!pa.pre) {
-		return true;    // 正式版 > 预发布
-	}
-	if (!pb.pre) {
-		return false;
-	}
-	return pa.pre > pb.pre;
+	return versionIsNewer(a, b);
 }
 
 /**

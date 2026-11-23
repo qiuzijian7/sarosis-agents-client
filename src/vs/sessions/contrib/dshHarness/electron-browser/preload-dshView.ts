@@ -139,7 +139,8 @@
 		// ★ 2026-10-26：`19 → 20`（新增 `importCodeWorkspace` —— 从 .code-workspace 导入多根工作区）。
 		// ★ 2026-11-05：`25 → 26`（新增 `rightbarBrowser` —— 右侧栏内嵌浏览器）。
 		// ★ 2026-11-17：`26 → 27`（新增 `createWorktree` / `removeWorktree` —— worktree 意图转发给 dsh Host）。
-		bridgeVersion: 29,
+		// ★ 2026-11-23：29 → 30（新增 upgradeAll —— 宿主侧串行编排的批量升级任务）。
+		bridgeVersion: 30,
 		surface,
 		// ★ 2026-10-18：`chatOnly` 也放进 bridge（**同步可知**）。
 		//   为什么不能只靠 `data-vssaros-chat-only`：那个 DOM 标记要等 DOMContentLoaded 才写，
@@ -178,6 +179,8 @@
 		//   三条都是**单向**命令（只回 true）—— 状态由宿主经 `vssaros:dsh:upgrade` **推**回来，
 		//   页面读 `document.documentElement.dataset.vssarosUpgrade` 或监听 `vssaros-dsh-upgrade` ✓。
 		upgradeRefresh: () => invoke({ method: 'upgradeRefresh' }),
+		// ★ 2026-11-23（桥 29 → 30）：批量升级交给宿主串行编排（老宿主没有这个方法 ⇒ 页面回退逐项下发）。
+		upgradeAll: () => invoke({ method: 'upgradeAll' }),
 		upgradeBundled: (name: string) => invoke({ method: 'upgradeBundled', name }),
 		upgradeApp: () => invoke({ method: 'upgradeApp' }),
 		// ★ 2026-11-05（桥 `24 → 25`）：复刻 dsh-desktop 更新卡片的三条动作。

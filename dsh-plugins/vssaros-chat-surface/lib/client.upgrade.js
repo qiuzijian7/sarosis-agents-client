@@ -79,6 +79,8 @@ window.__ModuleLoader__.load({
 [${MARK}-pop] .vu-empty{padding:12px;text-align:center;color:var(--dsw-alias-label-tertiary,#81858c);font-size:11.5px}
 `;
 
+		/** 单调序号：多视图 / 多次 push 可能乱序到达 ⇒ 旧快照不许覆盖新状态。 */
+		let lastSeq = -1;
 		/** 解析宿主推来的快照（坏数据一律当"没数据"，不要半截 UI）。 */
 		function readState() {
 			try {
@@ -86,7 +88,12 @@ window.__ModuleLoader__.load({
 					? document.documentElement.dataset.vssarosUpgrade : null;
 				if (!raw) { return null; }
 				const s = JSON.parse(raw);
-				return s && typeof s === "object" ? s : null;
+				if (!s || typeof s !== "object") { return null; }
+				if (typeof s.seq === "number" && isFinite(s.seq)) {
+					if (s.seq < lastSeq) { return null; }
+					lastSeq = s.seq;
+				}
+				return s;
 			} catch { return null; }
 		}
 
@@ -239,6 +246,63 @@ window.__ModuleLoader__.load({
 			];
 		}
 
+		/** 宿主侧批量升级任务（2026-11-23）：逐项进度 + 失败原因 + 重试入口；老宿主没有 job ⇒ 不画。 */
+		function jobSection(s, onRetry) {
+			const job = s && s.job;
+			if (!job) { return null; }
+			const pct = job.total ? Math.round(job.done / job.total * 100) : 0;
+			const label = "升级任务 #" + job.id + " · "
+				+ (job.status === "running" ? "进行中" : job.status === "failed" ? "有失败项" : "已完成")
+				+ " " + job.done + "/" + job.total;
+			const children = [
+				react.createElement("div", { className: "vu-sec", key: "job-hd" }, react.createElement("span", null, label)),
+				react.createElement("div", { className: "vu-progress", key: "job-bar" },
+					react.createElement("i", { style: { width: pct + "%" } })),
+			];
+			(job.items || []).filter(i => i.status === "failed").forEach(i => {
+				children.push(react.createElement("div", { className: "vu-err", key: "fail-" + i.key },
+					shortPkg(i.key) + "：" + (i.error || "升级失败")));
+			});
+			if (job.status === "failed") {
+				children.push(react.createElement("div", { className: "vu-row", key: "job-retry" },
+					react.createElement("button", { className: "vu-btn", "data-primary": "1", onClick: () => onRetry() }, "重试失败项")));
+			}
+			// ⚠ 用普通容器（不用 Fragment 包裹）：入口守卫按「首个 Fragment 渲染」定位渲染起点，
+			//   并要求判空早于它 ⇒ 这里若也包 Fragment（哪怕只写在注释里）都会被误判成渲染抢跑 ✗。
+			return react.createElement("div", { className: "vu-job" }, ...children);
+		}
+
+		/** 升级策略 + 统一更新内容（2026-11-23）：notes 是纯文本，React 文本节点自动转义 ✓。 */
+		function policySection(s) {
+			const p = s && s.policy;
+			if (!p) { return null; }
+			const label = p.urgency === "required" ? "必须升级" : p.urgency === "recommended" ? "建议升级" : "可选 / 暂缓";
+			const children = [
+				react.createElement("div", { className: "vu-sec", key: "pol-hd" },
+					react.createElement("span", null, "更新策略 · " + (p.channel || "stable") + " · " + label),
+					p.minRequiredVersion ? react.createElement("span", { className: "vu-tag", "data-miss": "1", key: "pol-min" }, "最低 v" + p.minRequiredVersion) : null,
+					p.rolloutPercent < 100 ? react.createElement("span", { className: "vu-tag", key: "pol-roll" }, "灰度 " + p.rolloutPercent + "%") : null),
+				react.createElement("div", { className: "vu-note", key: "pol-why" }, typeof p.reason === "string" ? p.reason : ""),
+			];
+			if (typeof p.notes === "string" && p.notes) {
+				children.push(react.createElement("div", {
+					className: "vu-note", key: "pol-notes",
+					style: { whiteSpace: "pre-wrap", maxHeight: "88px", overflow: "auto" },
+				}, p.notes.slice(0, 2000)));
+			}
+			return react.createElement("div", { className: "vu-job" }, ...children);
+		}
+
+		/** 生效范围（2026-11-23）：只在有待生效变更时占一行，避免常态刷屏。 */
+		function restartSection(s) {
+			const r = s && s.restart;
+			if (!r || !r.pending) { return null; }
+			return react.createElement("div", { className: "vu-job" },
+				react.createElement("div", { className: "vu-sec", key: "rs-hd" },
+					react.createElement("span", null, "生效范围 · " + String(r.label || ""))),
+				react.createElement("div", { className: "vu-note", key: "rs-why" }, typeof r.detail === "string" ? r.detail : ""));
+		}
+
 		/** 面板（四段：随包插件 / 资产 / dsh 运行时 / 应用）。 */
 		function Panel(props) {
 			const s = props.state;
@@ -257,6 +321,9 @@ window.__ModuleLoader__.load({
 					react.createElement("span", null, "应用 ", react.createElement("b", null, app.current || "—")),
 					react.createElement("span", null, "dsh ", react.createElement("b", null, (s && s.runtime && s.runtime.current) || "—")),
 					react.createElement("span", null, `${(s && s.bundled ? s.bundled.length : 0)} 个随包插件`)),
+				jobSection(s, props.onAll),
+				policySection(s),
+				restartSection(s),
 				react.createElement("div", { className: "vu-sec" },
 					react.createElement("span", null, "随包插件"),
 					react.createElement("span", null, nAll ? `${nAll} 项待处理${nAll !== nUp ? `（可升级 ${nUp}）` : ""}` : "已最新"),
@@ -404,7 +471,9 @@ window.__ModuleLoader__.load({
 					// 资产升级：只有 IDE 侧那三类有按钮（技能/工作流由 dsh 侧升，页面不画按钮）
 					onAsset: (kind, slug) => call(() => b.upgradeAsset(kind, slug)),
 					onAll: () => {
-						// ⚠ 只跑**可升级**的（2026-10-26）：未安装的不属于"升级"，各自点「安装」✓
+						// ★ 2026-11-23（桥 29 → 30）：新宿主一条命令交给宿主串行编排，逐项进度随快照推回。
+						if (typeof b.upgradeAll === "function") { call(() => b.upgradeAll()); return; }
+						// 老宿主没有 upgradeAll ⇒ 退回逐项下发（只跑**可升级**的；未安装的各自点「安装」✓）
 						for (const r of upgradableRows(state)) { call(() => b.upgradeBundled(r.name)); }
 						for (const a of assetRows(state)) {
 							if (a.via === 'ide') { call(() => b.upgradeAsset(a.kind, a.name)); }

@@ -3,6 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// ★ 2026-11-23：版本比较收敛到 common/dshVersion.ts（含预发布口径）；保留同名导出，调用方不变。
+import { compareVersions as compareSemver } from './dshVersion.js';
+export { compareVersions } from './dshVersion.js';
+
 /**
  * **应用（IDE）自身升级**的纯逻辑（2026-10-23）。
  *
@@ -27,46 +31,20 @@ export type AppUpdateAction =
 	/** 更新源比本地**旧** ⇒ 拒绝（否则就是降级） */
 	| 'downgrade';
 
-/** 版本号切段；认不出数字的段一律 0（`2.2.26125-rc.1` 与 `2.2.26125` 视为同版）。 */
-function segments(version: string): number[] {
-	return String(version ?? '')
-		.split(/[.+-]/)
-		.slice(0, 4)
-		.map(part => {
-			const n = Number.parseInt(part, 10);
-			return Number.isFinite(n) && n >= 0 ? n : 0;
-		});
-}
-
-/**
- * 语义化版本比较（数字段逐个比，缺的段按 0）。
- * @returns 负数 = a 更旧；0 = 相同；正数 = a 更新。
- */
-export function compareVersions(a: string, b: string): number {
-	const sa = segments(a);
-	const sb = segments(b);
-	const len = Math.max(sa.length, sb.length);
-	for (let i = 0; i < len; i++) {
-		const d = (sa[i] ?? 0) - (sb[i] ?? 0);
-		if (d !== 0) {
-			return d;
-		}
-	}
-	return 0;
-}
-
 /**
  * 一键升级的**硬闸门**：只有更新源严格比本地新才允许升。
  *
  * `remote` 缺失（没查到 / 更新源没给 productVersion）按"已是最新"处理 —— 宁可不升，
  * 也不要因为一个残缺响应就把用户装回旧版（可重试，成本低；降级要重装，成本高）。
+ * ⚠ 2026-11-23：比较器换成统一真源后，同版本号的预发布（如 `2.2.26125-rc.1`）
+ *   比正式版**旧** ⇒ 落到 `downgrade`，不会再被当成「有新版」✗。
  */
 export function decideAppUpdate(local: string, remote: string | undefined): AppUpdateAction {
 	const r = String(remote ?? '').trim();
 	if (!r) {
 		return 'uptodate';
 	}
-	const cmp = compareVersions(r, local);
+	const cmp = compareSemver(r, local);
 	if (cmp > 0) {
 		return 'upgrade';
 	}
@@ -100,6 +78,12 @@ export interface IAppUpdateResponse {
 	 * 更新源可不提供；UI 拿不到时回落「此版本暂无更新日志」。**纯文本**，不许当 HTML 渲染。
 	 */
 	readonly notes?: string;
+	/**
+	 * ★ 2026-11-23（P1 升级策略）：更新源**可选**的最低可运行版本与灰度百分比。
+	 * 老服务端不返回这两个字段 ⇒ 全量、不强制，行为与改造前一致 ✓。
+	 */
+	readonly minVersion?: string;
+	readonly rolloutPercent?: number;
 }
 
 /** 解析更新源返回体（只认需要的字段；形状不对 ⇒ undefined）。 */
@@ -110,12 +94,17 @@ export function parseAppUpdateResponse(raw: unknown): IAppUpdateResponse | undef
 	const o = raw as Record<string, unknown>;
 	const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
 	const notes = str(o.notes);
+	const minVersion = str(o.minVersion);
+	const rolloutPercent = typeof o.rolloutPercent === 'number' && Number.isFinite(o.rolloutPercent)
+		? Math.min(100, Math.max(0, Math.round(o.rolloutPercent))) : undefined;
 	const out: IAppUpdateResponse = {
 		...(str(o.version) ? { version: str(o.version) } : {}),
 		...(str(o.productVersion) ? { productVersion: str(o.productVersion) } : {}),
 		...(str(o.url) ? { url: str(o.url) } : {}),
 		...(str(o.sha256hash) ? { sha256hash: str(o.sha256hash) } : {}),
 		...(notes ? { notes: notes.slice(0, 20_000) } : {}),
+		...(minVersion ? { minVersion } : {}),
+		...(rolloutPercent !== undefined ? { rolloutPercent } : {}),
 	};
 	return Object.keys(out).length ? out : undefined;
 }

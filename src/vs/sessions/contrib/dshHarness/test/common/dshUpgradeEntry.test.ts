@@ -30,7 +30,7 @@ suite('dshHarness / desktop 窗口的「更新」入口', () => {
 		const at = src.indexOf('DSH_PAGE_COMMANDS_WITHOUT_IDE_UI');
 		assert.ok(at > 0, '找不到 DSH_PAGE_COMMANDS_WITHOUT_IDE_UI ✗');
 		const body = src.slice(at, src.indexOf(']);', at));
-		for (const method of ['upgradeRefresh', 'upgradeBundled', 'upgradeApp']) {
+		for (const method of ['upgradeRefresh', 'upgradeBundled', 'upgradeApp', 'upgradeAll']) {
 			assert.ok(body.includes(`'${method}'`),
 				`${method} 必须登记进白名单（否则点一下就把 IDE 主窗口拉出来 ✗）`);
 		}
@@ -59,6 +59,10 @@ suite('dshHarness / desktop 窗口的「更新」入口', () => {
 		assert.ok(/upgradeApp/.test(src), '页面要能一键升级应用（否则入口是死的）');
 		assert.ok(/upgradeAsset/.test(src), '页面要能升级商城资产（技能/MCP/智能体/工作流/工作台）✗');
 		assert.ok(/vssaros-dsh-upgrade/.test(src), '页面要听宿主推来的状态事件 ✗');
+		// ★ 2026-11-23：批量升级必须走宿主统一编排；老宿主（桥 < 30）要能回退；旧快照要丢弃
+		assert.ok(/b\.upgradeAll/.test(src), '「全部升级」要走 upgradeAll（宿主串行编排 / 逐项进度）✗');
+		assert.ok(/typeof b\.upgradeAll === "function"/.test(src), '老宿主没有 upgradeAll 时必须回退逐项下发 ✗');
+		assert.ok(/s\.seq < lastSeq/.test(src), '页面必须丢弃乱序到达的旧快照 ✗');
 	});
 
 	// ★ 2026-10-23（用户："增加 skill、mcp、agent、工作流、工作台的升级检查"）

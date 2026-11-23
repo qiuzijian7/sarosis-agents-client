@@ -84,5 +84,35 @@
 		}
 		return { read: read, invalidate: function () { revision++; cache.clear(); pending.clear(); }, dispose: function () { disposed = true; cache.clear(); pending.forEach(function (r) { r.controller.abort(); }); } };
 	}
-	window.MarketplaceState = { itemKey: itemKey, mergePage: mergePage, createGate: createGate, createOperations: createOperations, createReadClient: createReadClient };
+	/** ★ 2026-11-23：把 Host 侧 rollbackList 的平面投影按「资源」分组（最近备份排最前）。 */
+	function groupRollbackPoints(items) {
+		var list = Array.isArray(items) ? items : [];
+		var groups = new Map();
+		list.forEach(function (p) {
+			if (!p || typeof p !== 'object' || typeof p.id !== 'string' || !p.id || typeof p.ts !== 'string' || !p.ts) { return; }
+			var kind = typeof p.kind === 'string' ? p.kind : '';
+			var key = kind + ':' + p.id;
+			var point = { id: p.id, ts: p.ts, kind: kind, createdAt: typeof p.createdAt === 'string' ? p.createdAt : p.ts };
+			var prev = groups.get(key);
+			if (!prev) { groups.set(key, { key: key, id: p.id, kind: kind, latest: point, points: [point] }); return; }
+			prev.points.push(point);
+			if (point.ts > prev.latest.ts) { prev.latest = point; }
+		});
+		var out = Array.from(groups.values());
+		out.forEach(function (g) { g.points.sort(function (a, b) { return b.ts.localeCompare(a.ts); }); });
+		out.sort(function (a, b) { return b.latest.ts.localeCompare(a.latest.ts); });
+		return { groups: out, total: list.length };
+	}
+	/** 从分组里取一个具体备份点；`ts` 缺省 = 该资源最近一次备份。 */
+	function pickRollbackPoint(groups, key, ts) {
+		var g = (Array.isArray(groups) ? groups : []).filter(function (x) { return x && x.key === key; })[0];
+		if (!g) { return null; }
+		if (!ts) { return g.latest || null; }
+		return g.points.filter(function (p) { return p.ts === ts; })[0] || null;
+	}
+	window.MarketplaceState = {
+		itemKey: itemKey, mergePage: mergePage, createGate: createGate,
+		createOperations: createOperations, createReadClient: createReadClient,
+		groupRollbackPoints: groupRollbackPoints, pickRollbackPoint: pickRollbackPoint
+	};
 })();

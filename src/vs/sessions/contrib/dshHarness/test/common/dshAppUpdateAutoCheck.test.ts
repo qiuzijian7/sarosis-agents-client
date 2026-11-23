@@ -19,7 +19,9 @@
  *   ⇒ 旧第 2 条「侧栏计数必须把应用可升级算进去」已作废（它成了这条守卫唯一的失败项）。
  *   现改为钉住两件事：① 胶囊不许再把应用更新算进去（防两套 UI 同时提示）；
  *   ② 卡片必须真的接进 `ALWAYS_CHUNKS`（文件躺在包里但没接线 = 功能永不生效 ✗）。
- *   启动静默检查**仍然保留**，只是不弹卡片（见 `_onUpdateServiceState` 的注释）。
+ *   启动静默检查**仍然保留**；★ 2026-11-23 口径变更（真机报障「打包版 exe 有新版却不弹更新 UI」）：
+ *   发现新版时要把 8 相状态机推进到 `available`，让 dsh 页面的右下更新卡片自动出现。
+ *   但 manual 阶段仍受 manual 约束 ⇒ 不伪造「用户手动检查」，也不弹 IDE 通知。
  *
  * 运行：node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs dshAppUpdateAutoCheck
  */
@@ -67,6 +69,12 @@ suite('应用更新的启动时自动检查', () => {
 		assert.match(body, /catch \(e\)/, '必须兜住异常（更新源挂了不许影响启动）');
 		assert.ok(!/this\._upgradeBusy = /.test(body),
 			'不许设 _upgradeBusy（静默检查不该让页面显示"正在检查更新源…"）');
+
+		assert.match(body, /reduceAppUpdateStatus\(/,
+			'发现新版必须推进 8 相状态机（否则 phase 恒 idle ⇒ 打包版卡片不弹 ✗）');
+		assert.match(body, /type: 'available'/, '推进目标必须是 available（AUTO_VISIBLE 才命中）');
+		assert.ok(!/_appUpdatePresentation\s*\+=\s*1|_appUpdatePresentation\+\+/.test(body),
+			'静默检查不许递增 presentationId（避免手动弹窗重放）');
 	});
 
 	test('2) ★ 左下胶囊只数「插件 + 商城资产」，不许再把应用更新算进去', () => {
@@ -105,7 +113,7 @@ suite('应用更新的启动时自动检查', () => {
 		assert.match(card, /const MANUAL_ONLY = \["checking", "up-to-date", "error", "unsupported"\]/,
 			'其余阶段只有用户手动检查才出卡片');
 		assert.match(card, /return status\.manual && MANUAL_ONLY\.indexOf\(status\.phase\) >= 0/,
-			'手动阶段必须受 manual 约束（启动静默检查不该弹卡片）');
+			'手动阶段必须受 manual 约束（静默检查只推进 available，不伪造手动检查）');
 		// 静默检查只产出 `app.action` + `app.remote`（不经过 IUpdateService）⇒ 卡片必须能把它读成版本，
 		// 否则将来把 phase 推进到 available 时卡片会显示不出目标版本。
 		assert.match(card, /app\.action === "upgrade" && typeof app\.remote === "string" \? app\.remote/,

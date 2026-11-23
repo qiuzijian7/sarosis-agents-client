@@ -6,7 +6,7 @@
 import { ChildProcess, spawn } from 'child_process';
 import { app } from 'electron';
 import { existsSync, unlinkSync } from 'fs';
-import { mkdir, readFile, unlink } from 'fs/promises';
+import { mkdir, open, readFile, stat, unlink } from 'fs/promises';
 import { release, tmpdir } from 'os';
 import { Delayer, ProcessTimeRunOnceScheduler, timeout } from '../../../base/common/async.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
@@ -34,6 +34,8 @@ import { asJson, IRequestService } from '../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 import { AvailableForDownload, DisablementReason, IUpdate, State, StateType, UpdateType } from '../common/update.js';
+// ★ 2026-11-23：Setup 包断点续传（判据在 common，任何不确定都回退全量下载）
+import { acceptResumeResponse, decideResume, shouldKeepPartialFile, validateResumeMeta } from '../common/updateResume.js';
 import { AbstractUpdateService, createUpdateURL, getUpdateRequestHeaders, IUpdateURLOptions, UpdateErrorClassification } from './abstractUpdateService.js';
 // ★ 2026-10-31：spawn 安装包之前先跑一次"释放占用者"（见 updateInstallHooks.ts 的头注释）
 import { runBeforeUpdateInstallHooks } from './updateInstallHooks.js';
@@ -326,41 +328,93 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 			if (!(await pfs.Promises.exists(updatePackagePath))) {
 				const downloadPath = `${updatePackagePath}.tmp`;
+				const metaPath = `${downloadPath}.meta`;
+				// ★ 2026-11-23：断点续传。没有可信半成品时，下面的请求/写入路径与改造前完全一致。
+				let resume = decideResume({ partialSize: 0 }, update);
+				try {
+					const meta = validateResumeMeta(JSON.parse(await readFile(metaPath, 'utf8')));
+					resume = decideResume({ partialSize: (await stat(downloadPath)).size, meta }, update);
+				} catch { /* 没有半成品 / 边车损坏 ⇒ 全量下载 */ }
 
-				const context = await this.requestService.request({ url: update.url, callSite: 'updateService.win32.downloadUpdate' }, CancellationToken.None);
+				const requestOptions: { url: string; callSite: string; headers?: Record<string, string> } = {
+					url: update.url, callSite: 'updateService.win32.downloadUpdate',
+				};
+				if (resume.mode === 'resume' && resume.rangeHeader) {
+					requestOptions.headers = { Range: resume.rangeHeader };
+					this.logService.trace(`update#download: resume from ${resume.size} bytes (${resume.reason})`);
+				}
+				const context = await this.requestService.request(requestOptions, CancellationToken.None);
 
-				// Get total size from Content-Length header
+				// 只有 206 + Content-Range 起点对齐才允许追加；服务端不支持 Range / 起点漂移 ⇒ 删掉半成品走全量。
+				const contentRangeHeader = context.res.headers['content-range'];
+				const contentRange = typeof contentRangeHeader === 'string' ? contentRangeHeader : undefined;
+				const append = resume.mode === 'resume'
+					&& acceptResumeResponse(context.res.statusCode ?? 0, contentRange, resume.size);
+				if (!append && await pfs.Promises.exists(downloadPath)) {
+					await this.unlink(downloadPath);
+				}
+				// 边车记录「这份半成品属于哪个包」：换版本 / 换地址 / 换哈希时 decideResume 会拒绝续传。
+				await this.fileService.writeFile(URI.file(metaPath), VSBuffer.fromString(JSON.stringify({
+					url: update.url, version: update.version,
+					...(update.sha256hash ? { sha256hash: update.sha256hash } : {}),
+				})));
+
 				const contentLengthHeader = context.res.headers['content-length'];
 				const contentLength = typeof contentLengthHeader === 'string' ? contentLengthHeader : undefined;
-				const totalBytes = contentLength ? parseInt(contentLength, 10) : undefined;
+				const remaining = contentLength ? parseInt(contentLength, 10) : undefined;
+				const totalBytes = remaining !== undefined && Number.isFinite(remaining)
+					? remaining + (append ? resume.size : 0) : undefined;
 
-				// Track downloaded bytes and update state periodically using Delayer
-				let downloadedBytes = 0;
+				let downloadedBytes = append ? resume.size : 0;
 				const progressDelayer = new Delayer<void>(500);
 				try {
-					const progressStream = transform<VSBuffer, VSBuffer>(
-						context.stream,
-						{
-							data: data => {
-								downloadedBytes += data.byteLength;
-								progressDelayer.trigger(() => {
-									this.setState(State.Downloading(update, explicit, this._overwrite, downloadedBytes, totalBytes, startTime));
+					const onChunk = (data: VSBuffer): VSBuffer => {
+						downloadedBytes += data.byteLength;
+						progressDelayer.trigger(() => {
+							this.setState(State.Downloading(update, explicit, this._overwrite, downloadedBytes, totalBytes, startTime));
+						});
+						return data;
+					};
+					if (append) {
+						// 追加写；sha256 会在下面兜底，拼接错位一定装不进去。
+						const handle = await open(downloadPath, 'a');
+						try {
+							await new Promise<void>((resolve, reject) => {
+								let chain: Promise<unknown> = Promise.resolve();
+								context.stream.on('data', data => {
+									onChunk(data);
+									chain = chain.then(() => handle.write(data.buffer)).catch(reject);
 								});
-								return data;
-							}
-						},
-						chunks => VSBuffer.concat(chunks)
-					);
-
-					await this.fileService.writeFile(URI.file(downloadPath), progressStream);
+								context.stream.on('end', () => { void chain.then(() => resolve(), reject); });
+								context.stream.on('error', reject);
+							});
+						} finally {
+							await handle.close();
+						}
+					} else {
+						const progressStream = transform<VSBuffer, VSBuffer>(
+							context.stream,
+							{ data: onChunk },
+							chunks => VSBuffer.concat(chunks)
+						);
+						await this.fileService.writeFile(URI.file(downloadPath), progressStream);
+					}
 				} finally {
 					progressDelayer.dispose();
 				}
 
 				if (update.sha256hash) {
-					await checksum(downloadPath, update.sha256hash);
+					try {
+						await checksum(downloadPath, update.sha256hash);
+					} catch (e) {
+						// 拼接错位 / 包被换过 ⇒ 必须删掉坏前缀，否则下次会反复从坏数据续传 ✗
+						await this.unlink(downloadPath);
+						await unlink(metaPath).catch(() => undefined);
+						throw e;
+					}
 				}
 				await pfs.Promises.rename(downloadPath, updatePackagePath, false /* no retry */);
+				await unlink(metaPath).catch(() => undefined);
 			}
 
 			this.availableUpdate = { packagePath: updatePackagePath };
@@ -386,7 +440,11 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 	}
 
 	private async cleanup(exceptVersion: string | null = null): Promise<void> {
-		const filter = exceptVersion ? (one: string) => !(new RegExp(`${this.productService.quality}-${exceptVersion}\\.exe$`).test(one)) : () => true;
+		// ★ 2026-11-23：当前版本的 .exe.tmp / .tmp.meta 必须留下，否则断点续传永远拿不到半成品。
+		//   其它版本的残留照旧清理 ⇒ 缓存不会无限增长。
+		const filter = exceptVersion
+			? (one: string) => !shouldKeepPartialFile(one, this.productService.quality ?? '', exceptVersion)
+			: () => true;
 
 		const cachePath = await this.cachePath;
 		const versions = await pfs.Promises.readdir(cachePath);

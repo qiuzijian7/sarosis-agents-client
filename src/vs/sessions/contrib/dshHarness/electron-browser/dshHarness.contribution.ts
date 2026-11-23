@@ -1582,6 +1582,11 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				this._logService.info('[dshHarness] page upgradeRefresh ⇒ 重算升级状态');
 				await this._dsh.refreshUpgrade();
 				return;
+			case 'upgradeAll':
+				// ★ 2026-11-23（桥 29 → 30）：批量升级交给宿主串行编排，逐项进度由快照推回
+				this._logService.info('[dshHarness] page upgradeAll ⇒ 宿主串行编排批量升级');
+				await this._dsh.upgradeAll();
+				return;
 			case 'upgradeBundled': {
 				// 升级/安装一个随包插件（真正干活的是 IDE 插件中心那条 `dsh plugin add` 路）
 				const r = await this._dsh.upgradeBundled(command.name);

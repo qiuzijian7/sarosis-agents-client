@@ -169,30 +169,22 @@ export class DshUpgradeEditorPane extends EditorPane {
 	 */
 	private async _runAll(): Promise<void> {
 		if (this._busy) { return; }
-		const s = this._state;
-		const bundled = upgradableBundled(s).map(r => ({ kind: 'bundled' as const, key: r.name, run: () => this._dsh.upgradeBundled(r.name) }));
-		const assets = (s?.assets ?? []).filter(a => a.via === 'ide')
-			.map(a => ({ kind: 'asset' as const, key: `${a.kind}/${a.name}`, run: () => this._dsh.upgradeAsset(a.kind, a.name) }));
-		const jobs = [...bundled, ...assets];
-		if (!jobs.length) { return; }
+		// ★ 2026-11-23：串行编排收敛到宿主 `upgradeAll()`（jobId + 逐项进度 + 失败原因）。
+		//   IDE 面板与 dsh 页面不再各写一份 for 循环 ⇒ 不会再并发写同一个 profile ✓
 		this._busy = 'all';
 		this._error = undefined;
 		this._render();
-		const failed: string[] = [];
 		try {
-			for (const job of jobs) {
-				try {
-					const r = await job.run() as { ok?: boolean; error?: string } | undefined;
-					if (r && r.ok === false) { failed.push(`${job.key}：${r.error ?? '未知原因'}`); }
-				} catch (e) {
-					failed.push(`${job.key}：${String((e as Error)?.message ?? e)}`);
-				}
+			const r = await this._dsh.upgradeAll();
+			if (r && r.ok === false) {
+				this._error = r.error ?? '升级失败';
+				this._notifications.notify({ severity: Severity.Warning, message: `升级失败：${this._error}` });
 			}
+		} catch (e) {
+			this._error = String((e as Error)?.message ?? e);
+			this._notifications.notify({ severity: Severity.Error, message: `升级失败：${this._error}` });
 		} finally {
 			this._busy = undefined;
-			if (failed.length) {
-				this._notifications.notify({ severity: Severity.Warning, message: `有 ${failed.length} 项没升成：${failed.slice(0, 3).join('；')}` });
-			}
 			await this._refresh(false);
 		}
 	}
@@ -214,6 +206,22 @@ export class DshUpgradeEditorPane extends EditorPane {
 		this._body.appendChild(this._renderRuntime(s));
 		if (this._error) {
 			this._body.appendChild(el('div', { marginTop: '10px', color: 'var(--vscode-errorForeground)', fontSize: '12px' }, this._error));
+		}
+		if (s?.policy) {
+			const p = s.policy;
+			const label = p.urgency === 'required' ? '必须升级' : p.urgency === 'recommended' ? '建议升级' : '可选 / 暂缓';
+			this._body.appendChild(el('div', { marginTop: '6px', fontSize: '11.5px', color: 'var(--vscode-descriptionForeground)' },
+				`更新策略 · ${p.channel} · ${label} · 灰度 ${p.rolloutPercent}%${p.minRequiredVersion ? ` · 最低 v${p.minRequiredVersion}` : ''} — ${p.reason}`));
+		}
+		if (s?.restart?.pending) {
+			const r = s.restart;
+			this._body.appendChild(el('div', { marginTop: '6px', fontSize: '11.5px', color: 'var(--vscode-descriptionForeground)' },
+				`生效范围 · ${r.label} — ${r.detail}`));
+		}
+		if (s?.job) {
+			const j = s.job;
+			const text = `升级任务 #${j.id} · ${j.status === 'running' ? '进行中' : j.failed > 0 ? '有失败项' : '已完成'} ${j.done}/${j.total}`;
+			this._body.appendChild(el('div', { marginTop: '6px', color: 'var(--vscode-descriptionForeground)', fontSize: '11.5px' }, text));
 		}
 		if (s?.error) {
 			this._body.appendChild(el('div', { marginTop: '6px', color: 'var(--vscode-descriptionForeground)', fontSize: '11.5px' }, s.error));

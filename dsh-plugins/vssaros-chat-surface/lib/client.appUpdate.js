@@ -53,6 +53,8 @@ window.__ModuleLoader__.load({
 			return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 		}
 
+		/** 单调序号：与 client.upgrade.js 同口径，旧快照不许把卡片状态推回去。 */
+		let lastSeq = -1;
 		/** dataset 快照 → 卡片状态。坏数据一律当「没数据」，不要半截 UI。 */
 		function readState() {
 			try {
@@ -60,7 +62,12 @@ window.__ModuleLoader__.load({
 					? document.documentElement.dataset.vssarosUpgrade : null;
 				if (!raw) { return null; }
 				const s = JSON.parse(raw);
-				const app = s && typeof s === "object" && s.app && typeof s.app === "object" ? s.app : null;
+				if (!s || typeof s !== "object") { return null; }
+				if (typeof s.seq === "number" && isFinite(s.seq)) {
+					if (s.seq < lastSeq) { return null; }
+					lastSeq = s.seq;
+				}
+				const app = s.app && typeof s.app === "object" ? s.app : null;
 				if (!app || typeof app.current !== "string") { return null; }
 				const phase = PHASES.indexOf(app.phase) >= 0 ? app.phase : "idle";
 				return {

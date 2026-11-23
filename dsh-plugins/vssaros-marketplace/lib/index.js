@@ -27,6 +27,8 @@ import { createMarketClient, dataRootOf, marketEndpointOf } from './marketClient
 import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
 // ⚠ 不再直接 import `sha256Of`：校验已下沉到 `installBundle`（可单测）
 import { installBundle, trashBundle, uninstallBundle } from './installers.js';
+// ★ 2026-11-23：升级备份点（列举 / 恢复）—— 与 installers 的 .upgrade-backup 同真源
+import { listRollbackPoints, restoreRollbackPoint, validateRollbackPoint } from './upgradeBackup.js';
 import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishDistribution, publishExternal, publishVersion, publishPluginVersion } from './publisher.js';
 import { installPluginEnvelope, unpackPluginEnvelope, isPluginEnvelope } from './pluginArchive.js';
 // ★ 2026-10-22：外部源（GitHub 地址作本体）—— 归一化 / 安全边界 / 定位安装根 / 下载
@@ -595,6 +597,16 @@ export async function apply(ctx, config) {
 				renames: params.renames ?? {},
 			});
 		}
+		// ★ 2026-11-23：把升级前的 .upgrade-backup 备份点恢复回目标（当前版本先留档、失败还原）。
+		//   ⚠ 放在 kind 校验之前：它自己按 kind 找安装根，不依赖下面的资源校验。
+		if (op === 'rollbackRestore') {
+			return restoreRollbackPoint({
+				dataRoot,
+				kind: String(params.kind ?? ''),
+				storeId: String(params.storeId ?? ''),
+				ts: params.ts ? String(params.ts) : undefined,
+			});
+		}
 		// ★ 2026-10-26（用户：「需要一个统一的 mcp 配置按钮入口」「点击弹出二级页面可编辑」）：
 		//   整份 mcp.json 的保存。**故意不带 kind** ⇒ 必须放在下面那段 kind 校验**之前**。
 		//   校验比"能存进去"更重要：非法 JSON 一旦落盘，下次 Host 启动会整份读不到（所有连接器消失）。
@@ -1056,6 +1068,14 @@ export async function apply(ctx, config) {
 			const preferences = op === 'preferencesRead' ? await readPreferences(args)
 				: await updatePreferences({ ...args, expectedRevision: params.expectedRevision, change: params.change });
 			return { ok: true, preferences };
+		}
+		// ★ 2026-11-23：回滚点列举是纯只读动作，直接走备份真源（投影里不带磁盘路径）。
+		if (op === 'rollbackList') {
+			if (!state.dataRoot) { return { ok: false, error: 'dsh 侧拿不到数据根 ⇒ 列不出回滚点' }; }
+			const points = await listRollbackPoints({
+				dataRoot: state.dataRoot, kind: String(params.kind ?? ''), storeId: String(params.storeId ?? ''),
+			});
+			return { ok: true, items: points.map(validateRollbackPoint).filter(Boolean) };
 		}
 		if (target === 'local-read') { return runLocal(op, params); }
 		if (target === 'local-write') {

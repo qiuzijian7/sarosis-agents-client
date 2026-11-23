@@ -25,7 +25,7 @@ import { PUBLISHABLE_KINDS } from './publisher.js';
 // ★ 2026-11-10（P0 安全与信任）：`previewInstall` = 安装前把包内容摊开给人看、
 //   `safeModePlan` = 列出可安全停用的第三方插件；两者都不写盘、不改商城 ⇒ 只读 ✓
 // ★ 2026-11-10：mcpConfig = 读整份 mcp.json（弹层数据 + 2s digest 轮询），只读 ✓
-export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList', 'inspectGithub', 'preflightPublish', 'listSkillHub', 'previewInstall', 'safeModePlan', 'mcpConfig']);
+export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList', 'inspectGithub', 'preflightPublish', 'listSkillHub', 'previewInstall', 'safeModePlan', 'mcpConfig', 'rollbackList']);
 
 // ★ 2026-11-10 P2：离线便携包。导出/预览不写盘 ⇒ 只读；导入落盘 ⇒ 必须算写操作
 //   （不能塞进 LOCAL_READ_OPS，否则会绕过 P0 的「写操作要确认」链）。
@@ -42,7 +42,7 @@ export const PORTABLE_WRITE_OPS = new Set(['importPortable']);
 // ★ 2026-10-26：`setMcpEnabled` 写的是 `<数据根>/mcp.json` 的 disabled（与装/卸同一类落盘操作）
 // ★ 2026-11-06（P1）：`installSkillContent` = 非商城来源（内容 / 文件夹 / URL / GitHub）装技能，
 //   由 `skillSources.js` 规范化后走同一个 `installBundle` ⇒ 与商城安装共享 sha256/目录/台账契约。
-export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall', 'trash', 'setMcpEnabled', 'installSkillContent']);
+export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall', 'trash', 'setMcpEnabled', 'installSkillContent', 'rollbackRestore']);
 
 /**
  * 这三类 op 里，dsh 侧能自持的 kind。

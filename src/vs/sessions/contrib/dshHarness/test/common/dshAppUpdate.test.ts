@@ -22,8 +22,9 @@ suite('dshHarness / 应用一键升级：版本比较与降级闸门', () => {
 		// 段数不同
 		assert.ok(compareVersions('2.2', '2.2.1') < 0);
 		assert.strictEqual(compareVersions('2.2.0', '2.2'), 0);
-		// 预发布后缀不参与比较（同版本）
-		assert.strictEqual(compareVersions('2.2.26125-rc.1', '2.2.26125'), 0);
+		// ★ 2026-11-23：比较器收敛到 common/dshVersion.ts ⇒ 预发布比正式版**旧**
+		//   （旧实现把 `2.2.26125-rc.1` 与 `2.2.26125` 当成同版，可能把预发布当新版装上 ✗）
+		assert.ok(compareVersions('2.2.26125-rc.1', '2.2.26125') < 0);
 		// 大数字不按字符串比（否则 "9" > "10"）
 		assert.ok(compareVersions('2.2.9', '2.2.10') < 0);
 	});

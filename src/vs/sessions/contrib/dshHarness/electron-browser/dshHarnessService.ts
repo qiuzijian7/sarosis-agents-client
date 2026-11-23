@@ -23,12 +23,18 @@ import { IIdeCapabilityEnv, IIdeSelectionRange, buildExecuteNodeRequest, execute
 import { DSH_UPGRADE_ASSET_KINDS, IDshUpgradeAppState, IDshUpgradeAssetRow, IDshUpgradeBundledRow, IDshUpgradeState, isPathInside } from '../common/dshPageBridgeProtocol.js';
 // ★ 2026-10-23（desktop 窗口「更新」入口）：应用升级的纯逻辑（版本比较 / **降级闸门** / 端点）
 import { buildUpdateEndpoint, decideAppUpdate, parseAppUpdateResponse } from '../common/dshAppUpdate.js';
+import { createUpgradeJob, finishUpgradeJob, finishUpgradeJobItem, startUpgradeJobItem, upgradeJobSummary, type IUpgradeJobState } from '../common/dshUpgradeJob.js';
+import { decideUpgradePolicy } from '../common/dshUpgradePolicy.js';
+import { decideRestartScope } from '../common/dshRestartScope.js';
+import { DSH_SAFE_MODE_STORAGE_KEY, safeModeDisablePlan, validateSafeModeBackup } from '../common/dshSafeMode.js';
 import { getDshPluginCenterHost } from '../../agentStudio/browser/dshPluginCenterHost.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
-import { IUpdateService, State, StateType } from '../../../../platform/update/common/update.js';
+import { IUpdateService, State } from '../../../../platform/update/common/update.js';
 import { waitForUpdateReady } from '../common/dshUpdateWait.js';
 // ★ 2026-11-05：复刻 dsh-desktop 更新实现的 8 相状态机（纯函数，零平台依赖，可单测）。
-import { AppUpdateEvent, IAppUpdateStatus, initialAppUpdateStatus, percentFromBytes, reduceAppUpdateStatus } from '../common/appUpdateState.js';
+import { AppUpdateEvent, IAppUpdateStatus, initialAppUpdateStatus, reduceAppUpdateStatus } from '../common/appUpdateState.js';
+// ★ 2026-11-23：12 态 → 8 相的映射收敛成可单测的穷尽表（宿主不再自己写 switch）。
+import { mapUpdateServiceState } from '../common/appUpdateStateMapping.js';
 import { arch as platformArch } from '../../../../base/common/process.js';
 import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesFromPlugins, activeModulesOf, containersFromPlugins, pagesFromPlugins, resolveContainerPageState, withWorkbenchClient } from '../common/dshModuleContainers.js';
 // `taskboard` 能力（看板"定位卡片"）：与原 `TasksViewPane` 点条目**同一套实现**（同一个 EditorInput
@@ -214,6 +220,11 @@ export interface IDshHarnessService {
 	 */
 	upgradeAsset(kind: string, slug: string): Promise<{ ok: boolean; error?: string }>;
 	/**
+	 * **批量升级**（2026-11-23）：宿主串行编排「可升级随包插件 + ide 侧资产」，
+	 * 逐项推 job 进度；重复发起即重试失败项（任务列表按当前快照重算）。
+	 */
+	upgradeAll(): Promise<{ ok: boolean; error?: string }>;
+	/**
 	 * 同步"**IDE 主窗口是我们藏着的**"这个事实给主进程（desktop 模式的窗口守卫，2026-10-21）。
 	 *
 	 * @param hidden true = 我们把那个窗口藏起来了（主进程据此装守卫：它一旦 show/focus 就再藏回去 ✓）
@@ -245,6 +256,10 @@ export interface IDshHarnessService {
 	 */
 	openDshSessionChat(sessionId: string): Promise<boolean>;
 	restart(): Promise<IDshHostStatus>;
+	/** 以安全模式重启：停用可安全停用的第三方插件，清单存 IDE storage 供恢复。 */
+	restartInSafeMode(): Promise<IDshHostStatus>;
+	/** 按安全模式记录恢复插件并重启（幂等：没有记录时只重启）。 */
+	restoreFromSafeMode(): Promise<IDshHostStatus>;
 	stop(): Promise<void>;
 	getLog(): Promise<string[]>;
 	/**
@@ -1476,6 +1491,47 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		return s;
 	}
 
+	/**
+	 * 「以安全模式重启」（2026-11-23，标题栏应用菜单）。
+	 *
+	 * 本仓没有 dsh-desktop 那种启动期隔离 Profile ⇒ 落地为**可逆**的等价动作：
+	 * 停用可安全停用的第三方插件 → 把清单记进 IDE storage → 重启 Harness。
+	 * 「恢复插件并重启」按同一份清单还原 ⇒ 用户不会永久丢失插件开关状态。
+	 * ⚠ 只作用于 VsSaros 侧插件激活，不是 Host 组合包卸载（见 common/dshSafeMode.ts）。
+	 */
+	async restartInSafeMode(): Promise<IDshHostStatus> {
+		const snapshot = await this.getPluginActivation().catch(() => undefined);
+		const names = safeModeDisablePlan(snapshot?.plugins);
+		// 上一次没恢复的清单要合并（否则第二次安全模式会把第一次的插件永久留在停用态 ✗）。
+		const stored = validateSafeModeBackup(this._storageService.get(DSH_SAFE_MODE_STORAGE_KEY, StorageScope.APPLICATION, ''));
+		const all = Array.from(new Set([...stored, ...names]));
+		this._storageService.store(DSH_SAFE_MODE_STORAGE_KEY, JSON.stringify(all), StorageScope.APPLICATION, StorageTarget.USER);
+		for (const name of names) {
+			try {
+				await this.setPluginEnabled(name, false);
+			} catch (e) {
+				this._logService.warn(`[dshHarness] safe mode: 停用 ${name} 失败：${String((e as Error)?.message ?? e)}`);
+			}
+		}
+		this._logService.info(`[dshHarness] safe mode: 停用 ${names.length} 个第三方插件后重启 Harness`);
+		return this.restart();
+	}
+
+	/** 按记录恢复插件（没有记录时只重启 ⇒ 幂等，不会因为点了两次而出错）。 */
+	async restoreFromSafeMode(): Promise<IDshHostStatus> {
+		const names = validateSafeModeBackup(this._storageService.get(DSH_SAFE_MODE_STORAGE_KEY, StorageScope.APPLICATION, ''));
+		for (const name of names) {
+			try {
+				await this.setPluginEnabled(name, true);
+			} catch (e) {
+				this._logService.warn(`[dshHarness] safe mode: 恢复 ${name} 失败：${String((e as Error)?.message ?? e)}`);
+			}
+		}
+		this._storageService.store(DSH_SAFE_MODE_STORAGE_KEY, '', StorageScope.APPLICATION, StorageTarget.USER);
+		this._logService.info(`[dshHarness] safe mode: 恢复 ${names.length} 个插件后重启 Harness`);
+		return this.restart();
+	}
+
 	stop(): Promise<void> {
 		return this._channel.call(DshHarnessChannelCommand.Stop);
 	}
@@ -1961,6 +2017,69 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	private _appUpdatePresentation = 0;
 	private _appUpdateReleaseNotes: string | undefined;
 	private _appUpdateSkippedVersion: string | undefined;
+	// ★ 2026-11-23（P1）：更新源可选的最低版本与灰度百分比（缺省 = 不强制 / 全量）。
+	private _appUpdateMinVersion: string | undefined;
+	private _appUpdateRolloutPercent: number | undefined;
+	// ★ 2026-11-23：快照单调序号 + 批量升级任务（都随 IDshUpgradeState 推给所有视图）。
+	private _upgradeSeq = 0;
+	private _upgradeJobId = 0;
+	private _upgradeJob: IUpgradeJobState | undefined;
+	private _upgradeJobRunning = false;
+
+	/**
+	 * **批量升级**（2026-11-23）：把「可升级随包插件 + ide 侧资产」收成一个 job，在宿主侧
+	 * **串行**执行并逐项推进度（页面 / IDE 面板不再各写一份 for 循环 ⇒ 不并发写同一个 profile ✓）。
+	 *
+	 * 重复发起即「重试失败项」：任务列表按当前快照重算，没升成的仍在可升级清单里 ✓。
+	 */
+	public async upgradeAll(): Promise<{ ok: boolean; error?: string }> {
+		if (this._upgradeJobRunning) {
+			return { ok: false, error: '已有升级任务在进行中' };
+		}
+		const snapshot = await this._buildUpgradeState();
+		const bundled = snapshot.bundled.filter(r => r.state === 'upgradable');
+		const assets = snapshot.assets.filter(a => a.via === 'ide');
+		const jobs = [
+			...bundled.map(r => ({ spec: { kind: 'bundled' as const, key: r.name, label: r.name }, run: () => this.upgradeBundled(r.name) })),
+			...assets.map(a => ({ spec: { kind: 'asset' as const, key: `${a.kind}/${a.name}`, label: a.name }, run: () => this.upgradeAsset(a.kind, a.name) })),
+		];
+		if (!jobs.length) {
+			return { ok: true };
+		}
+		this._upgradeJobRunning = true;
+		let jobState = createUpgradeJob(++this._upgradeJobId, jobs.map(j => j.spec));
+		this._upgradeJob = jobState;
+		this._upgradeError = undefined;
+		await this._pushUpgradeToAll();
+		try {
+			for (const job of jobs) {
+				jobState = startUpgradeJobItem(jobState, job.spec.key);
+				this._upgradeJob = jobState;
+				await this._pushUpgradeToAll();
+				let r: { ok: boolean; error?: string };
+				try {
+					r = await job.run();
+				} catch (e) {
+					r = { ok: false, error: String((e as Error)?.message ?? e) };
+					this._logService.warn(`[dshHarness] upgradeAll ${job.spec.key} 抛错：${r.error}`);
+				}
+				jobState = finishUpgradeJobItem(jobState, job.spec.key, r.ok, r.error);
+				this._upgradeJob = jobState;
+				await this._pushUpgradeToAll();
+			}
+		} finally {
+			jobState = finishUpgradeJob(jobState);
+			this._upgradeJob = jobState;
+			this._upgradeJobRunning = false;
+			await this._pushUpgradeToAll();
+		}
+		if (jobState.failed > 0) {
+			const reason = upgradeJobSummary(jobState);
+			this._upgradeError = reason;
+			return { ok: false, error: reason };
+		}
+		return { ok: true };
+	}
 
 	public async refreshUpgrade(): Promise<void> {
 		this._upgradeError = undefined;
@@ -2150,6 +2269,24 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			void (async () => {
 				try {
 					this._appUpdate = await this._checkAppUpdate();
+					const checked = this._appUpdate;
+					// ★★ 2026-11-23（真机：打包版 exe 有新版却不弹更新 UI）：过去静默检查只写
+					//   `_appUpdate`（版本结论），8 相状态机仍停在 `idle` ⇒ 快照 app.phase=idle
+					//   ⇒ client.appUpdate.js 的 AUTO_VISIBLE 不命中、胶囊又因 pendingCount=0 隐藏
+					//   ⇒ 用户完全看不到更新入口 ✗。这里把「发现新版」推进成 available。
+					//   ⚠ 保持静默：不递增 presentationId（不重放手动弹窗）、不设 _upgradeBusy、
+					//     不弹 IDE 通知；只在 idle 时推进，绝不打断正在下载/已就绪的流程。
+					if (checked.action === 'upgrade' && checked.remote && this._appUpdateStatus.phase === 'idle') {
+						const event: AppUpdateEvent = {
+							type: 'available', version: checked.remote,
+							...(this._appUpdateReleaseNotes ? { releaseNotes: this._appUpdateReleaseNotes } : {}),
+						};
+						this._appUpdateStatus = {
+							...reduceAppUpdateStatus(this._appUpdateStatus, event),
+							...(this._appUpdateStatus.presentationId !== undefined ? { presentationId: this._appUpdateStatus.presentationId } : {}),
+						};
+						this._logService.info(`[dshHarness] 静默检查发现新版 v${checked.remote} ⇒ 更新卡片自动可见`);
+					}
 					await this._pushUpgradeToAll();
 				} catch (e) {
 					this._logService.info(`[dshHarness] 静默检查应用更新失败：${String((e as Error)?.message ?? e)}`);
@@ -2171,8 +2308,10 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		const platform = `${isWindows ? 'win32' : isMacintosh ? 'darwin' : 'linux'}-${platformArch}`;
 		const url = buildUpdateEndpoint(base, platform, this._productService.quality ?? 'stable', this._productService.commit ?? '');
 		try {
-			// 每次检查都清掉上一版的日志，避免旧日志串到新版本。
+			// 每次检查都清掉上一版的日志 / 策略，避免旧结论串到新版本。
 			this._appUpdateReleaseNotes = undefined;
+			this._appUpdateMinVersion = undefined;
+			this._appUpdateRolloutPercent = undefined;
 			// ★★ 2026-10-30（真机 P0：打包 exe 的更新面板红字 `Failed to fetch`）：
 			//   原来在**渲染进程**用 IRequestService（浏览器 XHR）直连更新源 —— 更新源是内网静态
 			//   托管，**不发 CORS 头** ⇒ 浏览器拦掉响应，JS 只能看到 `Failed to fetch` ✗✗
@@ -2191,6 +2330,8 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			}
 			const parsed = parseAppUpdateResponse(JSON.parse(res.body));
 			this._appUpdateReleaseNotes = parsed?.notes;
+			this._appUpdateMinVersion = parsed?.minVersion;
+			this._appUpdateRolloutPercent = parsed?.rolloutPercent;
 			const remote = parsed?.productVersion;
 			const action = decideAppUpdate(current, remote);
 			this._logService.info(`[dshHarness] app update: local=${current} remote=${remote ?? '-'} ⇒ ${action}`);
@@ -2203,59 +2344,13 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	// ── 复刻 dsh-desktop 的 App 更新状态机（2026-11-05）──────────────────────────────
 
 	/**
-	 * 平台更新服务 `State` → 状态机事件的**唯一映射点**。
+	 * 平台更新服务 `State` → 状态机事件：映射的**唯一真源**已抽到
+	 * `common/appUpdateStateMapping.ts`（穷尽表，可单测；新增 StateType 会编译期报错）。
 	 *
-	 * ⚠ `Idle` 不带 `explicit`：只有自报 `notAvailable` / `error` 时才迁移，普通 Idle 直接 return ——
-	 *   否则一次无关的空闲回跳会把 `available`（用户还没点「更新」）冲掉 ✗。
-	 * ⚠ 自动检查在本项目是关的（`update.mode=manual`），所以这里来的状态基本都由用户动作触发；
-	 *   启动 8s 的静默检查走主进程 HTTP，不经过 `IUpdateService` ⇒ **不会弹卡片** ✓。
+	 * ⚠ `undefined` = 不迁移：普通 `Idle` 不能把用户还没点「更新」的 `available` 冲掉 ✗。
 	 */
 	private _onUpdateServiceState(state: State): void {
-		const versionOf = (u: { version: string; productVersion?: string }) => u.productVersion ?? u.version;
-		let event: AppUpdateEvent | undefined;
-		switch (state.type) {
-			case StateType.Uninitialized:
-				return;
-			case StateType.Idle:
-				if (state.error) {
-					event = { type: 'error', message: state.error };
-				} else if (state.notAvailable) {
-					event = { type: 'not-available' };
-				} else {
-					return;
-				}
-				break;
-			case StateType.Disabled:
-				event = { type: 'unsupported', message: '这个构建不支持自动更新，请手动下载安装包覆盖安装' };
-				break;
-			case StateType.CheckingForUpdates:
-				event = { type: 'check', manual: state.explicit, source: state.explicit ? 'manual' : 'runtime' };
-				break;
-			case StateType.AvailableForDownload:
-				event = {
-					type: 'available', version: versionOf(state.update),
-					...(this._appUpdateReleaseNotes ? { releaseNotes: this._appUpdateReleaseNotes } : {}),
-				};
-				break;
-			case StateType.Downloading: {
-				const percent = percentFromBytes(state.downloadedBytes, state.totalBytes);
-				event = { type: 'downloading', ...(percent !== undefined ? { percent } : {}) };
-				break;
-			}
-			case StateType.Updating: {
-				const percent = percentFromBytes(state.currentProgress, state.maxProgress);
-				event = { type: 'downloading', ...(percent !== undefined ? { percent } : {}) };
-				break;
-			}
-			case StateType.Overwriting:
-				event = { type: 'downloading' };
-				break;
-			case StateType.Downloaded:
-			case StateType.Ready:
-			case StateType.Restarting:
-				event = { type: 'downloaded', version: versionOf(state.update) };
-				break;
-		}
+		const event = mapUpdateServiceState(state, this._appUpdateReleaseNotes);
 		if (!event) {
 			return;
 		}
@@ -2363,8 +2458,30 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			?? (this._appUpdateStatus.phase === 'error' ? this._appUpdateStatus.message : undefined);
 		// 商城资产（技能 / MCP / 智能体 / 工作流 / 工作台）：一次快照里带上，面板按五类分组显示 ✓
 		const assets = await this._collectAssets();
+		const policy = decideUpgradePolicy({
+			local: this._productService.version ?? '0.0.0',
+			remote: 'remote' in app ? app.remote : undefined,
+			channel: String(this._configurationService.getValue(DshHarnessSettings.UpdateChannel) ?? 'stable'),
+			minRequiredVersion: this._appUpdateMinVersion,
+			rolloutPercent: this._appUpdateRolloutPercent,
+			bucket: this._productService.commit ?? 'unknown',
+			notes: this._appUpdateReleaseNotes,
+		});
+		// ★ 2026-11-23：把「这次变更要重启到哪一层」显式推给所有 UI（IDE 面板 / dsh 页面只读投影）。
+		const restart = decideRestartScope({
+			appPhase: this._appUpdateStatus.phase,
+			appBusy: this._upgradeBusy,
+			jobStatus: this._upgradeJob?.status,
+			jobDone: this._upgradeJob?.done,
+			jobFailed: this._upgradeJob?.failed,
+			jobItems: this._upgradeJob?.items,
+		});
 		return {
 			at: Date.now(),
+			seq: ++this._upgradeSeq,
+			...(this._upgradeJob ? { job: this._upgradeJob } : {}),
+			policy,
+			restart,
 			app: {
 				...app,
 				...(this._upgradeBusy ? { busy: this._upgradeBusy } : {}),

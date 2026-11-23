@@ -20,6 +20,7 @@
     "lib/installedLedger.js",
     "lib/installedState.js",
     "lib/installers.js",
+    "lib/upgradeBackup.js",
     "lib/botPack.js",
     "lib/publishPreflight.js",
     "lib/publisher.js",

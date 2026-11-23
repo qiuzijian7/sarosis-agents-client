@@ -19,6 +19,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { compareVersions } from '../common/dshVersion.js';
 import { IDshBundledPluginRow, IDshBundledPluginState } from '../common/dshHarness.js';
 
 /** 一个随包插件的包信息（从 `package.json` 读出来的那几项）。 */
@@ -120,31 +121,17 @@ export interface IInstalledPluginRef {
 }
 
 /**
- * 随包插件版本号**粗比较（只比数字段）**：等长不足按 0 补。
+ * 随包插件版本号比较（状态定方向的**唯一实现**）。
  *
- * 只用来给状态定方向（`upgradable` / `downgradable`）。**唯一实现** —— 视图侧原先另有一份私有拷贝，
- * 两处在"profile 里装了更新版本"这个条件下会给出互相矛盾的话术（2026-10-12 修）。
- *
- * ⚠ 已知局限：预发布段被当数字比 ⇒ `0.2.0-rc.2` 会被判**大于** `0.2.0` ✗（语义化版本里更小）。
- *   随包**插件**目前都是纯数字段版本（`0.1.7` / `0.2.20` / `0.3.0` 这种，见各
- *   `dsh-plugins/<dir>/package.json`）⇒ 够用；**一旦插件版本出现 `-rc` 段，这里必须换成
- *   `base/common/semver`**，否则按钮话术与状态徽标会整片反向 ✗。
+ * ★ 2026-11-23：实现收敛到 `common/dshVersion.ts`，与 app 升级闸门、profile 版本审计
+ *   共用同一套口径。此前这里把 `0.2.0-rc.2` 的 `rc.2` 当数字段 ⇒ 判成**大于** `0.2.0` ✗；
+ *   统一后预发布比正式版旧，徽标与按钮话术不会再整片反向。
  *
  * ⚠ 写注释时别让**星号紧跟斜杠**（例如把仓库目录写成通配路径）：那会**提前闭合块注释**，
- *   后面的中文就成了代码 ⇒ esbuild 直接报 "Expected ... but found ..."（2026-10-12 踩过两次，
- *   第二次甚至是"讲解这个坑"的那句话本身又踩了进去 ✗）。
+ *   后面的中文就成了代码 ⇒ esbuild 直接报 "Expected ... but found ..."（踩过两次）。
  */
 export function comparePluginVersions(a: string, b: string): number {
-	const parts = (v: string) => v.split(/[.+-]/).map(p => Number.parseInt(p, 10)).filter(n => Number.isFinite(n));
-	const pa = parts(a);
-	const pb = parts(b);
-	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-		const d = (pa[i] ?? 0) - (pb[i] ?? 0);
-		if (d !== 0) {
-			return d > 0 ? 1 : -1;
-		}
-	}
-	return 0;
+	return compareVersions(a, b);
 }
 
 /**

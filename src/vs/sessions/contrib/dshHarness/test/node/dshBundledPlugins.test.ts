@@ -20,6 +20,7 @@ import assert from 'assert';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
+import { compareVersions } from '../../common/dshVersion.js';
 import { comparePluginVersions, listBundledPlugins, mergeBundledWithInstalled } from '../../electron-main/dshBundledPlugins.js';
 
 /** 造一个假随包目录：`<dir>/<名称>/package.json`。 */
@@ -115,7 +116,7 @@ suite('dshBundledPlugins（随包模块清单）', () => {
 	});
 });
 
-suite('comparePluginVersions（版本粗比较 · 状态定方向的唯一实现）', () => {
+suite('comparePluginVersions（统一版本比较 · 状态定方向的唯一实现）', () => {
 
 	test('相等 / 更旧 / 更新；数字段按**数值**比（不是字典序）；段数不足按 0 补', () => {
 		assert.strictEqual(comparePluginVersions('0.4.0', '0.4.0'), 0);
@@ -127,12 +128,16 @@ suite('comparePluginVersions（版本粗比较 · 状态定方向的唯一实现
 		assert.strictEqual(comparePluginVersions('1.0', '1.0.0'), 0);
 	});
 
-	test('⚠ 已记录的局限：预发布段被当数字比（`0.2.0-rc.2` 会被判大于 `0.2.0`）', () => {
-		// 这条**不是**在宣称正确，而是钉住当前语义：随包**插件**目前都是纯数字段版本
-		// （`0.1.7` / `0.2.20` / `0.3.0`），所以够用；一旦插件版本出现 `-rc` 段，必须换成
-		// base/common/semver（见 comparePluginVersions 的注释）。
-		assert.ok(comparePluginVersions('0.2.0-rc.2', '0.2.0') > 0,
-			'若这里变红：说明比较器换了实现（大概率改用 semver）⇒ 请一并更新本用例与调用方注释 ✓');
+	test('★ 旧局限已修：预发布按语义化版本比（`0.2.0-rc.2` 小于 `0.2.0`）', () => {
+		// 2026-11-23：实现收敛到 common/dshVersion.ts（与 app 升级闸门、profile 审计同口径）。
+		// 旧实现把 `rc.2` 当数字段 ⇒ 判成大于 `0.2.0`，徽标与按钮话术会整片反向 ✗。
+		assert.ok(comparePluginVersions('0.2.0-rc.2', '0.2.0') < 0);
+		assert.ok(comparePluginVersions('0.2.0-rc.2', '0.2.0-rc.1') > 0);
+		assert.strictEqual(
+			comparePluginVersions('0.2.0-rc.2', '0.2.0'),
+			compareVersions('0.2.0-rc.2', '0.2.0'),
+			'必须与统一真源同结论 ✗',
+		);
 	});
 });
 

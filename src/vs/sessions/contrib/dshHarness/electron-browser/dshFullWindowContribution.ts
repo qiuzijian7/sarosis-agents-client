@@ -1366,6 +1366,12 @@ export class DshFullWindowContribution extends Disposable {
 			case 'restart':
 				await this._dsh.restart();
 				break;
+			case 'restartSafeMode':
+				await this._dsh.restartInSafeMode();
+				break;
+			case 'restorePlugins':
+				await this._dsh.restoreFromSafeMode();
+				break;
 			case 'toggleFullscreen':
 				await this._nativeHostService.toggleFullScreen({ targetWindowId: windowId });
 				break;

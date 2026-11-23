@@ -68,6 +68,9 @@ check('「应用」菜单：重启 | 视图子菜单 | 检查更新/关于 | 退
 	assert.ok(viewLabels.includes('切换全屏'));
 	assert.ok(items.some(i => i.label === '检查更新…'));
 	assert.ok(items.some(i => i.label === '关于 VsSaros'));
+	// ★ 2026-11-23：参考 dsh 官方标题栏补齐「以安全模式重启」，并给可逆的恢复入口
+	assert.ok(items.some(i => i.label === '以安全模式重启…'), '缺「以安全模式重启」');
+	assert.ok(items.some(i => i.label === '恢复插件并重启'), '安全模式必须可恢复');
 	assert.strictEqual(items[items.length - 1].label, '退出');
 	// 真点一遍：restart → run，zoomIn → act
 	items[0].click({});
@@ -89,6 +92,8 @@ check('动作/命令是封闭集，拒绝自造', () => {
 	assert.ok(!m.isDshDesktopMenuAction('evil'));
 	assert.ok(!m.isDshDesktopMenuAction(undefined));
 	assert.ok(m.isDshDesktopMenuCommand('quit'));
+	assert.ok(m.isDshDesktopMenuCommand('restartSafeMode'), '安全模式重启必须在命令封闭集里');
+	assert.ok(m.isDshDesktopMenuCommand('restorePlugins'), '恢复插件必须在命令封闭集里');
 	assert.ok(!m.isDshDesktopMenuCommand('deleteAllFiles'));
 });
 
@@ -142,10 +147,10 @@ check('按钮不抢 composer 焦点（编辑键要送回聚焦视图）', () => 
 	assert.ok(s.includes('popup(items,'), 'popup 必须带 onHide 复位回调');
 });
 
-check('宿主命令分发覆盖 5 个命令', () => {
+check('宿主命令分发覆盖 7 个命令（含安全模式重启 / 恢复）', () => {
 	const s = read(FULL_WINDOW);
 	assert.ok(s.includes('_runDesktopMenuCommand'), '缺宿主命令分发');
-	for (const cmd of ['restart', 'toggleFullscreen', 'checkForUpdates', 'about', 'quit']) {
+	for (const cmd of ['restart', 'restartSafeMode', 'restorePlugins', 'toggleFullscreen', 'checkForUpdates', 'about', 'quit']) {
 		assert.ok(s.includes(`case '${cmd}':`), `缺 ${cmd} 分支`);
 	}
 });

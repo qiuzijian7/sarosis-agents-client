@@ -4,6 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { clampPercent, isAppUpdatePhase, type AppUpdatePhase, type AppUpdateSource } from './appUpdateState.js';
+import { validateUpgradeJobState, type IUpgradeJobState } from './dshUpgradeJob.js';
+import { validateUpgradePolicyState, type IUpgradePolicyState } from './dshUpgradePolicy.js';
+import { validateRestartPlan, type IRestartPlan } from './dshRestartScope.js';
 
 /**
  * 页面桥 v1：dsh 页面（WebContentsView）里的 `window.vssarosDsh` ↔ VsSaros（方案第 4.4、5.5、13.2 节）。
@@ -85,7 +88,7 @@ import { clampPercent, isAppUpdatePhase, type AppUpdatePhase, type AppUpdateSour
  * 2026-10-26：`19 → 20`，新增 `importCodeWorkspace` —— 请 IDE 侧导入一个 `.code-workspace` 文件
  *   （选文件 → 解析 folders → 落一条多根工作区记录 → 各根注册进 dsh）。**只导入，不切窗口** ✓。
  */
-export const DSH_PAGE_BRIDGE_VERSION = 29;   // 2026-11-21：`28 → 29`，`installComponent` 支持用户显式授权管理员权限
+export const DSH_PAGE_BRIDGE_VERSION = 30;   // 2026-11-23：`29 → 30`，新增 `upgradeAll`（宿主串行编排批量升级）
 
 /** preload → 主进程的 IPC 通道（经 webContents.ipc，作用域限于该视图）。 */
 export const DSH_PAGE_IPC_INVOKE = 'vssaros:dsh:page';
@@ -291,6 +294,17 @@ export interface IDshUpgradeAssetRow {
 /** 一次升级状态快照（全量；页面按它整块重画 ⇒ 不需要增量协议 ✓）。 */
 export interface IDshUpgradeState {
 	readonly at: number;
+	/**
+	 * 快照单调序号（2026-11-23）：多个视图 / 多次 push 可能乱序到达 ⇒ 页面只接受 `seq >= 上次`。
+	 * 可选是为了兼容老宿主推来的旧快照（没有序号时按"不参与排序"处理）。
+	 */
+	readonly seq?: number;
+	/** 宿主侧批量升级任务的进度投影；没有任务时缺省。 */
+	readonly job?: IUpgradeJobState;
+	/** 升级策略（灰度 / 最低版本）与统一更新内容；老宿主推来的快照可缺省。 */
+	readonly policy?: IUpgradePolicyState;
+	/** 本次变更的生效范围（无需重启 / 刷新页面 / 重启 Host / 重启 IDE）；`pending=false` 时 UI 不显示。 */
+	readonly restart?: IRestartPlan;
 	readonly app: IDshUpgradeAppState;
 	readonly runtime: { readonly current?: string; readonly channel?: string };
 	readonly bundled: readonly IDshUpgradeBundledRow[];
@@ -324,6 +338,11 @@ export function validateUpgradeState(value: unknown): IDshUpgradeState | undefin
 	const percent = typeof app.percent === 'number' && Number.isFinite(app.percent) ? clampPercent(app.percent) : undefined;
 	const presentationId = typeof app.presentationId === 'number' && Number.isFinite(app.presentationId) ? app.presentationId : undefined;
 	const source = app.source === 'startup' || app.source === 'runtime' || app.source === 'manual' ? app.source : undefined;
+	// ★ 2026-11-23：序号与 job 都过信任边界（页面会把 dataset 当可信数据解析 ✓）。
+	const seq = typeof v.seq === 'number' && Number.isFinite(v.seq) ? Math.max(0, Math.floor(v.seq)) : undefined;
+	const job = validateUpgradeJobState(v.job);
+	const policy = validateUpgradePolicyState(v.policy);
+	const restart = validateRestartPlan(v.restart);
 	const rows: IDshUpgradeBundledRow[] = [];
 	for (const raw of v.bundled) {
 		const r = raw as Partial<IDshUpgradeBundledRow>;
@@ -358,6 +377,10 @@ export function validateUpgradeState(value: unknown): IDshUpgradeState | undefin
 	}
 	return {
 		at: typeof v.at === 'number' ? v.at : Date.now(),
+		...(seq !== undefined ? { seq } : {}),
+		...(job ? { job } : {}),
+		...(policy ? { policy } : {}),
+		...(restart ? { restart } : {}),
 		app: {
 			current: app.current, action,
 			...(typeof app.remote === 'string' ? { remote: app.remote } : {}),
@@ -1054,6 +1077,12 @@ export type DshPageCommand =
 	 */
 	| { readonly method: 'upgradeRefresh' }
 	/**
+	 * **批量升级**（2026-11-23，桥 `29 → 30`）：把「全部升级」交给宿主串行编排，
+	 * 逐项进度 / 失败原因随 {@link IDshUpgradeState.job} 推回；重复发起即重试失败项。
+	 * ⚠ 任务清单由宿主按当前快照重算 ⇒ 页面不许自报包名（避免诱导装任意包 ✓）。
+	 */
+	| { readonly method: 'upgradeAll' }
+	/**
 	 * 升级（或安装）**一个随包插件**（2026-10-23）：`{ name: '@vssaros/dsh-chat-surface' }`。
 	 *
 	 * 真正干活的还是 IDE 的插件中心（`installBundledPlugin`）：它走"主进程暂存到 profile → `dsh plugin add`"，
@@ -1143,6 +1172,8 @@ export const DSH_PAGE_COMMANDS_WITHOUT_IDE_UI: ReadonlySet<Exclude<DshPageComman
 	// ★ 2026-10-23（桥 `18 → 19`）：升级动作用的是**图标 + 面板**，全都长在 desktop 窗口里
 	//   ⇒ 不许因为"点了检查更新"就把 IDE 主窗口拉到前台（那正是用户要避免的形态 ✗）。
 	'upgradeRefresh', 'upgradeBundled', 'upgradeApp', 'upgradeAsset',
+	// ★ 2026-11-23（桥 29 → 30）：批量升级同样只在 dsh 窗口里跑，不许把 IDE 主窗口拉到前台。
+	'upgradeAll',
 	// ★ 2026-11-05：更新卡片的三条动作全在 dsh 窗口里完成，不许把 IDE 主窗口拉到前台。
 	'appUpdateCheck', 'appUpdateSkip', 'appUpdateInstall',
 	// ★ 2026-11-05：右侧栏内嵌浏览器由 dsh 桌面窗口的 WebContentsView 承载，不许把 IDE 主窗口拉到前台。
@@ -1573,6 +1604,8 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 		// 桥 `18 → 19`（2026-10-23）：升级（desktop 窗口侧栏底部那行 + 一键升级应用）。
 		case 'upgradeRefresh':
 			return { method: 'upgradeRefresh' };
+		case 'upgradeAll':
+			return { method: 'upgradeAll' };
 		case 'upgradeApp':
 			return { method: 'upgradeApp' };
 		// 桥 `24 → 25`：复刻后的更新卡片（检查 / 忽略 / 重启安装）。
