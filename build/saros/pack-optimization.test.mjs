@@ -489,15 +489,17 @@ test('CI defaults to the smaller standard/user package and archives JSON reports
 test('prepack pins compatible official tools, disables optional peer auto-install, and keeps final config portable', () => {
 	const source = fs.readFileSync(path.join(ROOT, 'build/prepack-dsh-runtime.mjs'), 'utf8');
 	const seed = fs.readFileSync(path.join(ROOT, 'build/saros/seed-package.mjs'), 'utf8');
-	assert.equal(SEED_GENERATOR_REVISION, 3);
-	assert.match(seed, /SEED_GENERATOR_REVISION = 3/);
+	assert.equal(SEED_GENERATOR_REVISION, 4);
+	assert.match(seed, /SEED_GENERATOR_REVISION = 4/);
 	assert.match(source, /pnpm_config_package_import_method: 'copy'/);
+	assert.match(source, /pnpm_config_node_linker: 'hoisted'/);
 	assert.match(source, /pnpm_config_auto_install_peers: 'false'/);
 	assert.match(source, /pnpm_config_strict_peer_dependencies: 'false'/);
 	assert.match(source, /pnpm_config_verify_deps_before_run: 'false'/);
 	assert.doesNotMatch(source, /[\s,{]npm_config_package_import_method:/);
 	assertOrdered(source, "pnpm_config_package_import_method: 'copy'", "dsh(['--profile', 'vssaros', '--from-default-profile'");
 	assert.equal([...source.matchAll(/'packageImportMethod: copy'/g)].length, 2);
+	assert.equal([...source.matchAll(/'nodeLinker: hoisted'/g)].length, 2);
 	assert.equal([...source.matchAll(/'autoInstallPeers: false'/g)].length, 2);
 	assert.equal([...source.matchAll(/'overrides:'/g)].length, 2);
 	assert.equal([...source.matchAll(/@deepseek-ai\/dsh-tools/g)].length, 2);
@@ -525,6 +527,7 @@ test('seed preflight rejects partial/mismatched seeds and checks every registere
 		'strictPeerDependencies: false',
 		'verifyDepsBeforeRun: false',
 		'packageImportMethod: copy',
+		'nodeLinker: hoisted',
 		'overrides:',
 		`  "@deepseek-ai/dsh-tools": "${bundled}"`,
 		'allowBuilds:',
@@ -543,6 +546,8 @@ test('seed preflight rejects partial/mismatched seeds and checks every registere
 	fs.writeFileSync(workspaceFile, `${safeWorkspace}\ndangerouslyAllowAllBuilds: true\n`);
 	assert.throws(() => checkBundledSeed(f.repo), /workspace/);
 	fs.writeFileSync(workspaceFile, safeWorkspace.replace('autoInstallPeers: false', 'autoInstallPeers: true'));
+	assert.throws(() => checkBundledSeed(f.repo), /workspace/);
+	fs.writeFileSync(workspaceFile, safeWorkspace.replace('nodeLinker: hoisted\n', ''));
 	assert.throws(() => checkBundledSeed(f.repo), /workspace/);
 	fs.writeFileSync(workspaceFile, safeWorkspace);
 	fs.writeFileSync(markerFile, JSON.stringify({ ...marker, generatorRevision: 0 }));

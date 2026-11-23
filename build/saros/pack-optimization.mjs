@@ -234,6 +234,7 @@ export function checkBundledSeed(repoRoot = REPO_ROOT) {
 		|| !/^strictPeerDependencies:\s*false$/m.test(workspace)
 		|| !/^verifyDepsBeforeRun:\s*false$/m.test(workspace)
 		|| !/^packageImportMethod:\s*copy$/m.test(workspace)
+		|| !/^nodeLinker:\s*hoisted$/m.test(workspace)
 		|| !/^overrides:/m.test(workspace)
 		|| !workspace.includes(`"@deepseek-ai/dsh-tools": "${bundled}"`)) {
 		throw new Error('Bundled seed pnpm workspace policy is unsafe or incomplete');

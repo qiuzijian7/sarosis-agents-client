@@ -12,9 +12,13 @@
  * 效果：全新安装首启零下载——DshRuntimeManager.resolveDsh 的 bundled 档直接命中，
  * 不再依赖用户网络的 npm 源。缺失/损坏时运行时自动退回原有 npm 安装引导。
  *
- * 用法：node build/prepack-dsh-runtime.mjs [--force]
+ * 用法：node build/prepack-dsh-runtime.mjs [--force] [--incremental-seed]
  * 幂等：目标目录已有同版本 bin.js 时跳过安装（--force 重装）；裁剪与 profile 种子每次都会补跑
  * （各自幂等），保证旧产物升级清单/插件版本后不用重装运行时。
+ *
+ * --incremental-seed（插件级快包用）：只给「改了几个插件 + bump 补丁版本」的场景，尝试只重装
+ * 变更的插件、跳过整树重建与 Host 冷启动；不适用时自动回退全量 buildProfileSeed。不带此参数
+ * 时行为完全不变。实现见 build/saros/incremental-profile-seed.mjs。
  *
  * 注意：在 CodeBuddy IDE 里跑要净化 NODE_OPTIONS（注入的 safe-delete 会拦裁剪的批量删除）。
  */
@@ -78,7 +82,20 @@ async function safeBuildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	}
 	console.log(`[prepack-dsh] pnpm OK（${how}；不读 PATH 上的版本）`);
 	try {
-		await buildProfileSeed(runtimeDir, dshBin, dshVersion);
+		if (process.argv.includes('--incremental-seed')) {
+			const { tryIncrementalSeed } = await import('./saros/incremental-profile-seed.mjs');
+			const result = await tryIncrementalSeed({ root, runtimeDir, dshBin, dshVersion, pnpmShimDir: buildPnpmShimDir });
+			if (result.ok) {
+				console.log(result.changed.length
+					? `[prepack-dsh] 增量 seed 完成（${result.changed.length} 个插件：${result.changed.join(', ')}），跳过整树重建与 Host 冷启动`
+					: '[prepack-dsh] 增量 seed：插件版本无变化，跳过');
+			} else {
+				console.log(`[prepack-dsh] 增量 seed 不适用（${result.reason}）⇒ 回退全量重建`);
+				await buildProfileSeed(runtimeDir, dshBin, dshVersion);
+			}
+		} else {
+			await buildProfileSeed(runtimeDir, dshBin, dshVersion);
+		}
 	} catch (e) {
 		const err = e;
 		const first = String(err?.message ?? e).split('\n')[0];
@@ -342,6 +359,10 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 			'strictPeerDependencies: false',
 			'verifyDepsBeforeRun: false',
 			'packageImportMethod: copy',
+			// ★ 2026-11-23：seed 必须用 hoisted 布局。isolated 的
+			//   `.pnpm/@vssaros+dsh-skill-bundle@<hash>/node_modules/...` 会把
+			//   frontend-slides 模板路径推到 292 字符，安装器/长路径门禁直接失败。
+			'nodeLinker: hoisted',
 			'overrides:',
 			`  "@deepseek-ai/dsh-tools": "${dshVersion}"`,
 			'allowBuilds:',
@@ -414,6 +435,8 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		...process.env,
 		DSH_HOME: seed,
 		pnpm_config_package_import_method: 'copy',
+		// 从 profile init 的第一笔 pnpm 安装就使用 hoisted，避免先建 isolated 树再转换。
+		pnpm_config_node_linker: 'hoisted',
 		pnpm_config_auto_install_peers: 'false',
 		pnpm_config_strict_peer_dependencies: 'false',
 		pnpm_config_verify_deps_before_run: 'false',
@@ -500,6 +523,7 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 			'strictPeerDependencies: false',
 			'verifyDepsBeforeRun: false',
 			'packageImportMethod: copy',
+			'nodeLinker: hoisted',
 			'overrides:',
 			`  "@deepseek-ai/dsh-tools": "${dshVersion}"`,
 			'dangerouslyAllowAllBuilds: true',
