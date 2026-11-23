@@ -35,7 +35,6 @@ function fixture(t) {
 	write('staging/resources/app/dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh/lib/bin.js');
 	write('staging/resources/app/out/vs/sessions/electron-browser/dshDesktop.html');
 	write('staging/resources/app/out/vs/sessions/electron-browser/dshDesktop.js');
-	write('staging/resources/app/out/vs/sessions/contrib/dshHarness/electron-main/dshDesktopWindowMainService.js');
 	return { root, write, staging: path.join(root, 'staging'), repo: path.join(root, 'repo') };
 }
 
@@ -199,7 +198,7 @@ test('staging requires successful packaging, current identity and unchanged entr
 	f.write('staging/resources/app/extensions/agent-studio/out/extension.js', 'current-extension');
 	assert.throws(() => verifyStaging(f.staging, f.repo, identity), /ENOENT/);
 	recordStaging(f.staging, f.repo, identity);
-	assert.equal(verifyStaging(f.staging, f.repo, identity).files.length, 7);
+	assert.equal(verifyStaging(f.staging, f.repo, identity).files.length, 6);
 	assert.throws(() => verifyStaging(f.staging, f.repo, { ...identity, commit: 'b'.repeat(40) }), /not packaged successfully/);
 	assert.throws(() => verifyStaging(f.staging, f.repo, { ...identity, productVersion: 'other' }), /not packaged successfully/);
 	f.write('staging/resources/app/out/main.js', 'previous-build');
