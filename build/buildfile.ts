@@ -53,6 +53,8 @@ export const code = [
 	createModuleDescription('vs/code/electron-utility/sharedProcess/sharedProcessMain'),
 	createModuleDescription('vs/code/electron-browser/workbench/workbench'),
 	createModuleDescription('vs/sessions/electron-browser/sessions'),
+	// dsh desktop-only 壳：HTML 以 ./dshDesktop.js 直接加载，必须是独立 bundle entry
+	createModuleDescription('vs/sessions/electron-browser/dshDesktop'),
 ];
 
 export const codeWeb = createModuleDescription('vs/code/browser/workbench/workbench');

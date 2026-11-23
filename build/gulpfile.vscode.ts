@@ -71,9 +71,8 @@ const vscodeResourceIncludes = [
 	// Workbench
 	'out-build/vs/code/electron-browser/workbench/workbench.html',
 	'out-build/vs/sessions/electron-browser/sessions.html',
-	// dsh desktop-only shell（HTML 与其引用的 JS 都必须显式随包）
+	// dsh desktop-only shell（HTML 随包；dshDesktop.js 由 buildfile.code 的 entry 统一打包）
 	'out-build/vs/sessions/electron-browser/dshDesktop.html',
-	'out-build/vs/sessions/electron-browser/dshDesktop.js',
 
 	// Electron Preload
 	'out-build/vs/base/parts/sandbox/electron-browser/preload.js',
@@ -130,6 +129,18 @@ const vscodeResourceIncludes = [
 	// Tree Sitter injection queries
 	'out-build/vs/editor/common/languages/injections/*.scm'
 ];
+
+/**
+ * `src/**` 的 HTML 不是 tsconfig 输出，gulp 的 TypeScript 编译流也不会保证把它复制到
+ * `out-build`。dsh desktop-only 壳的 HTML 必须在 packageTask 前显式落盘，否则 staging
+ * 会缺 `resources/app/out/vs/sessions/electron-browser/dshDesktop.html`，
+ * `pack-optimization --record-staging` 会中止。
+ */
+const copyDshDesktopShellTask = task.define('copy-dsh-desktop-shell', () => {
+	return gulp.src('src/vs/sessions/electron-browser/dshDesktop.html')
+		.pipe(gulp.dest('out-build/vs/sessions/electron-browser'));
+});
+gulp.task(copyDshDesktopShellTask);
 
 const vscodeResources = [
 
@@ -807,6 +818,7 @@ BUILD_TARGETS.forEach(buildTarget => {
 			compileNativeExtensionsBuildTask,
 			ensureRipgrepBinaryTask(platform, arch),
 			util.rimraf(path.join(buildRoot, destinationFolderName)),
+			copyDshDesktopShellTask,
 			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
 			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName),
 		];
@@ -837,6 +849,7 @@ BUILD_TARGETS.forEach(buildTarget => {
 				compileCopilotExtensionBuildTask,
 				compileExtensionMediaBuildTask,
 				writeISODate('out-build'),
+				copyDshDesktopShellTask,
 				esbuildBundleTask,
 				vscodeTaskCI
 			));
@@ -847,6 +860,7 @@ BUILD_TARGETS.forEach(buildTarget => {
 				compileNonNativeExtensionsBuildTask,
 				compileCopilotExtensionBuildTask,
 				compileExtensionMediaBuildTask,
+				copyDshDesktopShellTask,
 				minified ? minifyVSCodeTask : bundleVSCodeTask,
 				vscodeTaskCI
 			));
