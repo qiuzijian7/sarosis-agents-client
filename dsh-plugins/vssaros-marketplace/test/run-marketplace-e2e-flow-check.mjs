@@ -109,14 +109,14 @@ function makeMarketServer() {
         if (!p) { throw new Error('404'); }
         return { ...p, versions: p.versions.map(v => ({ ...v })) };
       },
-      checkUpgrades: async (items) => ({
-        updates: items.map(i => {
-          const p = packages.get(i.storeId);
-          return p && semverGt(p.latest_version, i.version)
-            ? { ...i, latest: p.latest_version, downloadUrl: `/packages/${i.storeId}/versions/${p.latest_version}/download` }
-            : null;
-        }).filter(Boolean),
-      }),
+      // ⚠ 与真实 marketClient.checkUpgrades 同口径：它把服务端的 {updates}
+      //   **解包成数组**返回（marketClient.js:473）；假 client 不能返回对象，否则用例会假绿。
+      checkUpgrades: async (items) => items.map(i => {
+        const p = packages.get(i.storeId);
+        return p && semverGt(p.latest_version, i.version)
+          ? { ...i, latest: p.latest_version, downloadUrl: `/packages/${i.storeId}/versions/${p.latest_version}/download` }
+          : null;
+      }).filter(Boolean),
     };
   }
   return { packages, blobs, calls, market };
@@ -278,7 +278,8 @@ await check('TC-B3', 'A 上传新版本 1.1.0，服务端 latest 按 semver 重�
   assert.ok(serverB.blobs.has(`${slug}@1.1.0`));
 });
 await check('TC-B4', 'B 侧升级检查看到 1.1.0；A/B 两台机器磁盘互不污染', async () => {
-  const { updates } = await serverB.market().checkUpgrades([{ kind: 'skill', storeId: slug, version: '1.0.0' }]);
+  const updates = await serverB.market().checkUpgrades([{ kind: 'skill', storeId: slug, version: '1.0.0' }]);
+  assert.ok(Array.isArray(updates), 'checkUpgrades 应返回数组（与真实 client 同口径）');
   assert.equal(updates.length, 1);
   assert.equal(updates[0].latest, '1.1.0');
   assert.match(updates[0].downloadUrl, /1\.1\.0\/download$/);
