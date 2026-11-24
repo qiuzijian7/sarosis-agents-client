@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { LineDecoder, isBridgeHello } from '../../common/dshBridgeProtocol.js';
 import {
-	bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, compareSemver, isSameOrigin,
+	bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, compareSemver, DSH_NODE_REQUIREMENT, isSameOrigin,
 	isSupportedNodeVersion, localPluginDir, parseAuthUrl, parseWelcomeNoticeVersion, renderBridgeOverlay, renderCodebaseOverlay, renderKanbanOverlay, renderSandboxOverlay, resolveSiblingPackage, toFileSpec,
 } from '../../common/dshCli.js';
 
@@ -201,6 +201,18 @@ suite('dshHarness / CLI contract', () => {
 		for (const bad of ['v24.8.9', 'v24.0.0', 'v22.19.0', 'v22.22.1', 'v23.5.0', 'v20.11.0', 'garbage']) {
 			assert.ok(!isSupportedNodeVersion(bad), bad);
 		}
+	});
+
+	test('★ Node 门槛可传入 0.2.3 的复合范围（升 dsh 不必改调用方）', () => {
+		assert.strictEqual(DSH_NODE_REQUIREMENT, '>=24.9.0');
+		const req = '>=24.22.3 <25.0.0 || >=26.13.1';
+		for (const ok of ['v24.22.3', 'v24.30.0', 'v26.13.1', 'v27.0.0']) {
+			assert.ok(isSupportedNodeVersion(ok, req), ok);
+		}
+		for (const bad of ['v24.9.0', 'v24.22.2', 'v25.1.0', 'v26.0.0', 'garbage']) {
+			assert.ok(!isSupportedNodeVersion(bad, req), bad);
+		}
+		assert.ok(isSupportedNodeVersion('v24.9.0', DSH_NODE_REQUIREMENT));
 	});
 
 	test('semver ordering incl. prereleases', () => {

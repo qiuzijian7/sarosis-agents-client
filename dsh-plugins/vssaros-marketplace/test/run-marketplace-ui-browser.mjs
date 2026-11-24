@@ -8,7 +8,7 @@ import { MARKET_JWT_REF } from '../lib/marketClient.js';
 
 const dataRoot = await mkdtemp(join(tmpdir(), 'vssaros-marketplace-ui-'));
 const publicFetch = globalThis.fetch;
-const endpoint = 'http://21.6.92.5:3040';
+const endpoint = 'http://21.91.158.20:3040';
 const disposers = [];
 const installedFixture = process.argv.includes('--installed-fixture');
 const fixtureItems = [

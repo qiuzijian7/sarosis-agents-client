@@ -1,8 +1,19 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-12T00:00:00Z",
-  "bundled": "0.2.2-rc.2",
+  "generatedAt": "2026-11-24T00:00:00Z",
+  "bundled": "0.2.2-rc.5",
   "versions": [
+    {
+      "version": "0.2.2-rc.5",
+      "verifiedAt": "2026-11-24",
+      "checks": [
+        "registry-dist-tag",
+        "engines-node",
+        "release-notes-review"
+      ],
+      "bridgePlugin": ">=0.1.2",
+      "notes": "npm latest / next（2026-11-18 发布，11-21 dist-tag 翻转），0.2.2 系列收尾版。官方 release notes 唯一条目：DeepSeek 模型改用服务端搜索、不按次收费，其他模型默认走 DeepSeek Search API ⇒ 无破坏性迁移。engines.node 仍为 >=24.9.0（与本仓 isSupportedNodeVersion / 托管 Node 门槛一致），依赖树与 rc.2 同系列（@deepseek-ai/cordis ~4.1.0，官方包整体抬到 rc.5）。★ 本轮已核对：npm dist-tags（latest/next=0.2.2-rc.5、alpha=0.2.3-alpha.2）、engines、release notes；并把硬编码 0.2.2-rc.2 的 session-search 兼容分支改成版本无关的能力探测，避免换版即崩。⚠ 尚未执行：prepack 下载与 --version 自报核对、profile seed 重建、seed Host 冒烟、dsh-compat-e2e --all、F5 真机复验 —— 需在打包机/真机补齐后才能视为完全验证。回退基线：0.2.2-rc.2（下方条目）。"
+    },
     {
       "version": "0.2.2-rc.2",
       "verifiedAt": "2026-11-12",

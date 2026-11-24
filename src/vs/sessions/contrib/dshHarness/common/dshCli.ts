@@ -269,13 +269,48 @@ export function compareSemver(a: string, b: string): number {
 	return 0;
 }
 
-/** dsh 0.2.2-rc.2 起要求 Node >=24.9.0（与上游 `engines.node` 对齐）。 */
-export function isSupportedNodeVersion(raw: string): boolean {
+/**
+ * dsh 运行时对 Node 的要求（**单一常量**；升 dsh 时只改这里 + `dsh-compat.json` 对应条目的 notes）。
+ * · 0.2.2 系列（含 bundled `0.2.2-rc.5`）：`>=24.9.0`
+ * · 0.2.3-alpha.2 起上游为 `^24.22.3 || >=26.13.1` ⇒ 写成 `>=24.22.3 <25.0.0 || >=26.13.1`
+ *
+ * ★ 2026-11-24：门槛从「写死在函数体里的 major/minor 判断」改成可传入的范围表达式，
+ *   升级到 0.2.3 时不必再翻遍调用方，改这一个常量即可。
+ */
+export const DSH_NODE_REQUIREMENT = '>=24.9.0';
+
+/** 支持 `>=a <b || >=c` 形式的范围；无法解析的子句按「不满足」处理（保守）。 */
+export function isSupportedNodeVersion(raw: string, requirement: string = DSH_NODE_REQUIREMENT): boolean {
 	const v = parseSemver(raw);
 	if (!v) {
 		return false;
 	}
-	return v.major > 24 || (v.major === 24 && v.minor >= 9);
+	const version = raw.trim();
+	for (const clause of requirement.split('||')) {
+		const parts = clause.trim().split(/\s+/).filter(Boolean);
+		if (!parts.length) {
+			continue;
+		}
+		let ok = true;
+		for (const part of parts) {
+			const m = /^(>=|<=|>|<|=)?\s*v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(part);
+			if (!m) {
+				ok = false;
+				break;
+			}
+			const c = compareSemver(version, m[2]);
+			const op = m[1] ?? '=';
+			const pass = op === '>=' ? c >= 0 : op === '>' ? c > 0 : op === '<=' ? c <= 0 : op === '<' ? c < 0 : c === 0;
+			if (!pass) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok) {
+			return true;
+		}
+	}
+	return false;
 }
 
 // ─── 运行时版本目录名 ─────────────────────────────────────────────────────────

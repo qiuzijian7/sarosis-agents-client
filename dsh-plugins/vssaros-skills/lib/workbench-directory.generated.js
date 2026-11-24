@@ -1,4 +1,4 @@
-/* @generated-workbench-directory:file hash=3eef1f2238cf */
+/* @generated-workbench-directory:file hash=bef767c4eff1 */
 export const TOOLS_WORKBENCHES = [
 	{ name: '主页', desc: '会话遥测 / 用量与编排', route: '/x/dashboard/', provider: 'vssaros-dashboard' },
 	{ name: '看板', desc: '看板存储与卡片工具', route: '/x/kanban/', provider: 'vssaros-kanban', offline: true },

@@ -310,7 +310,7 @@ export function metaBlock({ data, summary, tally, toolsRegistered = '', liveServ
  * ⚠ 条目**不能从 WORKBENCH_MODULES 里删**：本清单是 `check-workbench-catalog.mjs` 的登记真源，
  *   且 `client.workbenchNav.js::DEFAULT_ITEMS` 同时是 route 白名单 ⇒ 只删一边会变红 / 点了没反应。
  */
-/* @generated-workbench-directory:start dashboard-catalog hash=3eef1f2238cf */
+/* @generated-workbench-directory:start dashboard-catalog hash=bef767c4eff1 */
 export { WORKBENCH_MODULES, VISIBLE_WORKBENCH_MODULES, OFFLINE_WORKBENCH_ROUTES } from './workbench-directory.generated.js';
 /* @generated-workbench-directory:end dashboard-catalog */
 

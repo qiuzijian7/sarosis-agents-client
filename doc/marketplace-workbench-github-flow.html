@@ -142,7 +142,7 @@
     <code>dispatch.resolveOp('publish')</code> 分派 → 带 <code>source</code> 走 <b>local-publish</b> →
     <code>publishExternal()</code>：把用户粘的地址归一化成 <code>{type,name,commit}</code>
   </div></div>
-  <div class="row"><div class="actor">商城服务端<br>21.6.92.5:3040</div><div class="what">
+  <div class="row"><div class="actor">商城服务端<br>21.91.158.20:3040</div><div class="what">
     ① <code>POST /packages</code> 建包（409 容忍）→ ② <code>POST /packages/:slug/versions/external</code>
     登记版本（<b>不接收包体</b>）→ 写 <code>packages</code> / <code>package_versions</code> 两行
   </div></div>

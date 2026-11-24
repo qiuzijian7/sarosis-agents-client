@@ -896,7 +896,7 @@ await t('阶段2 统一目录清单：单一 manifest 生成隐藏/退役/离线
 		'生成视图必须导出供自检');
 	const manifest = client.workbenchManifest();
 	assert.ok(Object.isFrozen(manifest), 'manifest 必须冻结');
-	assert.equal(manifest.length, 19, '11 个 hidden + 4 个 offline + 1 个 retired + 3 个 active manifest route');
+	assert.equal(manifest.length, 20, '12 个 hidden + 4 个 offline + 1 个 retired + 3 个 active manifest route');
 	assert.equal(manifest.filter(row => row.state === 'active' && row.sourceKind === 'manifest').length, 3,
 		'active manifest route 行必须恰好 3 条');
 	const requiredFields = ['key', 'workbenchId', 'pageId', 'canonicalId', 'state', 'visibility', 'aliases', 'replacedBy', 'route', 'title', 'sourceKind'];
@@ -909,13 +909,13 @@ await t('阶段2 统一目录清单：单一 manifest 生成隐藏/退役/离线
 	assert.equal(new Set(manifest.map(row => row.key)).size, manifest.length, 'manifest key 不得重复');
 	const hiddenKeys = [
 		'vssaros/marketplace/default', 'vssaros/sessions/default', 'vssaros/workflow/default', 'vssaros/kanban/default',
-		'vssaros/kb/default',
+		'vssaros/kb/default', 'vssaros/studio/default',
 		'legacy:/x/sessions//vssaros-wb-sessions', 'legacy:/x/sessions/?view=tiles/vssaros-wb-session-tiles',
 		'legacy:/x/media//vssaros-wb-media', 'legacy:/x/codebase//vssaros-wb-codebase',
 		'legacy:/x/workflow//vssaros-wb-workflow', 'legacy:/x/kanban//vssaros-wb-kanban',
 	];
 	const hiddenIds = [
-		'vssaros/marketplace', 'vssaros/sessions', 'vssaros/workflow', 'vssaros/kanban', 'vssaros/kb',
+		'vssaros/marketplace', 'vssaros/sessions', 'vssaros/workflow', 'vssaros/kanban', 'vssaros/kb', 'vssaros/studio',
 		'legacy:/x/sessions/', 'legacy:/x/sessions/?view=tiles',
 		'legacy:/x/media/', 'legacy:/x/codebase/', 'legacy:/x/workflow/', 'legacy:/x/kanban/',
 	];
@@ -937,6 +937,8 @@ await t('阶段2 统一目录清单：单一 manifest 生成隐藏/退役/离线
 		'生成视图必须保持旧 hidden key 全部下线');
 	assert.equal(client.selectStartPages([mk('vssaros/kb/default', '知识库')]).length, 0,
 		'注册式知识库默认页必须被稳定 key/身份下线');
+	assert.equal(client.selectStartPages([mk('vssaros/studio/default', '萨罗斯管理平台')]).length, 0,
+		'旧 profile 里残留的 studio 注册式默认页必须从开始页摘掉');
 	assert.equal(client.selectStartPages([mk('acme/tasks/default', 'Tasks')]).length, 1,
 		'新 key 的同名工作台不得被误吞');
 });
@@ -994,7 +996,7 @@ await t('阶段3/4 单一目录生成视图与 legacy 桥硬退役', () => {
 	assert.deepStrictEqual([...probe.launcherPages], ['acme/active/default']);
 	assert.deepStrictEqual([...probe.nativeTabPages], ['acme/active/default', 'vssaros/marketplace/default']);
 	assert.deepStrictEqual([...probe.routeWhitelist], ['/x/a/', '/x/marketplace/']);
-	assert.equal(probe.hiddenWorkbenchIds.length, 11, '策略视图必须带 11 个隐藏身份');
+	assert.equal(probe.hiddenWorkbenchIds.length, 12, '策略视图必须带 12 个隐藏身份');
 	assert.deepStrictEqual([...probe.retiredWorkbenchIds], ['vssaros/loop']);
 	assert.deepStrictEqual([...probe.offlineRoutes], ['/x/kanban/', '/x/workflow/', '/x/imagegen/', '/x/skills/']);
 	const entries = client.catalogEntriesOf([]);

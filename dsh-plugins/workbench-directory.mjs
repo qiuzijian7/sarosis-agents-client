@@ -3,7 +3,7 @@
  * 纯 Node ESM，无 DOM / React 依赖；所有浏览器 chunk 与 Host ESM 消费方都由
  * scripts/generate-workbench-directory.mjs 从这里生成投影，禁止再手抄业务清单。
  */
-export const WORK_DIRECTORY_VERSION = '2026-11-19.2';
+export const WORK_DIRECTORY_VERSION = '2026-11-24.1';
 
 export const VISIBILITY_IDENTIFIERS = Object.freeze({
 	HIDDEN: 'HIDDEN_VISIBILITY',
@@ -53,7 +53,7 @@ function row(input) {
 }
 
 export const WORK_DIRECTORY = Object.freeze([
-	// 11 个 hidden 兼容别名 / 注册式重复入口
+	// 12 个 hidden 兼容别名 / 注册式重复入口（含已下线工作台）
 	row({ key: 'vssaros/marketplace/default', workbenchId: 'vssaros/marketplace', pageId: 'default', canonicalId: 'vssaros/marketplace', state: 'hidden', visibilityKey: 'HIDDEN', aliases: ['vssaros-wb-marketplace'], replacedBy: 'legacy:/x/marketplace//vssaros-wb-marketplace', route: '/x/marketplace/', title: '商城工作台', description: '注册式商城工作台（开始页隐藏）', icon: '🛒', sourceKind: 'registered', sourcePackage: 'vssaros-marketplace', hidden: true, nativeTab: true, routeWhitelist: true, deepLink: true, manifest: true, manifestOrder: 1, directoryOrder: 1 }),
 	row({ key: 'vssaros/sessions/default', workbenchId: 'vssaros/sessions', pageId: 'default', canonicalId: 'vssaros/sessions', state: 'hidden', visibilityKey: 'HIDDEN', aliases: ['vssaros-wb-sessions'], replacedBy: '', route: '/x/sessions/', title: '历史会话', description: '注册式历史会话（开始页隐藏）', icon: '🕘', sourceKind: 'registered', sourcePackage: 'vssaros-sessions', hidden: true, nativeTab: true, routeWhitelist: true, deepLink: true, manifest: true, manifestOrder: 2, directoryOrder: 2 }),
 	row({ key: 'vssaros/workflow/default', workbenchId: 'vssaros/workflow', pageId: 'default', canonicalId: 'vssaros/workflow', state: 'hidden', visibilityKey: 'HIDDEN', aliases: ['vssaros-wb-workflow'], replacedBy: '', route: '/x/workflow/', title: 'Workflow', description: '注册式工作流（开始页隐藏）', icon: '⚙', sourceKind: 'registered', sourcePackage: 'vssaros-workflow', hidden: true, nativeTab: true, routeWhitelist: true, deepLink: true, manifest: true, manifestOrder: 3, directoryOrder: 3 }),
@@ -65,6 +65,12 @@ export const WORK_DIRECTORY = Object.freeze([
 	row({ key: 'legacy:/x/codebase//vssaros-wb-codebase', workbenchId: 'legacy:/x/codebase/', pageId: 'vssaros-wb-codebase', canonicalId: 'vssaros/codebase', state: 'hidden', visibilityKey: 'HIDDEN', aliases: ['vssaros-wb-codebase', '/x/codebase/'], replacedBy: 'vssaros/codebase/default', route: '/x/codebase/', title: '代码库', description: '旧 route 代码库入口', icon: '🕸️', sourceKind: 'legacy', sourcePackage: 'vssaros-codebase', hidden: true, nativeTab: true, routeWhitelist: true, deepLink: true, manifest: true, manifestOrder: 8, directoryOrder: 8 }),
 	row({ key: 'legacy:/x/workflow//vssaros-wb-workflow', workbenchId: 'legacy:/x/workflow/', pageId: 'vssaros-wb-workflow', canonicalId: 'vssaros/workflow', state: 'hidden', visibilityKey: 'HIDDEN', aliases: ['vssaros-wb-workflow', '/x/workflow/'], replacedBy: 'vssaros/workflow/default', route: '/x/workflow/', title: '工作流', description: '旧 route 工作流入口', icon: '🔀', sourceKind: 'legacy', sourcePackage: 'vssaros-workflow', hidden: true, nativeTab: true, routeWhitelist: true, deepLink: true, manifest: true, manifestOrder: 9, directoryOrder: 9 }),
 	row({ key: 'legacy:/x/kanban//vssaros-wb-kanban', workbenchId: 'legacy:/x/kanban/', pageId: 'vssaros-wb-kanban', canonicalId: 'vssaros/kanban', state: 'hidden', visibilityKey: 'HIDDEN', aliases: ['vssaros-wb-kanban', '/x/kanban/'], replacedBy: 'vssaros/kanban/default', route: '/x/kanban/', title: '看板', description: '旧 route 看板入口', icon: '🗂️', sourceKind: 'legacy', sourcePackage: 'vssaros-kanban', hidden: true, nativeTab: true, routeWhitelist: true, deepLink: true, manifest: true, manifestOrder: 10, directoryOrder: 10 }),
+
+	// ★ 2026-11-24：打包版开始页残留的「萨罗斯管理平台」来自旧 profile 里未卸载的
+	//   `@vssaros/dsh-studio`（源码 2026-11-11 已下线）。宿主只补装/升级、不卸载旧 bundle，
+	//   它启动时仍会 register `vssaros/studio/default` ⇒ 按稳定身份登记为 hidden，
+	//   由 HOME_HIDDEN_PAGE_KEYS / HOME_HIDDEN_WORKBENCH_IDS 从开始页摘掉，不动 providers。
+	row({ key: 'vssaros/studio/default', workbenchId: 'vssaros/studio', pageId: 'default', canonicalId: 'vssaros/studio', state: 'hidden', visibilityKey: 'HIDDEN', aliases: [], replacedBy: '', route: '', title: '萨罗斯管理平台', description: '已下线（开始页隐藏）', icon: '🌐', sourceKind: 'registered', sourcePackage: '@vssaros/dsh-studio', hidden: true, routeWhitelist: false, deepLink: false, manifest: true, manifestOrder: 20, directoryOrder: 20 }),
 
 	// 4 个 offline route 别名
 	row({ key: 'offline:/x/kanban/', workbenchId: 'offline:/x/kanban/', pageId: 'default', canonicalId: 'vssaros/kanban', state: 'offline', visibilityKey: 'OFFLINE', aliases: ['vssaros-wb-kanban', '/x/kanban/'], replacedBy: 'vssaros/kanban/default', route: '/x/kanban/', title: '看板', description: '临时下线，仅保 route', icon: '🗂️', sourceKind: 'legacy', sourcePackage: 'vssaros-kanban', offline: true, routeWhitelist: true, deepLink: true, manifest: true, manifestOrder: 11, directoryOrder: 11 }),

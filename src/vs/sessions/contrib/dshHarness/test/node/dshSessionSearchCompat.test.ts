@@ -36,7 +36,10 @@ suite('dshHarness / historical session search compatibility', () => {
 		assert.strictEqual(tolerateNullSessionSearchReason(patched), patched);
 		assert.throws(() => tolerateNullSessionSearchReason(''), /unsupported turnEndText/);
 		assert.throws(() => tolerateNullSessionSearchReason(fixture + fixture), /unsupported turnEndText/);
-		assert.throws(() => renderSessionSearchCompatPreload('0.2.3'), /unsupported runtime version/);
+		// ★ 2026-11-24：改成版本无关的能力探测 ⇒ 升 rc.5 / 0.2.3 不该让 Host 启动即崩
+		assert.doesNotThrow(() => renderSessionSearchCompatPreload('0.2.2-rc.5'));
+		assert.doesNotThrow(() => renderSessionSearchCompatPreload('0.2.3-alpha.2'));
+		assert.match(renderSessionSearchCompatPreload('0.2.2-rc.5'), /0\.2\.2-rc\.5/);
 		const extract = new Function(patched.replace('export ', '') + '; return extractSessionEventText;')() as (event: object) => string;
 		const event = { type: 'turn/end', data: { reason: null } };
 		const before = JSON.stringify(event);
@@ -109,5 +112,22 @@ console.log('cold-read and search documents preserved');`;
 		assert.strictEqual(result.status, 0, result.stderr);
 		assert.match(result.stdout, /cold-read and search documents preserved/);
 		assert.strictEqual(readFileSync(entry, 'utf8'), source);
+	});
+
+	test('★ 版本无关：上游源码形状变了只跳过 patch，不让 Host 启动失败', () => {
+		const pkg = join(root, 'node_modules', '@deepseek-ai', 'dsh-session-query');
+		mkdirSync(join(pkg, 'lib'), { recursive: true });
+		writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-session-query', type: 'module', version: '0.2.2-rc.5' }));
+		const entry = join(pkg, 'lib', 'index.js');
+		const upstream = 'export const extractSessionEventText = () => "upstream-fixed";\n';
+		writeFileSync(entry, upstream);
+		const preload = join(root, 'shape-changed.mjs');
+		writeFileSync(preload, renderSessionSearchCompatPreload('0.2.2-rc.5'));
+		const script = `const { extractSessionEventText } = await import(${JSON.stringify(pathToFileURL(entry).href)}); console.log(extractSessionEventText());`;
+		const run = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 15_000 });
+		assert.strictEqual(run.status, 0, run.stderr);
+		assert.match(run.stdout, /upstream-fixed/);
+		assert.match(run.stderr, /source shape changed/);
+		assert.strictEqual(readFileSync(entry, 'utf8'), upstream);
 	});
 });

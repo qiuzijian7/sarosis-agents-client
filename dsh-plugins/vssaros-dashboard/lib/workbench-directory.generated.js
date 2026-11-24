@@ -1,4 +1,4 @@
-/* @generated-workbench-directory:file hash=3eef1f2238cf */
+/* @generated-workbench-directory:file hash=bef767c4eff1 */
 export const OFFLINE_WORKBENCH_ROUTES = ['/x/kanban/', '/x/workflow/', '/x/imagegen/', '/x/skills/'];
 
 export const WORKBENCH_MODULES = [

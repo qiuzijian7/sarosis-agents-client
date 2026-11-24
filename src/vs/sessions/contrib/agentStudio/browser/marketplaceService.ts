@@ -39,7 +39,7 @@ import { buildPublishManifest } from './workflow/publishManifest.js';
 
 const TOKEN_KEY = 'saros.marketplace.token';
 const USER_KEY = 'saros.marketplace.user';
-const DEFAULT_ENDPOINT = 'http://21.6.92.5:3040';
+const DEFAULT_ENDPOINT = 'http://21.91.158.20:3040';
 
 /** installed-packages.json 条目 */
 interface IInstalledEntry {

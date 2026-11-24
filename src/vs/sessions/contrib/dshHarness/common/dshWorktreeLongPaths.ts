@@ -31,9 +31,19 @@ registerWorktreeHooks({
     const result = nextLoad(url, context);
     if (!url.startsWith('file:') || !worktreeFilePath(url).replaceAll('\\\\', '/').endsWith('/@deepseek-ai/dsh-experimental-worktree/lib/index.js')) return result;
     const manifest = JSON.parse(readWorktreeFile(worktreeResolve(worktreeDirname(worktreeFilePath(url)), '../package.json'), 'utf8'));
-    if (manifest.version !== ${JSON.stringify(version)}) throw new Error('dsh worktree long paths: profile/runtime version mismatch');
+    if (manifest.version !== ${JSON.stringify(version)}) {
+      console.warn('[vssaros-worktree-compat] profile/runtime version mismatch; skip patch');
+      return result;
+    }
     const source = typeof result.source === 'string' ? result.source : Buffer.from(result.source).toString('utf8');
-    const patched = enableWorktreeLongPaths(source);
+    let patched = source;
+    try {
+      patched = enableWorktreeLongPaths(source);
+    } catch (e) {
+      console.warn('[vssaros-worktree-compat] source shape changed; skip patch: ' + String(e && e.message ? e.message : e));
+      return result;
+    }
+    if (patched === source) return result;
     console.info('[vssaros-worktree-compat] core.longpaths=true enabled for official worktree');
     return { ...result, source: patched };
   }
