@@ -39,6 +39,10 @@ import { buildPublishManifest } from './workflow/publishManifest.js';
 // ★ 2026-11-24：与 dsh 侧 installedLedger.js 争同一把 `<installed-packages.json>.lock`
 //   （同协议同超时），杜绝两个进程 read→改→write 之间的丢更新。
 import { acquireFileLock, fileServiceOps, lockResourceFor } from '../common/fileWriteLock.js';
+// ★ 2026-11-24：台账是整文件覆盖写 JSON，普通 writeFile 是「截断 + 写」两步 ⇒ 中途
+//   被 kill 会留下半截 JSON（启动即读，损坏后「已安装」页签整片空）。
+//   统一走 common/atomicWrite 的 temp+rename 唯一入口（能力探测 + 降级，绝不写失败）。
+import { writeFileAtomicSafe } from '../common/atomicWrite.js';
 
 const TOKEN_KEY = 'saros.marketplace.token';
 const USER_KEY = 'saros.marketplace.user';
@@ -916,7 +920,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			entries = entries.filter(e => !(e.kind === entry.kind && e.storeId === entry.storeId));
 			entries.push(merged);
 			await this.fileService.createFolder(URI.joinPath(installedFileUri, '..'));
-			await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(entries, null, 2)));
+			await writeFileAtomicSafe(this.fileService, installedFileUri, VSBuffer.fromString(JSON.stringify(entries, null, 2)));
 			this._onDidChangeInstalled.fire();
 		} finally {
 			await release();
@@ -933,7 +937,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 				const entries: IInstalledEntry[] = JSON.parse(content.value.toString());
 				const filtered = entries.filter(e => !(e.kind === kind && e.storeId === storeId));
 				if (filtered.length === entries.length) { return; }
-				await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
+				await writeFileAtomicSafe(this.fileService, installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
 				this._onDidChangeInstalled.fire();
 			} catch { /* ignore */ }
 		} finally {
@@ -954,7 +958,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 				const toRemove = new Set(records.map(r => `${r.kind}:${r.storeId}`));
 				const filtered = entries.filter(e => !toRemove.has(`${e.kind}:${e.storeId}`));
 				if (filtered.length === entries.length) { return; }
-				await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
+				await writeFileAtomicSafe(this.fileService, installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
 				this._onDidChangeInstalled.fire();
 			} catch { /* ignore */ }
 		} finally {

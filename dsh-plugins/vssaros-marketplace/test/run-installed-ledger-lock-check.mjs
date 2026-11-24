@@ -129,6 +129,23 @@ await check('IDE 侧已无第四套台账写点（只剩 service 三个加锁入
   const svc = fs.readFileSync(path.join(base, 'marketplaceService.ts'), 'utf8');
   assert.equal((svc.match(/acquireFileLock\(lockResourceFor\(installedFileUri\)/g) || []).length, 3);
 });
+await check('IDE 台账写入统一走 writeFileAtomicSafe（temp+rename 防半截 JSON）', async () => {
+  const s = fs.readFileSync(path.join(ROOT, 'src/vs/sessions/contrib/agentStudio/browser/marketplaceService.ts'), 'utf8');
+  assert.equal((s.match(/writeFileAtomicSafe\(this\.fileService, installedFileUri/g) || []).length, 3);
+  assert.doesNotMatch(s, /this\.fileService\.writeFile\(installedFileUri/, '台账不该再有裸 writeFile');
+  assert.match(s, /from '\.\.\/common\/atomicWrite\.js'/);
+  // helper 本身必须探能力 + 降级（不是无条件传 atomic）
+  const helper = fs.readFileSync(path.join(ROOT, 'src/vs/sessions/contrib/agentStudio/common/atomicWrite.ts'), 'utf8');
+  assert.match(helper, /hasCapability\(resource, FileSystemProviderCapabilities\.FileAtomicWrite\)/);
+  assert.match(helper, /await fileService\.writeFile\(resource, content\)/);
+});
+await check('out/ 产物同样接了原子写（本机运行生效）', async () => {
+  const p = path.join(ROOT, 'out/vs/sessions/contrib/agentStudio/browser/marketplaceService.js');
+  if (!fs.existsSync(p)) { console.log('    -- out/ 无产物，跳过'); return; }
+  const s = fs.readFileSync(p, 'utf8');
+  assert.equal((s.match(/writeFileAtomicSafe\(this\.fileService, installedFileUri/g) || []).length, 3);
+  assert.equal((s.match(/this\.fileService\.writeFile\(installedFileUri/g) || []).length, 0);
+});
 await check('双端锁协议常量一致（同一把 <file>.lock）', async () => {
   const dsh = fs.readFileSync(path.join(ROOT, 'dsh-plugins/vssaros-foundation/lib/lock.js'), 'utf8');
   const ide = fs.readFileSync(path.join(ROOT, 'src/vs/sessions/contrib/agentStudio/common/fileWriteLock.ts'), 'utf8');
