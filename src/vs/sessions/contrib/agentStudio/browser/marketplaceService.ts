@@ -36,6 +36,9 @@ import { compareSemver } from './publishVersioning.js';
 import { resolvePublishAuthor } from '../common/publishAuthor.js';
 // 发布 manifest 组装（纯函数，2026-09-11 抽出以便单测锁定「元数据不丢失」）。
 import { buildPublishManifest } from './workflow/publishManifest.js';
+// ★ 2026-11-24：与 dsh 侧 installedLedger.js 争同一把 `<installed-packages.json>.lock`
+//   （同协议同超时），杜绝两个进程 read→改→write 之间的丢更新。
+import { acquireFileLock, fileServiceOps, lockResourceFor } from '../common/fileWriteLock.js';
 
 const TOKEN_KEY = 'saros.marketplace.token';
 const USER_KEY = 'saros.marketplace.user';
@@ -885,62 +888,78 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	}
 
 	private async upsertInstalled(entry: IInstalledEntry): Promise<void> {
-		let entries: IInstalledEntry[] = [];
 		const installedFileUri = this.getInstalledFileUri();
+		// ★ 2026-11-24：整段 read→改→write 必须落在锁内（读放锁外仍会丢更新）。
+		const release = await acquireFileLock(lockResourceFor(installedFileUri), fileServiceOps(this.fileService), { label: '商城安装台账' });
 		try {
-			if (await this.fileService.exists(installedFileUri)) {
-				const content = await this.fileService.readFile(installedFileUri);
-				const parsed = JSON.parse(content.value.toString());
-				if (Array.isArray(parsed)) { entries = parsed; }
-			}
-		} catch { /* ignore */ }
-		// 按 kind+storeId 去重更新
-		// ★ 2026-11-24：覆盖条目时**继承旧条目的扩展字段**（与 dsh 侧 installedLedger.js 同口径）。
-		//   以前直接 push(entry) 会把 packageName / format / owner 抹掉 ⇒ 插件卸不掉、级联卸载失灵。
-		//   owner 刻意不继承：组件重装成独立资源时，继承旧 owner 会让 Bot 级联卸载误删。
-		//   显式传入的新值优先；坏数据（非数组）按空台账处理，不因 .filter 抛错。
-		const prev = entries.find(e => e.kind === entry.kind && e.storeId === entry.storeId);
-		const packageName = entry.packageName || prev?.packageName;
-		const format = entry.format || prev?.format;
-		const merged: IInstalledEntry = {
-			...entry,
-			...(packageName ? { packageName: String(packageName) } : {}),
-			...(format ? { format: String(format) } : {}),
-		};
-		entries = entries.filter(e => !(e.kind === entry.kind && e.storeId === entry.storeId));
-		entries.push(merged);
-		await this.fileService.createFolder(URI.joinPath(installedFileUri, '..'));
-		await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(entries, null, 2)));
-		this._onDidChangeInstalled.fire();
+			let entries: IInstalledEntry[] = [];
+			try {
+				if (await this.fileService.exists(installedFileUri)) {
+					const content = await this.fileService.readFile(installedFileUri);
+					const parsed = JSON.parse(content.value.toString());
+					if (Array.isArray(parsed)) { entries = parsed; }
+				}
+			} catch { /* ignore */ }
+			// 按 kind+storeId 去重更新
+			// ★ 2026-11-24：覆盖条目时**继承旧条目的扩展字段**（与 dsh 侧 installedLedger.js 同口径）。
+			//   以前直接 push(entry) 会把 packageName / format / owner 抹掉 ⇒ 插件卸不掉、级联卸载失灵。
+			//   owner 刻意不继承：组件重装成独立资源时，继承旧 owner 会让 Bot 级联卸载误删。
+			//   显式传入的新值优先；坏数据（非数组）按空台账处理，不因 .filter 抛错。
+			const prev = entries.find(e => e.kind === entry.kind && e.storeId === entry.storeId);
+			const packageName = entry.packageName || prev?.packageName;
+			const format = entry.format || prev?.format;
+			const merged: IInstalledEntry = {
+				...entry,
+				...(packageName ? { packageName: String(packageName) } : {}),
+				...(format ? { format: String(format) } : {}),
+			};
+			entries = entries.filter(e => !(e.kind === entry.kind && e.storeId === entry.storeId));
+			entries.push(merged);
+			await this.fileService.createFolder(URI.joinPath(installedFileUri, '..'));
+			await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(entries, null, 2)));
+			this._onDidChangeInstalled.fire();
+		} finally {
+			await release();
+		}
 	}
 
 	private async removeInstalled(kind: PackageKind, storeId: string): Promise<void> {
 		const installedFileUri = this.getInstalledFileUri();
+		const release = await acquireFileLock(lockResourceFor(installedFileUri), fileServiceOps(this.fileService), { label: '商城安装台账' });
 		try {
-			if (!await this.fileService.exists(installedFileUri)) { return; }
-			const content = await this.fileService.readFile(installedFileUri);
-			const entries: IInstalledEntry[] = JSON.parse(content.value.toString());
-		const filtered = entries.filter(e => !(e.kind === kind && e.storeId === storeId));
-		if (filtered.length === entries.length) { return; }
-		await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
-		this._onDidChangeInstalled.fire();
-	} catch { /* ignore */ }
-}
+			try {
+				if (!await this.fileService.exists(installedFileUri)) { return; }
+				const content = await this.fileService.readFile(installedFileUri);
+				const entries: IInstalledEntry[] = JSON.parse(content.value.toString());
+				const filtered = entries.filter(e => !(e.kind === kind && e.storeId === storeId));
+				if (filtered.length === entries.length) { return; }
+				await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
+				this._onDidChangeInstalled.fire();
+			} catch { /* ignore */ }
+		} finally {
+			await release();
+		}
+	}
 
 	/** 批量移除残留安装记录（仅更新 installed-packages.json，不删除目录）。 */
 	async removeInstalledRecords(records: ReadonlyArray<{ kind: PackageKind; storeId: string }>): Promise<void> {
 		if (records.length === 0) { return; }
 		const installedFileUri = this.getInstalledFileUri();
+		const release = await acquireFileLock(lockResourceFor(installedFileUri), fileServiceOps(this.fileService), { label: '商城安装台账' });
 		try {
-			if (!await this.fileService.exists(installedFileUri)) { return; }
-			const content = await this.fileService.readFile(installedFileUri);
-			const entries: IInstalledEntry[] = JSON.parse(content.value.toString());
-			const toRemove = new Set(records.map(r => `${r.kind}:${r.storeId}`));
-			const filtered = entries.filter(e => !toRemove.has(`${e.kind}:${e.storeId}`));
-			if (filtered.length === entries.length) { return; }
-			await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
-			this._onDidChangeInstalled.fire();
-		} catch { /* ignore */ }
+			try {
+				if (!await this.fileService.exists(installedFileUri)) { return; }
+				const content = await this.fileService.readFile(installedFileUri);
+				const entries: IInstalledEntry[] = JSON.parse(content.value.toString());
+				const toRemove = new Set(records.map(r => `${r.kind}:${r.storeId}`));
+				const filtered = entries.filter(e => !toRemove.has(`${e.kind}:${e.storeId}`));
+				if (filtered.length === entries.length) { return; }
+				await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
+				this._onDidChangeInstalled.fire();
+			} catch { /* ignore */ }
+		} finally {
+			await release();
+		}
 	}
 
 	// ── 内部：目录解析（回退用）──────────────────────────────
