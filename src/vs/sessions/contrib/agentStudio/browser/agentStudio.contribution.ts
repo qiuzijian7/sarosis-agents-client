@@ -700,7 +700,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// --- Marketplace ---
 		[MARKETPLACE_URL_SETTING]: {
 			type: 'string',
-			default: 'http://21.91.158.20:3040',
+			default: 'http://21.6.92.5:3040',
 			description: localize('agentStudio.marketplace.url', "Saros 商城服务端地址，用于浏览、上传下载 agent/skill/mcp/知识库。"),
 		},
 		[MARKETPLACE_AUTO_CHECK_SETTING]: {

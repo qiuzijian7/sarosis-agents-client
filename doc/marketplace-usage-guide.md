@@ -9,12 +9,12 @@
 
 | 入口 | 地址 | 说明 |
 |------|------|------|
-| **商城网站** | http://21.91.158.20:3040 | 浏览器访问，网站 + API 同源 |
-| **API 根路径** | http://21.91.158.20:3040/api/v1 | 客户端调用 |
-| **健康检查** | http://21.91.158.20:3040/health | 运维监控 |
+| **商城网站** | http://21.6.92.5:3040 | 浏览器访问，网站 + API 同源 |
+| **API 根路径** | http://21.6.92.5:3040/api/v1 | 客户端调用 |
+| **健康检查** | http://21.6.92.5:3040/health | 运维监控 |
 | **管理员账号** | `admin` / `admin123` | 首次部署自动创建 |
 
-> 域名访问：http://vssaros-shop.devcloud.woa.com:3040
+> 域名访问：http://21.6.92.5:3040
 
 ---
 
@@ -22,7 +22,7 @@
 
 ### 2.1 注册与登录
 
-1. 访问 http://21.91.158.20:3040
+1. 访问 http://21.6.92.5:3040
 2. 点击右上角「注册」，填写用户名/邮箱/密码
 3. 注册成功自动登录并跳转「我的资源」
 4. 已有账号点「登录」（支持用户名或邮箱）
@@ -76,7 +76,7 @@
 ```jsonc
 {
   // 商城服务端地址
-  "saros.marketplace.url": "http://21.91.158.20:3040",
+  "saros.marketplace.url": "http://21.6.92.5:3040",
   // 启动时自动检查资源更新
   "saros.marketplace.autoCheckUpdates": true,
   // 检查间隔（秒）
@@ -287,18 +287,18 @@ storeId: pdf-skill
 **快速验证**（命令行）：
 ```bash
 # 健康检查
-curl http://21.91.158.20:3040/health
+curl http://21.6.92.5:3040/health
 
 # 列表
-curl http://21.91.158.20:3040/api/v1/packages?kind=skill
+curl http://21.6.92.5:3040/api/v1/packages?kind=skill
 
 # 登录获取 token
-curl -X POST http://21.91.158.20:3040/api/v1/auth/login \
+curl -X POST http://21.6.92.5:3040/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"admin123"}'
 
 # 升级检查
-curl -X POST http://21.91.158.20:3040/api/v1/upgrade/check \
+curl -X POST http://21.6.92.5:3040/api/v1/upgrade/check \
   -H "Content-Type: application/json" \
   -d '{"items":[{"kind":"skill","storeId":"pdf-skill","version":"0.9.0"}]}'
 ```

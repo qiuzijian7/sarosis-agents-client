@@ -35,7 +35,7 @@ export const TOF_IDENTITY_REF = 'VSSAROS_TOF_IDENTITY_DSH';
 export const MARKET_JWT_REF = 'VSSAROS_MARKET_JWT';
 
 /** 商城服务端默认地址（与 IDE 侧 `marketplaceService.DEFAULT_ENDPOINT` 同值）。 */
-export const DEFAULT_MARKET_ENDPOINT = 'http://21.91.158.20:3040';
+export const DEFAULT_MARKET_ENDPOINT = 'http://21.6.92.5:3040';
 
 /**
  * 数据根（`config.dataRoot` → `VSSAROS_DATA_ROOT` → `~/.vssaros`）。

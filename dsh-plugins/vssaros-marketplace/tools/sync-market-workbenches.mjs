@@ -27,7 +27,7 @@
  *   node tools/sync-market-workbenches.mjs --limit 3
  *
  * 环境变量：
- *   MARKET_ENDPOINT   默认 http://21.91.158.20:3040
+ *   MARKET_ENDPOINT   默认 http://21.6.92.5:3040
  *   MARKET_CATALOG    覆盖目录地址（默认上面的官方地址）
  */
 
@@ -47,7 +47,7 @@ const LIMIT = (() => {
 	return Number.isFinite(n) && n > 0 ? n : 0;
 })();
 
-const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.91.158.20:3040').replace(/\/$/, '');
+const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.6.92.5:3040').replace(/\/$/, '');
 const CATALOG_URL = process.env.MARKET_CATALOG || 'https://market.dshdesktop.com/index.json';
 const CONCURRENCY = 3;
 

@@ -25,7 +25,7 @@
  *
  * 前置：~/.vssaros-dev/dsh-home/.credentials.yaml（或 ~/.vssaros/dsh-home/）里有
  *       VSSAROS_TOF_TICKET_DSH + VSSAROS_TOF_IDENTITY_DSH；内网可达
- *       MARKET_ENDPOINT（默认 http://21.91.158.20:3040）。
+ *       MARKET_ENDPOINT（默认 http://21.6.92.5:3040）。
  */
 
 import fs from 'node:fs';
@@ -36,7 +36,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LIB = path.resolve(HERE, '..', 'lib');
 const SOURCE_DIR = path.join(HERE, 'official-skills');
-const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.91.158.20:3040').replace(/\/+$/, '');
+const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.6.92.5:3040').replace(/\/+$/, '');
 const DRY = process.argv.includes('--dry');
 const ICONS = process.argv.includes('--icons');
 const VERSION = '1.0.0';

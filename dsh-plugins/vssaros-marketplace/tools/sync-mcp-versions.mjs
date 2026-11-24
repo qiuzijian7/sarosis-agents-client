@@ -33,7 +33,7 @@ import { pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const LIB = path.resolve(HERE, '..', 'lib');
-const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.91.158.20:3040').replace(/\/+$/, '');
+const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.6.92.5:3040').replace(/\/+$/, '');
 const CONCURRENCY = 4;
 /** 占位符描述（Issue 表单没填时的默认值） */
 const PLACEHOLDERS = new Set(['_No response_', 'No response', '_No response_ ', 'N/A', '-']);

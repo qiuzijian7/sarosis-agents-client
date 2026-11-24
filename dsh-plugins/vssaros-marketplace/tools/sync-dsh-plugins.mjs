@@ -43,7 +43,7 @@ import { pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const LIB = path.resolve(HERE, '..', 'lib');
-const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.91.158.20:3040').replace(/\/+$/, '');
+const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.6.92.5:3040').replace(/\/+$/, '');
 const CATALOG_URL = process.env.PLUGIN_CATALOG || 'https://awesome-dsh-plugin.com/plugins.json';
 const CONCURRENCY = 5;
 

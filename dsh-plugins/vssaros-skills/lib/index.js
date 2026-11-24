@@ -3382,7 +3382,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 		<span class="sk-count" data-sk-hcount>${summary.count} 技能 · ${wf.items.length} 工作流 · ${ag.items.length} Agent · ${VISIBLE_TOOLS_WORKBENCHES.length} 工作台</span>
 		<span class="sk-spacer"></span>
 		<label class="sk-search-h"><input data-sk-search placeholder="搜索名称 / 描述 / 路径" aria-label="搜索"><span data-sk-count>${summary.count}/${summary.count}</span></label>
-		<a class="sk-hbtn sk-hbtn-link" href="http://21.91.158.20:3040/" target="_blank" rel="noopener" data-sk-market-link title="在浏览器打开商城：http://21.91.158.20:3040/">商城 \u203A</a>
+		<a class="sk-hbtn sk-hbtn-link" href="http://21.6.92.5:3040/" target="_blank" rel="noopener" data-sk-market-link title="在浏览器打开商城：http://21.6.92.5:3040/">商城 \u203A</a>
 		<button type="button" class="sk-hbtn" data-sk-refresh title="重新加载">\u21BB</button>
 		<button type="button" class="sk-hbtn" data-sk-open-full title="在编辑区打开本页">\u2197</button>
 	</div>

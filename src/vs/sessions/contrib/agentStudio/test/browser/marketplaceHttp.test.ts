@@ -145,7 +145,7 @@ function makeInstaller(installCalls: IInstallCall[], localDir: URI, manifest: Pa
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const DEFAULT_ENDPOINT = 'http://21.91.158.20:3040';
+const DEFAULT_ENDPOINT = 'http://21.6.92.5:3040';
 
 function makeBaseManifest(overrides: Partial<PackageManifest> = {}): PackageManifest {
 	return {
