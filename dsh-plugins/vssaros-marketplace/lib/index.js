@@ -1551,7 +1551,7 @@ export async function apply(ctx, config) {
 						try {
 							json(200, withChangeReceipt(await runLocalByTarget(target, op, params), op));
 						} catch (e) {
-							json(200, { ok: false, error: String(e?.message ?? e), ...(e?.code === 'revision-conflict' ? { code: e.code, current: e.current } : {}) });
+							json(200, { ok: false, error: String(e?.message ?? e), ...(e?.code === 'revision-conflict' ? { code: e.code, current: e.current } : {}), ...(typeof e?.code === 'string' && e.code.startsWith('E_') ? { installCode: e.code, ...(e.backup ? { backup: e.backup } : {}) } : {}) });
 						}
 						return;
 					}

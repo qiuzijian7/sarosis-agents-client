@@ -127,11 +127,12 @@ for (const kind of ['knowledge']) {
 {
 	const idx = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8');
 	// 本地分支：resolveOp 之后必须有 try/catch 包住
+	// ★ 2026-11-24：出口改为 withChangeReceipt(...) 包装（错误契约本身没变），守卫同步适配
 	check('⑥ 本地分支包了 try/catch（错误统一成 200 + ok:false）',
-		/try \{\s*json\(200, await runLocalByTarget\(target, op, params\)\);\s*\} catch \(e\) \{\s*json\(200, \{ ok: false/.test(idx));
+		/try \{\s*json\(200, withChangeReceipt\(await runLocalByTarget\(target, op, params\), op\)\);\s*\} catch \(e\) \{\s*json\(200, \{ ok: false/.test(idx));
 	// IDE 兜底：原先**裸调用**，是唯一会返回 500 的分支
 	check('⑥ IDE 兜底也包了 try/catch（原先是裸调用 ⇒ 唯一 500 分支）',
-		/try \{\s*json\(200, await callIde\(op, params\)\);\s*\} catch \(e\)/.test(idx));
+		/try \{\s*json\(200, withChangeReceipt\(await callIde\(op, params\), op\)\);\s*\} catch \(e\)/.test(idx));
 }
 
 // ── ⑦ 打包能力**只能有一份清单**（防两份打架）────────────────────

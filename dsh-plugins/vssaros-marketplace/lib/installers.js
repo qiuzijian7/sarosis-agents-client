@@ -20,8 +20,11 @@
 import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { listTarGzEntries } from './tar.js';
+// ★ 2026-11-24 P1：安装前兼容性预检 + 失败分类（零依赖纯函数）
+import { preflightCompatibility, classifyInstallError } from './installPreflight.js';
+import { currentDshVersion } from './hostVersion.js';
 // ★ 2026-11-09 Bot 组合包：清单契约 + MCP 注册/注销 + 台账（三者都不反向依赖 installers ⇒ 无环）
 import {
 	BOT_MANIFEST_FILE, makeBotReceipt, readBotManifest, scanBotSecrets, validateBotPack,
@@ -204,6 +207,42 @@ async function writeFiles(targetDir, files, opts = {}) {
 		const dest = join(targetDir, ...file.path.split('/'));
 		await mkdir(dirname(dest), { recursive: true });
 		await writeFile(dest, file.data);
+	}
+}
+
+
+/**
+ * ★ 2026-11-24 P1：**原子落盘**（普通资源包分支专用）。
+ *
+ * 先把全部文件写进同级 staging 目录，全部成功后再 rename 到目标：
+ *   · 中途任一 writeFile 失败 ⇒ staging 清理，目标目录保持原样（upgrade 时旧版完好）；
+ *   · 不再出现「写了半个目录」或「先删旧目录再写失败」。
+ * ⚠ Bot / components 组合包有自己的多目录 + 台账 + MCP 回滚语义，继续用原 writeFiles，
+ *   这里不覆盖它们（避免打断既有回滚契约）。
+ * @param {string} targetDir
+ * @param {{ path: string, data: Buffer }[]} files
+ * @param {{ overwrite?: boolean }} [opts]
+ */
+export async function writeFilesAtomic(targetDir, files, opts = {}) {
+	const parent = dirname(targetDir);
+	const staging = join(parent, `.staging-${basename(targetDir)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+	try {
+		await mkdir(staging, { recursive: true });
+		for (const file of files) {
+			const dest = join(staging, ...file.path.split('/'));
+			await mkdir(dirname(dest), { recursive: true });
+			await writeFile(dest, file.data);
+		}
+		if (await exists(targetDir)) {
+			if (!opts.overwrite) {
+				throw new Error(`「${basename(targetDir)}」已经装过了。要在它基础上更新请用「升级」，或先卸载`);
+			}
+			await rm(targetDir, { recursive: true, force: true });
+		}
+		await rename(staging, targetDir);
+	} catch (e) {
+		await rm(staging, { recursive: true, force: true }).catch(() => {});
+		throw e;
 	}
 }
 
@@ -518,6 +557,17 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 	if (files.length === 0) {
 		throw new Error('包内没有任何文件（拒绝安装一个空包）');
 	}
+	// ★ 2026-11-24 P1：兼容性 preflight —— 解包之后、任何 mkdir/write 之前，
+	//   所有安装路径（gzBuffer / files / Bot / components / external）都必经 ⇒ 拒绝时零落盘。
+	//   口径保守：包内没有声明 / 读不到宿主版本 / range 看不懂 ⇒ unknown 放行，绝不误拒。
+	let hostVersion = '';
+	try { hostVersion = currentDshVersion().version || ''; } catch { /* 读不到就按 unknown 放行 */ }
+	const preflight = preflightCompatibility({ files, runtimeVersion: hostVersion });
+	if (preflight.status === 'incompatible') {
+		const err = new Error(`安装前兼容性检查未通过：${preflight.message}`);
+		err.code = preflight.code;
+		throw err;
+	}
 	// ★ 2026-11-09：包里有 bot.json ⇒ 组合包，走分发安装；普通 agent 包保持原链路 ✓
 	const hasCombo = files.some(f => f.path === COMPONENTS_FILE);
 	const bot = readBotManifest(files);
@@ -565,7 +615,17 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 	if (kind === 'skill') {
 		runtimeFiles.push({ path: SIDECAR_FILE, data: Buffer.from(sidecarOf({ storeId, version, displayName }), 'utf8') });
 	}
-	await writeFiles(targetDir, runtimeFiles, { overwrite: Boolean(existing) });
+	// ★ 2026-11-24 P1：普通分支改走原子落盘；失败时清理 staging、保留原目录，
+	//   并把失败分类码 / 升级备份路径带进错误对象（upgrade 失败时用户能拿到备份）。
+	try {
+		await writeFilesAtomic(targetDir, runtimeFiles, { overwrite: Boolean(existing) });
+	} catch (e) {
+		const classified = classifyInstallError(e);
+		const err = new Error(String(e?.message ?? e));
+		err.code = classified.code;
+		if (backup) { err.backup = backup; }
+		throw err;
+	}
 	// ★ 2026-10-31：知识库装完**登记成库**（否则在知识库里看不见 ⇒ 等于没装）
 	let vault = undefined;
 	let vaultWarning = '';

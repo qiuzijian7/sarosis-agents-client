@@ -1063,10 +1063,14 @@ function makeSkill(localId, version, extra = {}) {
 		const ma3 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'marketAgent.js'), 'utf8');
 
 		check('㊱ 有 `market_install` 工具', at3.includes("'market_install'"));
-		check('㊱ 只要求 `slug`（version 可选、**kind 不用传**）',
-			/required: \['slug'\]/.test(at3));
+		// ★ 2026-11-24：market_install 支持按名称先查商城 ⇒ slug 不再是唯一必填，
+		//   但仍不允许 kind 由调用方传（类型由服务端登记决定）。
+		check('㊱ 安装参数：slug 或 name/q 均可、kind 仍不由调用方传',
+			/name: 'market_install'[\s\S]{0,4000}required: \[\]/.test(at3)
+			&& /name: 'market_install'[\s\S]{0,4000}name: \{ type: 'string'/.test(at3)
+			&& /name: 'market_install'[\s\S]{0,4000}类型（kind）由商城登记决定/.test(at3));
 		check('㊱ 标记 `isConcurrencySafe: false`（同 slug 并发会互相覆盖目录）',
-			/name: 'market_install'[\s\S]{0,2400}isConcurrencySafe: \(\) => false/.test(at3));
+			/name: 'market_install'[\s\S]{0,9000}isConcurrencySafe: \(\) => false/.test(at3));
 		check('㊱ 有 render（只写 schema 会抛）', /name: 'market_install'[\s\S]{0,1800}render:/.test(at3));
 
 		// ★ 关键设计：**kind 由服务端登记决定**，不信调用方传的值（传错会装错目录）
