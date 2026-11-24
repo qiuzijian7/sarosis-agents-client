@@ -37,6 +37,8 @@ import { downloadGitHubTarball, locateInstallRoot, parseGitHubSource, resolveDow
 // ★ 2026-11-06（P1）：4 类非商城技能来源（内容 / 文件夹 / URL / GitHub）的解析与规范化
 import { ALLOWED_SKILL_URL_HOSTS, MAX_HUB_TREE_BYTES, MAX_SKILL_SOURCE_BYTES, SKILL_HUBS, SKILL_NAME, hubTreeToEntries, normalizeSkillFiles, parseSkillSource } from './skillSources.js';
 import { listTarGzEntries } from './tar.js';
+// ★ 2026-11-24：安装 spec 形状对齐上游 ParsedInstallSpec（零依赖纯函数）
+import { classifyDistribution, classifyInstallSpec } from './installSpec.js';
 // ★ 2026-11-10（P0）：安装前预览（告警扫描 / 来源汇总），纯函数模块
 import { distributionWarnings, finishPreview, scanPackageFiles, summarizeDistribution } from './preview.js';
 // ★ 2026-11-10 P2：离线便携包（导出 / 预览 / 原子导入）
@@ -925,18 +927,29 @@ export async function apply(ctx, config) {
 	 *   github-release ⇒ dsh 侧先下载 + 校验 sha256，再 file:<tmp.tgz>
 	 * ⚠ 校验不通过就**不装**（不为了"能装上"而跳过完整性检查）。
 	 */
+	/**
+	 * 发布源 → pnpm spec（与 IDE 的 resolveDistributionSpec 同口径）。
+	 *   npm            ⇒ name@version
+	 *   github-source  ⇒ github:owner/repo(#commit)
+	 *   github-release ⇒ dsh 侧先下载 + 校验 sha256，再 file:<tmp.tgz>
+	 * ⚠ 校验不通过就**不装**（不为了"能装上"而跳过完整性检查）。
+	 * ★ 2026-11-24：先用 installSpec.js 做与上游 ParsedInstallSpec 对齐的分类/校验，
+	 *   并在返回里附带 `parsed` 结构化诊断；**下面的 spec 拼接与错误文案逐字不变** ——
+	 *   上游 preflight 靠 spec 字符串判定 registry / git / tarball，语义等价不够。
+	 */
 	async function specForDistribution(dist, slug, version) {
-		if (!dist || typeof dist !== 'object') {
-			return { error: '这个商品没有登记发布源（distribution）⇒ 不知道从哪儿装' };
-		}
+		const plan = classifyDistribution(dist, slug, version);
+		if (plan.error) { return { error: plan.error }; }
 		if (dist.type === 'npm') {
 			if (!dist.name) { return { error: 'npm 发布源缺少包名' }; }
-			return { spec: dist.name + '@' + version, name: String(dist.name) };
+			const spec = dist.name + '@' + version;
+			return { spec, name: String(dist.name), parsed: classifyInstallSpec(spec) };
 		}
 		if (dist.type === 'github-source') {
 			if (!dist.name) { return { error: 'github-source 发布源缺少 owner/repo' }; }
 			const commit = dist.commit ? '#' + dist.commit : '';
-			return { spec: 'github:' + dist.name + commit, name: String(dist.name).split('/').pop() };
+			const spec = 'github:' + dist.name + commit;
+			return { spec, name: String(dist.name).split('/').pop(), parsed: classifyInstallSpec(spec) };
 		}
 		if (dist.type === 'github-release') {
 			if (!dist.url) { return { error: 'github-release 发布源缺少 url' }; }
@@ -949,11 +962,11 @@ export async function apply(ctx, config) {
 			const file = path.join(tmpdir(), 'vssaros-marketplace', slug + '-' + version + '.tgz');
 			await mkdir(path.dirname(file), { recursive: true });
 			await writeFile(file, buf);
-			return { spec: 'file:' + file, name: String(dist.name || slug) };
+			const spec = 'file:' + file;
+			return { spec, name: String(dist.name || slug), parsed: classifyInstallSpec(spec) };
 		}
 		return { error: 'dsh 侧不认识的发布源类型：' + String(dist.type) };
 	}
-
 	/**
 	 * 插件 / 工作台的装、升、卸 —— **在 dsh 侧执行**。
 	 *

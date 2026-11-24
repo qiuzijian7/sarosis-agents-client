@@ -9,7 +9,7 @@
     ".": "./lib/index.js",
     "./package.json": "./package.json"
   },
-  "files": ["lib/index.js", "lib/catalog.js", "lib/remoteCatalog.js", "lib/installTargets.js", "lib/inspect.js", "lib/foundationRef.js", "catalog/index.json", "catalog/policy.json", "cordis.patch.yml"],
+  "files": ["lib/index.js", "lib/catalog.js", "lib/remoteCatalog.js", "lib/installTargets.js", "lib/inspect.js", "lib/foundationRef.js", "lib/profileWritable.js", "catalog/index.json", "catalog/policy.json", "cordis.patch.yml"],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
   },

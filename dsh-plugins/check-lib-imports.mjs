@@ -22,7 +22,7 @@ import path from 'node:path';
 
 const pluginLib = path.resolve(import.meta.dirname, 'vssaros-marketplace', 'lib');
 /** 只查这些"纯工具模块"的导出（它们的名字不会与 DOM/对象方法重名）。 */
-const HELPER_MODULES = ['installers.js', 'installedLedger.js', 'publisher.js', 'mcpInstall.js', 'shape.js', 'githubSource.js', 'githubInspect.js', 'publishPreflight.js'];
+const HELPER_MODULES = ['installers.js', 'installedLedger.js', 'publisher.js', 'mcpInstall.js', 'shape.js', 'githubSource.js', 'githubInspect.js', 'publishPreflight.js', 'installSpec.js'];
 
 const exportsOf = (text) => {
 	const names = new Set();

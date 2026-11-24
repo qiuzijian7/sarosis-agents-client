@@ -20,6 +20,7 @@
     "lib/installedLedger.js",
     "lib/installedState.js",
     "lib/installedReconcile.js",
+    "lib/installSpec.js",
     "lib/installers.js",
     "lib/upgradeBackup.js",
     "lib/botPack.js",
@@ -50,7 +51,8 @@
     "lib/pluginArchive.js",
     "lib/client.state.js",
     "lib/client.ui.js",
-    "lib/preferences.js"
+    "lib/preferences.js",
+    "lib/installPreflight.js"
   ],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
