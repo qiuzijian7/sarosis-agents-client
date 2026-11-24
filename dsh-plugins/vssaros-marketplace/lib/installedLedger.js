@@ -63,20 +63,23 @@ export async function upsertInstalled(dataRoot, entry) {
 	return serialized(async () => {
 		const file = installedFilePath(dataRoot);
 		const entries = await readInstalled(dataRoot, { strict: true });
+		const prev = entries.find(e => e.kind === entry.kind && e.storeId === entry.storeId);
 		const next = entries.filter(e => !(e.kind === entry.kind && e.storeId === entry.storeId));
+		// ★ 2026-11-24：IDE 侧 marketplaceService 双写**同一份**台账时只映射 6 个字段，
+		//   会把 packageName / format 丢掉（它们是插件卸载、envelope 识别的真判据）。
+		//   dsh 侧再 upsert 时不能再跟着丢 ⇒ 本次没带、旧条目有就继承；显式新值优先。
+		//   owner 刻意不继承：组合包组件重装成独立资源时，继承旧 owner 会导致级联卸载误删。
+		const packageName = entry.packageName || prev?.packageName || '';
+		const format = entry.format || prev?.format || '';
 		next.push({
 			kind: entry.kind,
 			storeId: entry.storeId,
 			version: entry.version,
-			// ★ 2026-10-24：插件（npm 包）的卸载只能按**包名**；slug 是商城自己的标识
-			//   （zuoyunlai-dsh-pet-plugin），和包名（dsh-pet-plugin）不是一回事 ⇒ 装的时候记下来。
-			...(entry.packageName ? { packageName: String(entry.packageName) } : {}),
-			...(entry.format ? { format: String(entry.format) } : {}),
-			// ★ 2026-11-09：组合包分发出来的组件记住归属包 ⇒ 冲突检测与级联卸载
-			//   才知道哪些是「自己的」，不会误删/覆盖别的 Bot 包用的同名技能。
+			...(packageName ? { packageName: String(packageName) } : {}),
+			...(format ? { format: String(format) } : {}),
 			...(entry.owner ? { owner: String(entry.owner) } : {}),
 			installedAt: new Date().toISOString(),
-			source: entry.source ?? 'installed',
+			source: entry.source ?? prev?.source ?? 'installed',
 		});
 		await writeAtomic(file, next);
 		return next;

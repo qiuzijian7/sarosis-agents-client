@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createMarketClient, dataRootOf, marketEndpointOf } from './marketClient.js';
 import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
+import { reconcileInstalled } from './installedReconcile.js';
 // ⚠ 不再直接 import `sha256Of`：校验已下沉到 `installBundle`（可单测）
 import { installBundle, trashBundle, uninstallBundle } from './installers.js';
 // ★ 2026-11-23：升级备份点（列举 / 恢复）—— 与 installers 的 .upgrade-backup 同真源
@@ -225,6 +226,29 @@ export async function apply(ctx, config) {
 		});
 		return () => { cancelled = true; };
 	}, 'vssaros-marketplace: market agent');
+	// ── ★ 2026-11-24：启动时一次性「本机台账自对账」（**只读诊断**）──
+	//   服务端 packages 表不保存任何机器/用户的安装状态、也没有 install 上报 API；
+	//   seed.json 是构建期 profile 种子 marker ⇒ 不存在服务端真源，只能本机自对账。
+	//   复刻上面 market agent 的骨架：不 await 重 IO、异常吞掉、disposer 防热重载悬挂。
+	//   刻意不删条目/不修坏 JSON/不重建目录（会破坏 installedState 判据与 Bot owner 级联）。
+	ctx.effect(() => {
+		let cancelled = false;
+		(async () => {
+			if (!state.dataRoot) { return; }
+			// foundation 可能晚到并覆盖 dataRoot ⇒ 在 effect 内读，不闭包捕获
+			const entries = await readInstalled(state.dataRoot);
+			// 不传 bundles ⇒ plugin/workbench 走「只能信台账」的保守口径，与 installedState 默认一致
+			const report = await reconcileInstalled({ dataRoot: state.dataRoot, entries });
+			if (cancelled) { return; }
+			state.reconcileReport = report;
+			if (report.ghostCount || report.duplicateCount || report.fieldDriftCount || report.orphanOwnerCount) {
+				console.warn(`[marketplace] 台账对账：ghost=${report.ghostCount} dup=${report.duplicateCount} drift=${report.fieldDriftCount} orphanOwner=${report.orphanOwnerCount}`);
+			}
+		})().catch(e => {
+			state.reconcileReport = { ok: false, error: String(e?.message ?? e).slice(0, 200), checkedAt: new Date().toISOString() };
+		});
+		return () => { cancelled = true; };
+	}, 'vssaros-marketplace: installed ledger reconcile');
 
 	ctx.inject(['vssarosFoundation'], scope => {
 		bindFoundation(scope.vssarosFoundation);
@@ -1573,7 +1597,7 @@ export async function apply(ctx, config) {
 
 				// ── 分类常量（页面用来画页签）─────────────────────
 				if (req.method === 'GET' && url.pathname === `${ROUTE_PREFIX}/api/meta`) {
-					json(200, { ok: true, kinds: KINDS, ops: ALL_OPS });
+					json(200, { ok: true, kinds: KINDS, ops: ALL_OPS, reconcile: state.reconcileReport ?? null });
 					return;
 				}
 

@@ -19,6 +19,7 @@
     "lib/marketClient.js",
     "lib/installedLedger.js",
     "lib/installedState.js",
+    "lib/installedReconcile.js",
     "lib/installers.js",
     "lib/upgradeBackup.js",
     "lib/botPack.js",
