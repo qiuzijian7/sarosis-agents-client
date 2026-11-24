@@ -126,6 +126,7 @@
 // CLIENT_BUILD_STAMP 2026-11-21 终刷：退役 chip 标注 / group 兜底 / sourceOf 去恒真 / 残差文案 ⇒ 重刷入口 mtime / chunk rev @ 2026-11-21
 // CLIENT_BUILD_STAMP 2026-11-21 清单收敛：8 份身份副本改由 preset-sync --write-registry 生成、幽灵 id 全清、retired 概念移除 ⇒ 重刷入口 mtime / chunk rev @ 2026-11-21
 // CLIENT_BUILD_STAMP 2026-11-21 终刷（反向突变恢复后重排 mtime）：0.2.465 ⇒ 重刷入口 mtime / chunk rev @ 2026-11-21
+// CLIENT_BUILD_STAMP 2026-11-24 入口指纹修复：重建 client.sessionRow.js + 消纳 market/nav 生成投影改动 ⇒ 最后重刷入口 mtime / chunk rev @ 2026-11-24
 // 2026-11-04 touch㉑: 上面三个 chunk 全部改完后重刷入口（守卫要求入口 mtime 必须晚于改过的 chunk）。
 // 2026-11-04 touch⑳: 看板 / 流程 / 生图三个工作台暂时下线（DEFAULT_ITEMS 打 hidden+offline、固定行与残留页签过滤）⇒ 动入口刷新 chunk rev。
 // CLIENT_BUILD_STAMP 2026-11-21 依赖组件：Office安装可见反馈 + 官方媒体/HuggingFace Whisper/随包Office @ 2026-11-21

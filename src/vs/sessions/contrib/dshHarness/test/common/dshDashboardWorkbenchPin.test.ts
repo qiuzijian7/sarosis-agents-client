@@ -22,20 +22,30 @@ suite('dshHarness / dashboard 工作台卡片：主页恒为固定', () => {
 	const repo = process.env.DSH_TEST_REPO_ROOT ?? process.cwd();
 	const dashDir = join(repo, 'dsh-plugins', 'vssaros-dashboard', 'lib');
 	const catalog = readFileSync(join(dashDir, 'catalog.js'), 'utf8');
+	// ★ 2026-11-24（单一目录真源重构）：`catalog.js` 现在只做重导出，
+	//   `WORKBENCH_MODULES` 的实际内容（含 alwaysPinned）由生成器写进
+	//   `workbench-directory.generated.js` ⇒ 断言改读生成真源，判据一条不放宽。
+	const generated = readFileSync(join(dashDir, 'workbench-directory.generated.js'), 'utf8');
 	// 渲染层实现源（2026-10-22 起是 React 应用；原先是 pageClient.js，已下线）
 	const app = readFileSync(join(dashDir, 'app', 'src', 'app.jsx'), 'utf8');
 	const appCss = readFileSync(join(dashDir, 'app', 'src', 'app.css'), 'utf8');
 
 	test('主页在模块清单里标记为恒固定', () => {
 		assert.ok(
-			/route:\s*'\/x\/dashboard\/'[^\n]*alwaysPinned:\s*true/.test(catalog),
+			/route:\s*'\/x\/dashboard\/'[^\n]*alwaysPinned:\s*true/.test(generated),
 			'主页条目必须带 alwaysPinned: true（否则卡片上又会出现可点的「📌 固定」✗）',
+		);
+		// 链路不能断：catalog.js 必须把生成真源的清单重导出给页面消费方。
+		assert.ok(
+			/export\s*\{[^}]*WORKBENCH_MODULES[^}]*\}\s*from\s*'\.\/workbench-directory\.generated\.js'/.test(catalog),
+			'catalog.js 必须重导出 WORKBENCH_MODULES（否则卡片读不到模块清单）✗',
 		);
 	});
 
 	test('卡片按钮按 alwaysPinned 分流：主页=禁用的「已固定」，其它=可点的「📌 固定」', () => {
-		// ⚠ 2026-10-22：卡片的 HTML 不再由 catalog.js 产出（死渲染路径已删）⇒ 模板断言落在 app.jsx 上。
-		assert.ok(catalog.includes('alwaysPinned: true'), '卡片数据必须带 alwaysPinned 标记 ✗');
+		// ⚠ 2026-10-22：卡片的 HTML 不再由 catalog.js 产出（死渲染路径已删）⇒ 模板断言落在 app.jsx 上；
+		//   2026-11-24 起数据判据读生成真源（catalog.js 只重导出）。
+		assert.ok(generated.includes('alwaysPinned: true'), '卡片数据必须带 alwaysPinned 标记 ✗');
 		// ⚠ 2026-10-23：工作台改成磁贴（图标 + 名称 + 描述），不再有「📌 已固定」文字 ——
 		//   固定态改成 `is-on` 的图钉（`<span>` 而非按钮 ⇒ 点不了 = 不可取消）。
 		assert.ok(app.includes('dash-wb-op is-on'), '主页那张卡必须显示「已固定」态的图钉 ✗');

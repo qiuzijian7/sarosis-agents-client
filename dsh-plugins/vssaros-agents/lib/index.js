@@ -149,6 +149,20 @@ const SYNC_DEBOUNCE_MS = 100;
 const lazyPresetHooks = { state: null };
 
 /**
+ * P2 深度延后：首轮全量 preset 同步不再由 apply / `setTimeout(0)` 触发，
+ * 而是等页面首次请求 `/x/agents/*`（UI 已加载）或 `LAZY_FILL_DELAY_MS` 兜底。
+ * hook 由 `agentPresets` 注入时登记，`fillNow()` 自身幂等且走 syncSerial 去重。
+ */
+let agentsBootSyncHook = null;
+function requestAgentsBootSync(reason) {
+	const hook = agentsBootSyncHook;
+	if (!hook) { return; }
+	void hook(reason).catch((e) => {
+		console.error(`[vssaros-agents] 延后首轮 preset 同步失败（${reason}）：${String(e?.message ?? e)}`);
+	});
+}
+
+/**
  * lazy 补齐：整个 state 只排一个定时器；到点（或有人要用还没注册的 preset 时）等在飞的那一轮跑完，再跑一次全量。
  * 走 `syncOnce` 而不是直接 `applyDesired`：全量那一轮还负责第一阶段、委派清单和撤掉已删除 agent 的 preset。
  */
@@ -1517,18 +1531,21 @@ function applyTopLevel(ctx, config) {
 	ctx.inject(['agentPresets'], child => child.effect(() => {
 		console.log(`[vssaros-agents] 计时 agentPresets 就绪（进程启动后 ${Math.round(process.uptime() * 1000)}ms；apply 于 ${agentsApplyAt}ms）`);
 		state.presets = child.agentPresets; // ← 回调内取服务对象（子 ctx 事后就 inactive 了）
-		// 注册是异步的（`register` 返回 Promise<disposer>）：登记 in-flight，卸载时先等它落地再撤销，
-		// 否则会出现"卸载后又注册回来"的泄漏。
-		const inflight = (async () => {
-			try {
-				await syncSerial(state, state.presets, config);
-			} catch (e) {
-				state.errors = [...state.errors, `扫描 agent 目录失败：${String(e?.message ?? e)}`];
-			}
-		})();
+		// ★ P2 深度延后（2026-11-24）：首轮全量 preset 扫描/注册不再在 apply 或 `setTimeout(0)` 上跑。
+		//   `setTimeout(0)` 实测仍在 Host ready 关键路径里占 13s。现在启动期只登记 lazy 窗口：
+		//   `scheduleLazyFill()` 立刻设置 `lazyPresetHooks.state` 与 15s 兜底；页面首次请求 `/x/agents/*`
+		//   或会话需要未注册 preset 时，由 `fillNow()` 按需启动全量同步。
+		//   ⇒ UI 先可交互；`ensureLazyPreset()` / rescan / lazy 补齐全部保留，不会回到 `never started` ✗。
+		scheduleLazyFill(state, config, 0);
+		agentsBootSyncHook = (reason) => {
+			console.log(`[vssaros-agents] 延后首轮 preset 同步开始（${reason}）`);
+			return state.lazyFill?.fillNow() ?? Promise.resolve();
+		};
 		return async () => {
+			agentsBootSyncHook = null;
 			state.presets = null;
-			await inflight.catch(() => undefined);
+			// 卸载前若在飞 / 未跑过，都通过 fillNow 收敛一次，避免"卸载后又注册回来"的泄漏。
+			await (state.lazyFill?.fillNow() ?? Promise.resolve()).catch(() => undefined);
 			await disposeAllPresets(state);
 		};
 	}));
@@ -1654,6 +1671,8 @@ function applyTopLevel(ctx, config) {
 		kind: 'prefix',
 		path: ROUTE_PREFIX,
 		handler: async (req, res) => {
+			// P2：首个页面请求代表 UI 已加载，才启动首轮全量 preset 同步；Host 启动链不再等它。
+			requestAgentsBootSync('page-request');
 			const rejected = page.connection.requestRejection(req);
 			if (rejected) {
 				res.writeHead(rejected, { 'content-type': 'text/plain; charset=utf-8' });

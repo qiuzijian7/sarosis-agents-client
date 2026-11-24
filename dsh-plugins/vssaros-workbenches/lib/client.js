@@ -22,8 +22,8 @@
 //   · 标准分栏（customFrame=false）P1 暂按整页渲染（右栏承载在 P2 做，方案 §4.3）。
 // 构建标记：在页面 console 里输入 __vssarosWorkbenchBuild 即可知道窗口加载的是哪个版本
 // ⚠ bump package.json 版本时必须同步本行 —— check-assistant-collapse.mjs 会判红（2026-11-10 收口）。
-// 0.3.70（2026-11-21）：图钉已固定态加 is-pinned 可见样式 + 对勾图标，点击同步切换。
-globalThis.__vssarosWorkbenchBuild = '0.3.70';
+// 0.3.75（2026-11-24）：修掉「插件页」误导提示；未安装项由 Host 真源裁决并给出宿主插件页安装入口。
+globalThis.__vssarosWorkbenchBuild = '0.3.75';
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-workbenches',
 	factory: (require) => {
@@ -201,6 +201,12 @@ window.__ModuleLoader__.load({
 		/** 统一排序字段：所有开始页 item（工作台 + 工具）共用一份顺序。 */
 		const HOME_ITEM_ORDER_FIELD = 'homeItemOrder';
 		const HOME_IMAGE_TAB_TYPE = 'vssaros:image-reference';
+		/** 开始页「官方插件」item = Better Sidebar 的一个独立右栏 tab，不打 vssarosOwner（否则会被当成宿主承载 tab 排除）。 */
+		const OFFICIAL_PLUGINS_TAB_TYPE = 'vssaros-official-plugins';
+		/** 插件页的第三方 UI 扩展点：模块加载即建立，跨 HMR 复用同一张注册表。 */
+		const PLUGIN_PAGE_SECTIONS_GLOBAL = '__vssarosPluginPageSections';
+		const PLUGIN_PAGE_SECTIONS_READY_GLOBAL = '__vssarosPluginPageSectionsReady';
+		const PLUGIN_PAGE_SECTIONS_READY_EVENT = 'vssaros-plugin-page-sections-ready';
 		const CREATE_PLUGIN_PROMPT = '创建一个带右侧栏入口的 DSH 插件。';
 		/** 「浏览更多插件」的目标身份：目录真源里商城页的 canonicalId，也是注册式商城工作台 id。 */
 		const MARKET_WORKBENCH_ID = 'vssaros/marketplace';
@@ -461,7 +467,7 @@ window.__ModuleLoader__.load({
 		 * hidden/offline/retired 生成下线视图；active route 行直接进统一目录。
 		 * 禁止在本文件手改业务条目，改完真源需跑 `generate-workbench-directory.mjs`。
 		 */
-		/* @generated-workbench-directory:start workbenches-client hash=bef767c4eff1 */
+		/* @generated-workbench-directory:start workbenches-client hash=8cb59bb5077f */
 		const HIDDEN_VISIBILITY = Object.freeze({ start: false, launcher: false, nativeTab: true, routeWhitelist: true, deepLink: true });
 		const OFFLINE_VISIBILITY = Object.freeze({ start: false, launcher: false, nativeTab: false, routeWhitelist: true, deepLink: true });
 		const RETIRED_VISIBILITY = Object.freeze({ start: false, launcher: false, nativeTab: false, routeWhitelist: false, deepLink: false });
@@ -487,7 +493,6 @@ window.__ModuleLoader__.load({
 			Object.freeze({ key: "manifest:/x/memory//vssaros-wb-memory-tab", workbenchId: "manifest:/x/memory/", pageId: "vssaros-wb-memory-tab", canonicalId: "vssaros/memory", state: "active", visibility: ACTIVE_VISIBILITY, aliases: Object.freeze(["legacy:/x/memory//vssaros-wb-memory-tab", "vssaros-wb-memory-tab", "memory", "/x/memory/"]), replacedBy: "", route: "/x/memory/", title: "记忆", description: "分层记忆 / 待确认建议 / 工作区作用域", icon: "🧠", sourceKind: "manifest", sourcePackage: "vssaros-memory", component: "memory", manifest: true, nav: true, dashboard: true, tools: false, installed: true, fixed: true, hidden: false, offline: false, alwaysPinned: false, routeWhitelist: true, deepLink: true, start: true, launcher: true, nativeTab: true, manifestOrder: 17, directoryOrder: 17, navOrder: 7, dashboardOrder: 4, toolsOrder: 999, installedOrder: 7, fixedOrder: 7, navId: "vssaros-wb-memory-tab", navName: "记忆", navIcon: "🧠", navHidden: false, navOffline: false, navComp: "memory", dashboardName: "记忆", dashboardDesc: "分层记忆 / 待确认建议 / 工作区作用域（会话页记忆 Tab 同源）", dashboardIcon: "🧠", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "记忆", toolsDesc: "分层记忆 / 待确认建议 / 工作区作用域", toolsProvider: "vssaros-memory", toolsOffline: false }),
 			Object.freeze({ key: "manifest:/x/marketplace//vssaros-wb-marketplace", workbenchId: "manifest:/x/marketplace/", pageId: "vssaros-wb-marketplace", canonicalId: "vssaros/marketplace", state: "active", visibility: ACTIVE_VISIBILITY, aliases: Object.freeze(["legacy:/x/marketplace//vssaros-wb-marketplace", "vssaros-wb-marketplace", "/x/marketplace/"]), replacedBy: "", route: "/x/marketplace/", title: "商城", description: "Agent / Skill / 工作台 / 工作流的安装与发布", icon: "🛒", sourceKind: "manifest", sourcePackage: "vssaros-marketplace", component: "", manifest: true, nav: true, dashboard: true, tools: true, installed: true, fixed: true, hidden: false, offline: false, alwaysPinned: false, routeWhitelist: true, deepLink: true, start: true, launcher: true, nativeTab: true, manifestOrder: 18, directoryOrder: 18, navOrder: 13, dashboardOrder: 10, toolsOrder: 11, installedOrder: 13, fixedOrder: 13, navId: "vssaros-wb-marketplace", navName: "商城", navIcon: "🛒", navHidden: false, navOffline: false, navComp: "", dashboardName: "商城", dashboardDesc: "Agent / Skill / 工作台 / 工作流的安装与发布", dashboardIcon: "🛒", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "商城", toolsDesc: "技能 / 工作台 / 工作流的安装与发布", toolsProvider: "vssaros-marketplace", toolsOffline: false }),
 			Object.freeze({ key: "vssaros/kb/default", workbenchId: "vssaros/kb", pageId: "default", canonicalId: "vssaros/kb", state: "hidden", visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(["vssaros-wb-kb"]), replacedBy: "", route: "/x/kb/", title: "知识库", description: "注册式知识库（开始页隐藏）", icon: "📚", sourceKind: "registered", sourcePackage: "vssaros-kb", component: "", manifest: true, nav: false, dashboard: false, tools: false, installed: false, fixed: false, hidden: true, offline: false, alwaysPinned: false, routeWhitelist: true, deepLink: true, start: false, launcher: false, nativeTab: true, manifestOrder: 19, directoryOrder: 19, navOrder: 999, dashboardOrder: 999, toolsOrder: 999, installedOrder: 999, fixedOrder: 999, navId: "default", navName: "知识库", navIcon: "📚", navHidden: true, navOffline: false, navComp: "", dashboardName: "知识库", dashboardDesc: "注册式知识库（开始页隐藏）", dashboardIcon: "📚", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "知识库", toolsDesc: "注册式知识库（开始页隐藏）", toolsProvider: "vssaros-kb", toolsOffline: false }),
-			Object.freeze({ key: "vssaros/studio/default", workbenchId: "vssaros/studio", pageId: "default", canonicalId: "vssaros/studio", state: "hidden", visibility: HIDDEN_VISIBILITY, aliases: Object.freeze([]), replacedBy: "", route: "", title: "萨罗斯管理平台", description: "已下线（开始页隐藏）", icon: "🌐", sourceKind: "registered", sourcePackage: "@vssaros/dsh-studio", component: "", manifest: true, nav: false, dashboard: false, tools: false, installed: false, fixed: false, hidden: true, offline: false, alwaysPinned: false, routeWhitelist: false, deepLink: false, start: false, launcher: false, nativeTab: false, manifestOrder: 20, directoryOrder: 20, navOrder: 999, dashboardOrder: 999, toolsOrder: 999, installedOrder: 999, fixedOrder: 999, navId: "default", navName: "萨罗斯管理平台", navIcon: "🌐", navHidden: true, navOffline: false, navComp: "", dashboardName: "萨罗斯管理平台", dashboardDesc: "已下线（开始页隐藏）", dashboardIcon: "🌐", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "萨罗斯管理平台", toolsDesc: "已下线（开始页隐藏）", toolsProvider: "@vssaros/dsh-studio", toolsOffline: false }),
 		]);
 		const WORK_DIRECTORY_ROWS = Object.freeze([
 			Object.freeze({ key: "vssaros/marketplace/default", workbenchId: "vssaros/marketplace", pageId: "default", canonicalId: "vssaros/marketplace", state: "hidden", visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(["vssaros-wb-marketplace"]), replacedBy: "legacy:/x/marketplace//vssaros-wb-marketplace", route: "/x/marketplace/", title: "商城工作台", description: "注册式商城工作台（开始页隐藏）", icon: "🛒", sourceKind: "registered", sourcePackage: "vssaros-marketplace", component: "", manifest: true, nav: false, dashboard: false, tools: false, installed: false, fixed: false, hidden: true, offline: false, alwaysPinned: false, routeWhitelist: true, deepLink: true, start: false, launcher: false, nativeTab: true, manifestOrder: 1, directoryOrder: 1, navOrder: 999, dashboardOrder: 999, toolsOrder: 999, installedOrder: 999, fixedOrder: 999, navId: "default", navName: "商城工作台", navIcon: "🛒", navHidden: true, navOffline: false, navComp: "", dashboardName: "商城工作台", dashboardDesc: "注册式商城工作台（开始页隐藏）", dashboardIcon: "🛒", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "商城工作台", toolsDesc: "注册式商城工作台（开始页隐藏）", toolsProvider: "vssaros-marketplace", toolsOffline: false }),
@@ -509,7 +514,6 @@ window.__ModuleLoader__.load({
 			Object.freeze({ key: "manifest:/x/memory//vssaros-wb-memory-tab", workbenchId: "manifest:/x/memory/", pageId: "vssaros-wb-memory-tab", canonicalId: "vssaros/memory", state: "active", visibility: ACTIVE_VISIBILITY, aliases: Object.freeze(["legacy:/x/memory//vssaros-wb-memory-tab", "vssaros-wb-memory-tab", "memory", "/x/memory/"]), replacedBy: "", route: "/x/memory/", title: "记忆", description: "分层记忆 / 待确认建议 / 工作区作用域", icon: "🧠", sourceKind: "manifest", sourcePackage: "vssaros-memory", component: "memory", manifest: true, nav: true, dashboard: true, tools: false, installed: true, fixed: true, hidden: false, offline: false, alwaysPinned: false, routeWhitelist: true, deepLink: true, start: true, launcher: true, nativeTab: true, manifestOrder: 17, directoryOrder: 17, navOrder: 7, dashboardOrder: 4, toolsOrder: 999, installedOrder: 7, fixedOrder: 7, navId: "vssaros-wb-memory-tab", navName: "记忆", navIcon: "🧠", navHidden: false, navOffline: false, navComp: "memory", dashboardName: "记忆", dashboardDesc: "分层记忆 / 待确认建议 / 工作区作用域（会话页记忆 Tab 同源）", dashboardIcon: "🧠", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "记忆", toolsDesc: "分层记忆 / 待确认建议 / 工作区作用域", toolsProvider: "vssaros-memory", toolsOffline: false }),
 			Object.freeze({ key: "manifest:/x/marketplace//vssaros-wb-marketplace", workbenchId: "manifest:/x/marketplace/", pageId: "vssaros-wb-marketplace", canonicalId: "vssaros/marketplace", state: "active", visibility: ACTIVE_VISIBILITY, aliases: Object.freeze(["legacy:/x/marketplace//vssaros-wb-marketplace", "vssaros-wb-marketplace", "/x/marketplace/"]), replacedBy: "", route: "/x/marketplace/", title: "商城", description: "Agent / Skill / 工作台 / 工作流的安装与发布", icon: "🛒", sourceKind: "manifest", sourcePackage: "vssaros-marketplace", component: "", manifest: true, nav: true, dashboard: true, tools: true, installed: true, fixed: true, hidden: false, offline: false, alwaysPinned: false, routeWhitelist: true, deepLink: true, start: true, launcher: true, nativeTab: true, manifestOrder: 18, directoryOrder: 18, navOrder: 13, dashboardOrder: 10, toolsOrder: 11, installedOrder: 13, fixedOrder: 13, navId: "vssaros-wb-marketplace", navName: "商城", navIcon: "🛒", navHidden: false, navOffline: false, navComp: "", dashboardName: "商城", dashboardDesc: "Agent / Skill / 工作台 / 工作流的安装与发布", dashboardIcon: "🛒", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "商城", toolsDesc: "技能 / 工作台 / 工作流的安装与发布", toolsProvider: "vssaros-marketplace", toolsOffline: false }),
 			Object.freeze({ key: "vssaros/kb/default", workbenchId: "vssaros/kb", pageId: "default", canonicalId: "vssaros/kb", state: "hidden", visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(["vssaros-wb-kb"]), replacedBy: "", route: "/x/kb/", title: "知识库", description: "注册式知识库（开始页隐藏）", icon: "📚", sourceKind: "registered", sourcePackage: "vssaros-kb", component: "", manifest: true, nav: false, dashboard: false, tools: false, installed: false, fixed: false, hidden: true, offline: false, alwaysPinned: false, routeWhitelist: true, deepLink: true, start: false, launcher: false, nativeTab: true, manifestOrder: 19, directoryOrder: 19, navOrder: 999, dashboardOrder: 999, toolsOrder: 999, installedOrder: 999, fixedOrder: 999, navId: "default", navName: "知识库", navIcon: "📚", navHidden: true, navOffline: false, navComp: "", dashboardName: "知识库", dashboardDesc: "注册式知识库（开始页隐藏）", dashboardIcon: "📚", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "知识库", toolsDesc: "注册式知识库（开始页隐藏）", toolsProvider: "vssaros-kb", toolsOffline: false }),
-			Object.freeze({ key: "vssaros/studio/default", workbenchId: "vssaros/studio", pageId: "default", canonicalId: "vssaros/studio", state: "hidden", visibility: HIDDEN_VISIBILITY, aliases: Object.freeze([]), replacedBy: "", route: "", title: "萨罗斯管理平台", description: "已下线（开始页隐藏）", icon: "🌐", sourceKind: "registered", sourcePackage: "@vssaros/dsh-studio", component: "", manifest: true, nav: false, dashboard: false, tools: false, installed: false, fixed: false, hidden: true, offline: false, alwaysPinned: false, routeWhitelist: false, deepLink: false, start: false, launcher: false, nativeTab: false, manifestOrder: 20, directoryOrder: 20, navOrder: 999, dashboardOrder: 999, toolsOrder: 999, installedOrder: 999, fixedOrder: 999, navId: "default", navName: "萨罗斯管理平台", navIcon: "🌐", navHidden: true, navOffline: false, navComp: "", dashboardName: "萨罗斯管理平台", dashboardDesc: "已下线（开始页隐藏）", dashboardIcon: "🌐", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "萨罗斯管理平台", toolsDesc: "已下线（开始页隐藏）", toolsProvider: "@vssaros/dsh-studio", toolsOffline: false }),
 			Object.freeze({ key: "directory:/x/dashboard//vssaros-wb-dashboard", workbenchId: "directory:/x/dashboard/", pageId: "vssaros-wb-dashboard", canonicalId: "vssaros/dashboard", state: "active", visibility: ROUTE_VISIBILITY, aliases: Object.freeze(["legacy:/x/dashboard//vssaros-wb-dashboard", "vssaros-wb-dashboard", "/x/dashboard/"]), replacedBy: "", route: "/x/dashboard/", title: "主页", description: "会话遥测 / 用量与编排", icon: "🏠", sourceKind: "directory", sourcePackage: "vssaros-dashboard", component: "", manifest: false, nav: true, dashboard: true, tools: true, installed: true, fixed: true, hidden: false, offline: false, alwaysPinned: true, routeWhitelist: true, deepLink: true, start: false, launcher: true, nativeTab: false, manifestOrder: 999, directoryOrder: 101, navOrder: 1, dashboardOrder: 1, toolsOrder: 1, installedOrder: 1, fixedOrder: 1, navId: "vssaros-wb-dashboard", navName: "主页", navIcon: "🏠", navHidden: false, navOffline: false, navComp: "", dashboardName: "主页", dashboardDesc: "会话遥测 / 用量与编排", dashboardIcon: "🏠", dashboardOffline: false, dashboardAlwaysPinned: true, toolsName: "主页", toolsDesc: "会话遥测 / 用量与编排", toolsProvider: "vssaros-dashboard", toolsOffline: false }),
 			Object.freeze({ key: "directory:/x/sessions//vssaros-wb-sessions", workbenchId: "directory:/x/sessions/", pageId: "vssaros-wb-sessions", canonicalId: "vssaros/sessions", state: "active", visibility: ROUTE_VISIBILITY, aliases: Object.freeze(["legacy:/x/sessions//vssaros-wb-sessions", "vssaros-wb-sessions", "/x/sessions/"]), replacedBy: "", route: "/x/sessions/", title: "会话", description: "会话分组 / 人格标记 / 指示灯", icon: "💬", sourceKind: "directory", sourcePackage: "vssaros-sessions", component: "", manifest: false, nav: true, dashboard: true, tools: true, installed: true, fixed: true, hidden: false, offline: false, alwaysPinned: false, routeWhitelist: true, deepLink: true, start: false, launcher: true, nativeTab: false, manifestOrder: 999, directoryOrder: 102, navOrder: 2, dashboardOrder: 11, toolsOrder: 5, installedOrder: 2, fixedOrder: 2, navId: "vssaros-wb-sessions", navName: "会话", navIcon: "💬", navHidden: false, navOffline: false, navComp: "", dashboardName: "历史会话", dashboardDesc: "会话分组 / 人格标记 / 指示灯", dashboardIcon: "🕘", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "历史会话", toolsDesc: "会话分组 / 人格标记 / 指示灯", toolsProvider: "vssaros-sessions", toolsOffline: false }),
 			Object.freeze({ key: "directory:/x/sessions/?view=tiles/vssaros-wb-session-tiles", workbenchId: "directory:/x/sessions/?view=tiles", pageId: "vssaros-wb-session-tiles", canonicalId: "vssaros/sessions", state: "active", visibility: ROUTE_VISIBILITY, aliases: Object.freeze(["legacy:/x/sessions/?view=tiles/vssaros-wb-session-tiles", "vssaros-wb-session-tiles", "/x/sessions/?view=tiles"]), replacedBy: "", route: "/x/sessions/?view=tiles", title: "会话磁贴", description: "会话磁贴矩阵", icon: "🧲", sourceKind: "directory", sourcePackage: "vssaros-sessions", component: "", manifest: false, nav: true, dashboard: false, tools: false, installed: true, fixed: true, hidden: false, offline: false, alwaysPinned: false, routeWhitelist: true, deepLink: true, start: false, launcher: true, nativeTab: false, manifestOrder: 999, directoryOrder: 103, navOrder: 3, dashboardOrder: 999, toolsOrder: 999, installedOrder: 3, fixedOrder: 3, navId: "vssaros-wb-session-tiles", navName: "会话磁贴", navIcon: "🧲", navHidden: false, navOffline: false, navComp: "", dashboardName: "会话磁贴", dashboardDesc: "会话磁贴矩阵", dashboardIcon: "🧲", dashboardOffline: false, dashboardAlwaysPinned: false, toolsName: "会话磁贴", toolsDesc: "会话磁贴矩阵", toolsProvider: "vssaros-sessions", toolsOffline: false }),
@@ -530,6 +534,12 @@ window.__ModuleLoader__.load({
 		const HOME_HIDDEN_WORKBENCH_IDS = new Set(hiddenRows.map(row => row.workbenchId));
 		const RETIRED_WORKBENCH_IDS = WORKBENCH_MANIFEST.filter(row => row.state === 'retired').map(row => row.workbenchId);
 		const OFFLINE_WORKBENCH_ROUTES = WORKBENCH_MANIFEST.filter(row => row.state === 'offline').map(row => row.route);
+		/**
+		 * 宿主侧退役身份：工作台已从目录真源删除，但升级沿用旧 profile 的打包版里可能仍装着
+		 * 已下线的插件并 register 出默认页 ⇒ 开始页一律拦下，避免卡片复现。
+		 * 与 WORKBENCH_MANIFEST 解耦：目录只登记现存/兼容条目，退役名单由宿主策略持有。
+		 */
+		const RETIRED_HOME_WORKBENCH_IDS = new Set(['vssaros/studio']);
 		function workbenchManifest() { return WORKBENCH_MANIFEST; }
 		function manifestViewsOf() {
 			return Object.freeze({
@@ -610,6 +620,7 @@ window.__ModuleLoader__.load({
 				const view = catalogPolicyViewOf(page);
 				if (view.state !== 'active' || view.visibility.start === false) { return false; }
 				const workbenchId = String(page.workbenchId || '');
+				if (RETIRED_HOME_WORKBENCH_IDS.has(workbenchId)) { return false; }
 				if (!view.key || HOME_HIDDEN_PAGE_KEYS.has(view.key) || HOME_HIDDEN_WORKBENCH_IDS.has(workbenchId)) { return false; }
 				if (seen.has(view.key)) { return false; }
 				seen.add(view.key);
@@ -752,6 +763,11 @@ window.__ModuleLoader__.load({
 			check: () => [h('path', { key: 'p', d: 'M4 12l5 5L20 6' })],
 			arrow: () => [h('path', { key: 'p', d: 'M12 19V5m-6 6 6-6 6 6' })],
 			x: () => [h('path', { key: 'p', d: 'm6 6 12 12M6 18 18 6' })],
+			loop: () => [h('path', { key: 'a', d: 'M4 9a8 8 0 0 1 13-3l3 3m0-5v5h-5' }), h('path', { key: 'b', d: 'M20 15a8 8 0 0 1-13 3l-3-3m0 5v-5h5' })],
+			mic: () => [h('path', { key: 'a', d: 'M4 10v4m4-8v12m4-16v20m4-16v12m4-8v4' })],
+			shield: () => [h('path', { key: 'a', d: 'M12 3 4 6v6c0 5 4 8 8 9 4-1 8-4 8-9V6l-8-3Z' }), h('path', { key: 'b', d: 'm9 12 2 2 4-4' })],
+			sparkle: () => [h('path', { key: 'a', d: 'M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3Z' }), h('path', { key: 'b', d: 'm19 12 .8 1.8L21 15l-1.2 1.2L19 18l-.8-1.8L17 15l1.2-1.2L19 12Z' })],
+			translate: () => [h('path', { key: 'a', d: 'M3 4h18v13H8l-5 4V4Z' }), h('path', { key: 'b', d: 'M8 8h8m-4 0v5m-2 0h4' })],
 		};
 		function guideIcon(name, extraClass) {
 			const shape = GUIDE_ICON_SHAPES[name] || GUIDE_ICON_SHAPES.grid;
@@ -783,6 +799,7 @@ window.__ModuleLoader__.load({
 			if (/code|代码/.test(hay)) { return 'code'; }
 			if (/media|媒体|image|图片/.test(hay)) { return 'media'; }
 			if (/market|商城/.test(hay)) { return 'shop'; }
+			if (/plugin|插件/.test(hay)) { return 'plugin'; }
 			if (/session|history|历史|scheduler|自动化/.test(hay)) { return 'clock'; }
 			if (/superagent|agent|bot|subagent|任务|团队/.test(hay)) { return 'bot'; }
 			return 'grid';
@@ -939,6 +956,70 @@ window.__ModuleLoader__.load({
 			homeItemRegistryOwner = { service, betterSidebar, registry };
 			return registry;
 		}
+		/**
+		 * 插件页的第三方 UI 扩展点（2026-11-24）。
+		 * 一个 registry / 一个投影 / 一个订阅：任何 dsh 客户端插件都能在不改宿主名单的前提下
+		 * 注册一块 React UI，插件页按 order 升序渲染并逐块错误隔离。
+		 */
+		function createPluginPageSections() {
+			const sections = new Map();
+			const listeners = new Set();
+			const notify = () => {
+				for (const listener of [...listeners]) {
+					try { listener(); } catch (error) { console.error('[vssaros-workbenches] plugin page section listener', error); }
+				}
+			};
+			return Object.freeze({
+				register(descriptor, Component) {
+					const id = descriptor && typeof descriptor.id === 'string' ? descriptor.id.trim() : '';
+					if (!id) { throw new Error('Invalid plugin page section id'); }
+					const component = typeof (descriptor && descriptor.Component) === 'function'
+						? descriptor.Component : (typeof Component === 'function' ? Component : null);
+					if (typeof component !== 'function') { throw new Error('Invalid plugin page section component: ' + id); }
+					if (sections.has(id)) { throw new Error('Duplicate plugin page section: ' + id); }
+					const order = Number.isFinite(descriptor && descriptor.order) ? descriptor.order : 100;
+					const entry = Object.freeze({
+						id, title: String((descriptor && descriptor.title) || id),
+						description: String((descriptor && descriptor.description) || ''),
+						source: String((descriptor && descriptor.source) || '第三方插件'),
+						order, Component: component,
+					});
+					sections.set(id, entry);
+					notify();
+					return () => {
+						if (sections.get(id) !== entry) { return; }
+						sections.delete(id);
+						notify();
+					};
+				},
+				snapshot() {
+					return Object.freeze([...sections.values()]
+						.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)));
+				},
+				subscribe(listener) {
+					if (typeof listener !== 'function') { return () => { }; }
+					listeners.add(listener);
+					return () => { listeners.delete(listener); };
+				},
+			});
+		}
+		/**
+		 * 模块加载即建立：插件页挂载前注册也生效；HMR 复用同一张表，不掉已注入的 UI。
+		 * 第三方 chunk 可能比宿主先加载 ⇒ 先到的一方读 ready 标志 / 监听 ready 事件，
+		 * 后到的一方补注册，两条路径都指向同一个 registry。
+		 */
+		if (!globalThis[PLUGIN_PAGE_SECTIONS_GLOBAL]
+			|| typeof globalThis[PLUGIN_PAGE_SECTIONS_GLOBAL].register !== 'function') {
+			globalThis[PLUGIN_PAGE_SECTIONS_GLOBAL] = createPluginPageSections();
+			globalThis[PLUGIN_PAGE_SECTIONS_READY_GLOBAL] = true;
+			try {
+				if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function'
+					&& typeof window.CustomEvent === 'function') {
+					window.dispatchEvent(new window.CustomEvent(PLUGIN_PAGE_SECTIONS_READY_EVENT));
+				}
+			} catch { /* 老宿主没有 CustomEvent：插件仍可读 ready 标志 */ }
+		}
+		const pluginPageSections = globalThis[PLUGIN_PAGE_SECTIONS_GLOBAL];
 		/** 双排序字段 → 单 homeItemOrder 的惰性迁移：不改旧 state.json，写回时合并。 */
 		function migrateHomeItemOrder(saved, availableKeys) {
 			const keys = Array.isArray(availableKeys) ? availableKeys : [];
@@ -1771,6 +1852,445 @@ window.__ModuleLoader__.load({
 			};
 		}
 		/**
+		 * 「官方插件」页的展示目录（2026-11-24，用户提供的宿主插件页截图）。
+		 * ★ 内置 4 项是宿主的配置视图，本仓没有配置读写通道 ⇒ 不渲染开关；
+		 *   实验性项的开关读/写 Host 真实状态（pluginState / setPluginEnabled），不做假交互。
+		 * ⚠ 不要再投影工作台目录表：那张表是工作台页面，投影出来是一堆工作台包名，
+		 *   正是这次「官方插件内容显示错误」的根因。
+		 */
+		const OFFICIAL_PLUGIN_PAGE_ROWS = Object.freeze([
+			Object.freeze({
+				id: 'subagent', group: 'builtin', icon: 'bot', title: '子智能体',
+				description: '设置子智能体的递归层级、数量和模型。',
+			}),
+			Object.freeze({
+				id: 'web-search', group: 'builtin', icon: 'search', title: '网页搜索与获取',
+				description: '选择网页搜索与网页获取使用的提供方。',
+			}),
+			Object.freeze({
+				id: 'agent-loop', group: 'builtin', icon: 'loop', title: 'Agent 循环',
+				description: '控制 Agent 派生工具调用的方式。',
+			}),
+			Object.freeze({
+				id: 'terminal', group: 'builtin', icon: 'terminal', title: '终端',
+				description: '限制每条命令最多能跑多久、最多输出多少内容。',
+			}),
+			Object.freeze({
+				id: 'voice-input', group: 'experimental', badge: '实验性', icon: 'mic', title: '语音输入',
+				description: '在本机使用 SenseVoice 转录录音。首次使用需安装依赖。',
+			}),
+			Object.freeze({
+				id: 'plugin-index', group: 'experimental', badge: '实验性', icon: 'grid', title: '自定义插件索引',
+				description: '在插件页添加“发现”标签页，从你添加的插件索引中浏览和安装插件。',
+			}),
+			Object.freeze({
+				id: 'auto-review', group: 'experimental', badge: '实验性', icon: 'shield', title: '自动授权审查',
+				description: '提供“自动审查”访问模式：每次工具调用前，由模型对照你的要求检查，获准的调用立即运行，被拒绝的调用等你审批。',
+			}),
+			Object.freeze({
+				id: 'change-request-worktree', group: 'experimental', badge: '实验性', icon: 'git', title: '变更请求与工作树',
+				description: '在会话侧栏中跟踪关联的 GitHub PR：查看检查状态、评审意见与代码差异，并把修改建议交给智能体继续处理。也可查看本地改动。',
+			}),
+		]);
+		/** 官方插件页单一清单：内置配置 4 项 + 实验性插件 4 项，顺序与截图一致。 */
+		function officialPluginsOf() {
+			return OFFICIAL_PLUGIN_PAGE_ROWS;
+		}
+		/**
+		 * 「更多」→ 实验性插件详情目录（2026-11-24 用户截图）。
+		 * 前 3 项直接复用主页面清单（单一真源，不复制描述），宿主「更多」页里不含「语音输入」；
+		 * 后续 8 项按截图顺序补齐；最后两项宿主标为「未安装」，运行时没有可切换的包。
+		 */
+		const EXPERIMENTAL_PLUGIN_PAGE_ROWS = Object.freeze([
+			...OFFICIAL_PLUGIN_PAGE_ROWS.filter(row => row.group === 'experimental' && row.id !== 'voice-input'),
+			Object.freeze({
+				id: 'personalized-recommendation', group: 'experimental', badge: '实验性', icon: 'sparkle', title: '个性化推荐',
+				description: '针对你对 DSH 的个性化需求，在回答下方展示推荐卡片；想要能长期使用的页面或小工具时，提议新增个性化页面，点击创建后在新页面中打开。',
+			}),
+			Object.freeze({
+				id: 'developer-tools', group: 'experimental', badge: '实验性', icon: 'settings', title: '开发者工具',
+				description: '用于排查问题：在「会话数据诊断」中查看 DSH 为会话记录的内容，在「统计」页签查看每轮/每步的上下文、耗时、缓存和工具成本。',
+			}),
+			Object.freeze({
+				id: 'thinking-translation', group: 'experimental', badge: '实验性', icon: 'translate', title: '思考过程机器翻译',
+				description: '智能体输出时，把展开的“思考”行翻译成你选择的语言，点击“查看原文”可切换回原文。',
+			}),
+			Object.freeze({
+				id: 'conversation-title', group: 'experimental', badge: '实验性', icon: 'chat', title: '随对话更新的标题',
+				description: '根据你的所有消息生成会话标题，并在主要任务变化时更新，而不是只根据第一条消息生成。',
+			}),
+			Object.freeze({
+				id: 'dsh-badge-skill', group: 'experimental', badge: '实验性', icon: 'grid', title: 'DSH 徽章技能',
+				description: '让 Agent 为文档、PR 等产出添加「powered by dsh」徽章。',
+			}),
+			Object.freeze({
+				id: 'deepseek-import', group: 'experimental', badge: '实验性', icon: 'folder', title: 'DeepSeek 会话导入',
+				description: '点击“新建会话”旁的按钮上传 DeepSeek 官网导出的 ZIP 文件，每段对话都会成为所选工作区中的一个会话。',
+			}),
+			Object.freeze({
+				id: 'codex-subagent', group: 'experimental', badge: '未安装', icon: 'bot', title: 'Codex 子智能体',
+				description: '使用 Codex 原生认证和设置委派单个任务。',
+			}),
+			Object.freeze({
+				id: 'claude-code-subagent', group: 'experimental', badge: '未安装', icon: 'bot', title: 'Claude Code 子智能体',
+				description: '使用 Claude Code CLI 原生认证和设置委派单个任务。',
+			}),
+		]);
+		/** 「更多」页清单：宿主实验性插件的完整展示目录（11 项）。 */
+		function experimentalPluginsOf() {
+			return EXPERIMENTAL_PLUGIN_PAGE_ROWS;
+		}
+		/**
+		 * UI 项 → 真实 npm bundle 包名（rc.5 `package-lock.json` / `OFFICIAL_BUNDLES`）。
+		 * ★ 语义候选一律在运行时用 `pluginState` 返回的 `plugins[].name` 校验：查不到就按
+		 *   「尚未安装」处理并给出安装引导，绝不把展示目录当成已启用状态。
+		 */
+		const OFFICIAL_PLUGIN_BUNDLES = Object.freeze({
+			'voice-input': '@deepseek-ai/dsh-experimental-voice-input-bundle',
+			'plugin-index': '@deepseek-ai/dsh-experimental-plugin-market-bundle',
+			'auto-review': '@deepseek-ai/dsh-experimental-auto-review',
+			'change-request-worktree': '@deepseek-ai/dsh-experimental-forge-bundle',
+			'personalized-recommendation': '@deepseek-ai/dsh-personalized-recommendations',
+			'developer-tools': '@deepseek-ai/dsh-experimental-inspector-profile',
+			'thinking-translation': '@deepseek-ai/dsh-experimental-cot-translation-bundle',
+			'conversation-title': '@deepseek-ai/dsh-experimental-session-titles-bundle',
+			'dsh-badge-skill': '@deepseek-ai/dsh-experimental-badge-skill-bundle',
+			'deepseek-import': '@deepseek-ai/dsh-deepseek-chat-import',
+			// codex-subagent / claude-code-subagent：宿主标「未安装」，运行时无对应包 ⇒ 不映射。
+		});
+		/** Host 运行所必需、硬禁停的官方组合包（DSH_UNDISABLABLE_BUNDLES）⇒ 开关锁定。 */
+		const LOCKED_PLUGIN_BUNDLES = Object.freeze(new Set([
+			'@deepseek-ai/dsh-experimental-forge-bundle',
+		]));
+		/** 每块第三方 UI 独立错误边界：一个插件抛错不能把整个插件页带白。 */
+		class PluginPageSectionBoundary extends React.Component {
+			constructor(props) {
+				super(props);
+				this.state = { error: '' };
+			}
+			static getDerivedStateFromError(error) {
+				return { error: String((error && error.message) || error) };
+			}
+			render() {
+				if (this.state.error) {
+					return h('div', { className: 'vssaros-plugin-page-section-error', role: 'alert' },
+						'插件 UI 加载失败：' + this.state.error);
+				}
+				return h(this.props.section.Component,
+					{ ...this.props.childProps, section: this.props.section });
+			}
+		}
+		/**
+		 * 宿主原生插件页（@deepseek-ai/dsh-client-ui-plugin-manager）才是官方包的安装入口。
+		 * 本页只是 VsSaros 的展示页，没有按 npm spec 安装的权限；服务不可用如实返回 false。
+		 */
+		function openHostPluginList(ctx) {
+			let navigation = null;
+			try { navigation = ctx && typeof ctx.get === 'function' ? ctx.get('pluginNavigation') : null; }
+			catch { navigation = null; }
+			if (!navigation || typeof navigation.openList !== 'function') { return false; }
+			try { navigation.openList(); return true; }
+			catch { return false; }
+		}
+		/** 与商城/技能页共用同一条 Host 动作通道；不缓存，失败如实抛给调用方。 */
+		const PLUGIN_ACTION_URL = '/x/marketplace/api/action';
+		async function pluginActionRequest(op, params) {
+			const res = await fetch(PLUGIN_ACTION_URL, {
+				method: 'POST', headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ op, params: params || {} }),
+				credentials: 'same-origin', cache: 'no-store',
+			});
+			if (!res || !res.ok) { throw new Error('插件状态通道 HTTP ' + String(res && res.status)); }
+			const data = await res.json();
+			if (!data || data.ok === false) {
+				throw new Error(String((data && data.error) || '插件状态通道没有回执'));
+			}
+			return data;
+		}
+		/**
+		 * 开关显示态的纯函数：真源是 pluginState 返回的 Map<包名, {enabled, installed}>。
+		 * 不能切换的每种情况都带 reason，避免「点了没反应」的无声灰开关。
+		 */
+		function pluginSwitchStateOf(item, pluginState, stateError, busy) {
+			if (!item.badge) { return null; }
+			const bundle = OFFICIAL_PLUGIN_BUNDLES[item.id] || '';
+			const row = bundle && pluginState instanceof Map ? pluginState.get(bundle) : null;
+			const checked = !!(row && row.enabled === true);
+			if (LOCKED_PLUGIN_BUNDLES.has(bundle)) {
+				return Object.freeze({ disabled: true, checked, locked: true, bundle,
+					reason: 'Host 运行所必需的官方组合包，不能停用。' });
+			}
+			if (stateError) {
+				return Object.freeze({ disabled: true, checked: false, bundle, reason: stateError });
+			}
+			if (!(pluginState instanceof Map)) {
+				return Object.freeze({ disabled: true, checked: false, bundle,
+					reason: '正在读取宿主插件状态…' });
+			}
+			if (!bundle || !row || row.installed === false) {
+				return Object.freeze({ disabled: false, checked: false, missing: true, bundle,
+					reason: '未在当前 profile 启用：点这里让 Host 尝试启用' });
+			}
+			return Object.freeze({ disabled: !!busy, checked, bundle,
+				reason: (checked ? '停用 ' : '启用 ') + item.title });
+		}
+		/** 插件行统一渲染：内置配置项无开关；实验性项按真源状态渲染可切换/锁定的开关。 */
+		function pluginRowView(item, switchState, onToggle) {
+			const badged = !!item.badge;
+			const sw = badged ? (switchState || pluginSwitchStateOf(item, null, '', '')) : null;
+			return h('div', {
+				key: item.id, className: 'vssaros-plugin-page-row',
+				'data-vssaros-plugin-package': item.id,
+				'data-vssaros-plugin-group': item.group || 'experimental',
+			},
+				h('span', { className: 'vssaros-plugin-page-row-icon' }, guideIcon(item.icon)),
+				h('div', { className: 'vssaros-plugin-page-row-body' },
+					h('div', { className: 'vssaros-plugin-page-row-title' },
+						h('strong', null, item.title),
+						badged ? h('span', {
+							className: 'vssaros-plugin-page-badge',
+							'data-vssaros-plugin-badge': item.badge,
+						}, item.badge) : null),
+					h('p', null, item.description)),
+				sw ? h('button', {
+					type: 'button',
+					className: 'vssaros-plugin-page-switch' + (sw.checked ? ' is-on' : ''),
+					role: 'switch', 'aria-checked': sw.checked ? 'true' : 'false',
+					disabled: !!sw.disabled,
+					'aria-label': item.title + '：' + sw.reason,
+					title: sw.reason,
+					'data-vssaros-plugin-switch': item.id,
+					'data-vssaros-plugin-switch-state': sw.checked ? 'on' : 'off',
+					...(sw.disabled ? {} : { onClick: () => onToggle && onToggle(item, sw) }),
+				}, h('span', { className: 'vssaros-plugin-page-switch-knob' })) : null);
+		}
+		/** 「更多」→ 实验性插件详情：返回入口 + 宿主完整清单，仍是同一个右栏 tab。 */
+		function ExperimentalPluginsPage(props) {
+			const safe = props || {};
+			const onBack = typeof safe.onBack === 'function' ? safe.onBack : () => { };
+			const rowOf = typeof safe.rowOf === 'function' ? safe.rowOf : (item => pluginRowView(item, null, null));
+			return h('div', {
+				className: 'vssaros-plugin-page', 'data-vssaros-plugin-page': 'experimental',
+				'data-vssaros-surface': 'workbench', 'aria-label': '实验性插件',
+			},
+				h('header', { className: 'vssaros-plugin-page-head' },
+					h('button', {
+						type: 'button', className: 'vssaros-plugin-page-back',
+						'data-vssaros-plugin-back': '1', 'aria-label': '返回插件页',
+						onClick: onBack,
+					}, guideIcon('chevron')),
+					h('h1', null, '实验性插件')),
+				safe.notice ? h('div', { className: 'vssaros-home-notice', role: 'status' },
+					safe.notice,
+					typeof safe.onOpenHost === 'function' ? h('button', {
+						type: 'button', className: 'vssaros-home-button',
+						'data-vssaros-plugin-open-host': '1', onClick: safe.onOpenHost,
+					}, '在宿主插件页安装') : null) : null,
+				h('div', { className: 'vssaros-plugin-page-list vssaros-plugin-page-list-plain' },
+					experimentalPluginsOf().map(rowOf)));
+		}
+		/** 右栏独立「官方插件」页：内置插件配置 + 实验性插件（截图目录）+ 第三方插件注入的 UI 区块。 */
+		function OfficialPluginsPage(props) {
+			const safeProps = props || {};
+			const { service, ctx, ...publicProps } = safeProps;
+			const [, forceRevision] = React.useState(0);
+			const [notice, setNotice] = React.useState('');
+			const [view, setView] = React.useState('main');
+			const [pluginState, setPluginState] = React.useState(null);
+			const [stateError, setStateError] = React.useState('');
+			const [busy, setBusy] = React.useState('');
+			React.useEffect(() => pluginPageSections.subscribe(() => forceRevision(n => n + 1)), []);
+			/** 真源：Host 的 pluginManager.listBundles()，按完整包名建索引；失败如实显示原因。 */
+			const loadPluginState = React.useCallback(async () => {
+				try {
+					const data = await pluginActionRequest('pluginState', {});
+					const rows = Array.isArray(data.plugins) ? data.plugins : [];
+					const byName = new Map();
+					for (const row of rows) {
+						if (row && typeof row.name === 'string') {
+							byName.set(row.name, {
+								enabled: row.enabled === true, installed: row.installed !== false,
+							});
+						}
+					}
+					setPluginState(byName);
+					setStateError('');
+				} catch (error) {
+					setPluginState(new Map());
+					setStateError('插件状态服务不可用：' + String((error && error.message) || error));
+				}
+			}, []);
+			React.useEffect(() => { void loadPluginState(); }, [loadPluginState]);
+			/** 宿主原生插件页才是官方包的安装位置；服务不可用时如实告知，不跳到无关页面。 */
+			const openHostPlugins = () => {
+				if (openHostPluginList(ctx)) { return; }
+				setNotice('宿主插件页入口不可用：请在 IDE 插件页用 dsh plugin add 安装该官方包，装完回来点「刷新」。');
+			};
+			/** 切换写 Host 真源；未装项先让 Host 裁决（已登记依赖可直接启用），失败给出真实原因。 */
+			const togglePlugin = async (item, sw) => {
+				if (sw.missing && !sw.bundle) {
+					setNotice('「' + item.title + '」在当前运行时没有对应的官方包；请点「在宿主插件页安装」。');
+					return;
+				}
+				if (sw.disabled || !sw.bundle || busy) { return; }
+				setBusy(sw.bundle);
+				try {
+					const data = await pluginActionRequest('setPluginEnabled', {
+						name: sw.bundle, enabled: sw.missing ? true : !sw.checked,
+					});
+					if (sw.missing && (data.application === 'failed' || data.enabled === false)) {
+						throw new Error('Host 未确认启用（application=' + String(data.application) + '）');
+					}
+					const next = new Map(pluginState instanceof Map ? pluginState : []);
+					next.set(sw.bundle, { enabled: data.enabled === true, installed: true });
+					setPluginState(next);
+					if (sw.missing) {
+						setNotice(data.restartRequired
+							? '已启用「' + item.title + '」：重启 Host 后生效。'
+							: '已启用「' + item.title + '」。');
+					} else {
+						setNotice(data.restartRequired
+							? '已保存「' + item.title + '」：重启 Host 后生效（本页不会自动重启）。'
+							: '已' + (data.enabled ? '启用' : '停用') + '「' + item.title + '」。');
+					}
+				} catch (error) {
+					const reason = String((error && error.message) || error);
+					setNotice(sw.missing
+						? '「' + item.title + '」未登记进当前 profile（' + reason
+							+ '）。本页是 VsSaros 的插件展示页，不能安装官方包；请点「在宿主插件页安装」，装完回来点「刷新」。'
+						: '切换「' + item.title + '」失败：' + reason);
+				} finally {
+					setBusy('');
+				}
+			};
+			const rowOf = item => pluginRowView(item,
+				pluginSwitchStateOf(item, pluginState, stateError, busy), togglePlugin);
+			/** 「更多」在同一个右栏 tab 内切到实验性插件详情：不新开 tab、不跳商城。 */
+			if (view === 'experimental') {
+				return h(ExperimentalPluginsPage, {
+					onBack: () => setView('main'), rowOf, notice: notice || stateError,
+					onOpenHost: openHostPlugins,
+				});
+			}
+			const sections = pluginPageSections.snapshot();
+			const official = officialPluginsOf();
+			const builtin = official.filter(item => item.group === 'builtin');
+			const experimental = official.filter(item => item.group === 'experimental');
+			/** 右栏 tab 的原始 props 全量透传（去掉本页私有的 service），第三方界面不依赖宿主字段。 */
+			const childProps = Object.freeze({
+				...publicProps, surface: 'plugin-page', sections: sections.length,
+			});
+			/** 「添加插件」走真实商城入口：右栏目录优先，回落注册式工作台本体；「更多」是页内切视图。 */
+			const openPluginMarket = () => {
+				const snap = service && typeof service.getCatalogSnapshot === 'function'
+					? service.getCatalogSnapshot() : null;
+				const market = snap && Array.isArray(snap.pages)
+					? snap.pages.find(page => page && page.canonicalId === MARKET_WORKBENCH_ID) : null;
+				const open = globalThis.__vssarosOpenWorkbenchCatalogPage;
+				if (market && typeof open === 'function' && open(market.key) === true) { setNotice(''); return; }
+				try {
+					if (service && typeof service.open === 'function' && service.open(MARKET_WORKBENCH_ID)) {
+						setNotice(''); return;
+					}
+				} catch (error) {
+					setNotice('打开商城工作台失败：' + String(error && error.message || error)); return;
+				}
+				setNotice('商城工作台未就绪，请稍后重试。');
+			};
+			const rowView = rowOf;
+			return h('div', {
+				className: 'vssaros-plugin-page', 'data-vssaros-plugin-page': 'official',
+				'data-vssaros-surface': 'workbench', 'aria-label': '官方插件',
+			},
+				h('header', { className: 'vssaros-plugin-page-head' },
+					h('div', { className: 'vssaros-plugin-page-head-title' },
+						h('h1', null, '插件'),
+						h('p', { className: 'vssaros-home-small' }, '安装、启用和配置插件')),
+					h('div', { className: 'vssaros-plugin-page-head-actions' },
+						h('button', {
+							type: 'button', className: 'vssaros-home-button',
+							'data-vssaros-plugin-refresh': '1', title: '重新读取宿主插件状态',
+							onClick: () => { setNotice(''); void loadPluginState(); forceRevision(n => n + 1); },
+						}, '刷新'),
+						h('button', {
+							type: 'button', className: 'vssaros-home-button primary',
+							'data-vssaros-plugin-add': '1', title: '打开宿主插件页安装官方/第三方插件',
+							onClick: () => {
+								if (!openHostPluginList(ctx)) { openPluginMarket(); } else { setNotice(''); }
+							},
+						}, '添加插件', guideIcon('chevron')))),
+				h('section', { className: 'vssaros-plugin-page-section', 'aria-label': '内置插件配置' },
+					h('div', { className: 'vssaros-plugin-page-section-head' },
+						h('h2', null, '内置插件配置')),
+					h('div', { className: 'vssaros-plugin-page-list' }, builtin.map(rowView))),
+				h('section', { className: 'vssaros-plugin-page-section', 'aria-label': '实验性插件' },
+					h('div', { className: 'vssaros-plugin-page-section-head' },
+						h('h2', null, '实验性插件'),
+						h('button', {
+							type: 'button', className: 'vssaros-plugin-page-more',
+							'data-vssaros-plugin-more': '1', title: '查看全部实验性插件',
+							onClick: () => { setNotice(''); setView('experimental'); },
+					}, '更多', guideIcon('chevron'))),
+					h('div', { className: 'vssaros-plugin-page-list' }, experimental.map(rowView))),
+				(notice || stateError) ? h('div', { className: 'vssaros-home-notice', role: 'status' },
+					notice || stateError,
+					h('button', {
+						type: 'button', className: 'vssaros-home-button',
+						'data-vssaros-plugin-open-host': '1', onClick: openHostPlugins,
+					}, '在宿主插件页安装')) : null,
+				h('section', { className: 'vssaros-plugin-page-section', 'aria-label': '第三方插件界面' },
+					h('h2', null, '第三方插件界面'),
+					h('span', { className: 'vssaros-home-small' }, sections.length + ' 个区块'),
+					sections.length
+						? h('div', { className: 'vssaros-plugin-page-sections' }, sections.map(section =>
+							h('div', {
+								key: section.id, className: 'vssaros-plugin-page-section-host',
+								'data-vssaros-plugin-section': section.id,
+							},
+								h('div', { className: 'vssaros-plugin-page-section-title' },
+									h('strong', null, section.title),
+									h('span', { className: 'vssaros-home-small' }, section.source)),
+								h(PluginPageSectionBoundary, { section, childProps }))))
+						: h('div', { className: 'vssaros-home-empty', 'data-vssaros-plugin-sections-empty': '1' },
+							'暂无第三方插件插入界面',
+							h('br'),
+							h('span', { className: 'vssaros-home-small' },
+								'插件注册界面区块后，会按注册顺序显示在这里。'))));
+		}
+		let disposeOfficialPluginsTab = null;
+		/**
+		 * 注册为 Better Sidebar 的内容 tab（不是宿主承载 tab）：
+		 * 不打 vssarosOwner ⇒ HomeItemRegistry 的 tab adapter 自动把它投影成开始页 item，
+		 * 点击经 openHomeItem → openTool 在右栏打开这个独立页面，无需改任何硬编码名单。
+		 */
+		function registerOfficialPluginsTab(betterSidebar, service, ctx) {
+			if (!betterSidebar || typeof betterSidebar.registerTab !== 'function') { return () => { }; }
+			if (disposeOfficialPluginsTab) { disposeOfficialPluginsTab(); disposeOfficialPluginsTab = null; }
+			let disposed = false;
+			let dispose = null;
+			try {
+				dispose = betterSidebar.registerTab({
+					id: OFFICIAL_PLUGINS_TAB_TYPE,
+					title: '官方插件',
+					description: '内置插件配置、实验性插件与第三方插件插入的界面',
+					source: '官方',
+					order: 100,
+					single: true,
+					available: () => true,
+					/** 透传 service（商城回落）与 ctx（宿主插件页入口），不依赖全局魔法字段。 */
+					component: tabProps => h(OfficialPluginsPage, { ...tabProps, service, ctx }),
+				});
+			} catch (error) {
+				console.warn('[vssaros-workbenches] 官方插件页注册失败：' + String((error && error.message) || error));
+			}
+			disposeOfficialPluginsTab = () => {
+				if (disposed) { return; }
+				disposed = true;
+				if (typeof dispose === 'function') { dispose(); }
+			};
+			return disposeOfficialPluginsTab;
+		}
+		/**
 		 * P2：把统一目录 diff 成 Better Sidebar 的 tab descriptors。默认由
 		 * `globalThis.__vssarosSetSidebarLayoutV1(true)` 激活，P3 完成 guide 接管后再打开；
 		 * 关闭时不注册任何 native type，避免与当前中栏 TabStrip / 默认 guide 争抢。
@@ -1886,6 +2406,7 @@ window.__ModuleLoader__.load({
 			if (!betterSidebar || typeof betterSidebar.registerTab !== 'function') { return () => { }; }
 			const adapter = installSidebarWorkbenchAdapter(ctx, service, betterSidebar);
 			const disposeImage = registerImageReferenceTab(betterSidebar);
+			const disposeOfficialPlugins = registerOfficialPluginsTab(betterSidebar, service, ctx);
 			let disposeGuide = null;
 			let overrideLogged = false;
 			const syncOwnership = () => {
@@ -1913,6 +2434,7 @@ window.__ModuleLoader__.load({
 				if (disposeGuide) { disposeGuide(); disposeGuide = null; }
 				adapter.dispose();
 				disposeImage();
+				disposeOfficialPlugins();
 				setSidebarLayoutV1(false);
 			};
 		}
@@ -3689,8 +4211,6 @@ window.__ModuleLoader__.load({
 		 *   第三方工作台在描述符里写 `assistantPreset` 即可（优先于本表）。
 		 */
 		const ASSIST_PRESET_BY_WB = {
-			// ★ 2026-11-11（用户要求「移除萨罗斯管理工作台」）：`vssaros/studio` → `vssaros-saroasis-studio`
-			//   随工作台与配套 bot 一并下线；GR 程序员 bot 不绑工作台，在 Bots 里直接选。
 			'vssaros/marketplace': 'vssaros-marketplace-bot',
 			'vssaros/media': 'vssaros-media-librarian',
 			// ★ 2026-10-28（用户：「知识库的展开 AI 助手点不动，展开后应显示知识库专家」）：
@@ -4240,6 +4760,51 @@ window.__ModuleLoader__.load({
 @container (max-width:375px) { .vssaros-home { padding:22px 16px; } .vssaros-home-workbench-grid { grid-template-columns:1fr; } }
 @media(pointer:coarse) { .vssaros-home-menu button { min-height:44px; } .vssaros-home-card-actions .vssaros-home-drag-handle, .vssaros-home-anchor-button { width:38px; height:38px; } .vssaros-home-workbench-open header { padding-right:84px; } }
 @media(prefers-reduced-motion:reduce) { .vssaros-home * { transition:none!important; } }
+.vssaros-plugin-page { container-type:inline-size; padding:20px 16px; color:var(--dsw-alias-label-primary); font-size:12px; }
+.vssaros-plugin-page-head { display:flex; align-items:flex-start; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+.vssaros-plugin-page-head h1 { font-size:14px; font-weight:600; margin:0; }
+.vssaros-plugin-page-head p { margin:3px 0 0; color:var(--dsw-alias-label-secondary); font-size:11px; }
+.vssaros-plugin-page-head-title { min-width:0; }
+.vssaros-plugin-page-head-actions { display:flex; align-items:center; gap:6px; margin-left:auto; }
+.vssaros-plugin-page-head-actions .vssaros-home-button { display:flex; align-items:center; gap:3px; white-space:nowrap; }
+.vssaros-plugin-page-head-actions .vssaros-home-button.primary { background:var(--dsw-alias-label-primary); color:var(--dsw-alias-bg-layer-1); border-color:transparent; }
+.vssaros-plugin-page-head-actions .vssaros-home-icon { width:12px; height:12px; }
+.vssaros-plugin-page-section { margin-bottom:16px; }
+.vssaros-plugin-page-section h2 { display:inline-block; font-size:12px; font-weight:600; margin:0 8px 10px 0; }
+.vssaros-plugin-page-section-head { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+.vssaros-plugin-page-section-head h2 { margin:0; }
+.vssaros-plugin-page-more { display:flex; align-items:center; gap:2px; margin-left:auto; padding:2px 4px; border:0; background:transparent; color:var(--dsw-alias-label-secondary); font-size:11px; cursor:pointer; }
+.vssaros-plugin-page-more .vssaros-home-icon { width:12px; height:12px; transform:rotate(-90deg); }
+.vssaros-plugin-page-back { display:flex; align-items:center; justify-content:center; width:26px; height:26px; padding:0; border:0; border-radius:7px; background:transparent; color:var(--dsw-alias-label-primary); cursor:pointer; }
+.vssaros-plugin-page-back .vssaros-home-icon { width:16px; height:16px; transform:rotate(90deg); }
+.vssaros-plugin-page-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
+.vssaros-plugin-page-list { display:grid; gap:8px; }
+.vssaros-plugin-page-list-plain { gap:0; }
+.vssaros-plugin-page-list-plain .vssaros-plugin-page-row { border:0; border-bottom:1px solid var(--dsw-alias-border-l3); border-radius:0; background:transparent; padding:12px 4px; }
+.vssaros-plugin-page-list-plain .vssaros-plugin-page-row:hover { background:var(--dsw-alias-bg-layer-2); }
+.vssaros-plugin-page-list-plain .vssaros-plugin-page-row-icon { flex-basis:34px; width:34px; height:34px; }
+.vssaros-plugin-page-row { display:flex; align-items:center; gap:10px; min-width:0; padding:10px 11px; border:1px solid var(--dsw-alias-border-l2); border-radius:9px; background:var(--dsw-alias-bg-layer-1); }
+.vssaros-plugin-page-row-icon { flex:0 0 30px; width:30px; height:30px; display:flex; align-items:center; justify-content:center; border:1px solid var(--dsw-alias-border-l3); border-radius:8px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); }
+.vssaros-plugin-page-row-icon .vssaros-home-icon { width:17px; height:17px; }
+.vssaros-plugin-page-row-body { flex:1 1 auto; min-width:0; }
+.vssaros-plugin-page-row-title { display:flex; align-items:center; gap:6px; }
+.vssaros-plugin-page-row-title strong { font-size:12px; font-weight:500; }
+.vssaros-plugin-page-badge { flex:0 0 auto; padding:1px 6px; border-radius:5px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-secondary); font-size:10px; }
+.vssaros-plugin-page-row p { margin:3px 0 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dsw-alias-label-secondary); font-size:11px; }
+.vssaros-plugin-page-switch { flex:0 0 34px; display:flex; align-items:center; width:34px; height:20px; padding:2px; border:1px solid var(--dsw-alias-border-l2); border-radius:999px; background:var(--dsw-alias-bg-layer-2); cursor:pointer; }
+.vssaros-plugin-page-switch:disabled { cursor:not-allowed; opacity:.55; }
+.vssaros-plugin-page-switch-knob { display:block; width:14px; height:14px; border:1px solid var(--dsw-alias-border-l2); border-radius:50%; background:var(--dsw-alias-bg-layer-1); }
+.vssaros-plugin-page-switch.is-on { justify-content:flex-end; background:var(--dsw-alias-label-primary); border-color:transparent; }
+.vssaros-plugin-page-switch.is-on .vssaros-plugin-page-switch-knob { border-color:transparent; }
+.vssaros-home-notice .vssaros-home-button { margin-left:8px; vertical-align:middle; }
+.vssaros-plugin-page-card, .vssaros-plugin-page-section-host { min-width:0; padding:10px 11px; border:1px solid var(--dsw-alias-border-l2); border-radius:9px; background:var(--dsw-alias-bg-layer-1); }
+.vssaros-plugin-page-card strong, .vssaros-plugin-page-section-title strong { display:block; font-size:11px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vssaros-plugin-page-card p, .vssaros-plugin-page-card span { display:block; margin:4px 0 0; color:var(--dsw-alias-label-secondary); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vssaros-plugin-page-sections { display:grid; gap:9px; }
+.vssaros-plugin-page-section-title { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.vssaros-plugin-page-section-title span { margin-left:auto; }
+.vssaros-plugin-page-section-error { padding:8px 10px; border:1px solid var(--dsw-alias-border-l3); border-radius:8px; color:var(--dsw-alias-label-secondary); font-size:11px; overflow-wrap:anywhere; }
+@container (min-width:520px) { .vssaros-plugin-page-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 `;
 		/**
 		 * 注入样式（幂等 + **会更新**）。
@@ -4344,7 +4909,7 @@ window.__ModuleLoader__.load({
 						window.localStorage.removeItem('vssaros.wb.pending');
 					}
 				} catch (e) { /* 隐私模式读不到就算了 */ }
-				// ★ 2026-10-26：新增 hash 通道（`#wb=vssaros/studio`）—— 「外开」按钮用它，
+				// ★ 2026-10-26：新增 hash 通道（`#wb=vssaros/kanban`）—— 「外开」按钮用它，
 				//   因为 Host 的 302 会丢掉 query，但 hash 会被浏览器保留。
 				want = parseDeepLinkWorkbench(window.location.search, window.location.hash, pendingRaw);
 				if (!want) { return undefined; }
@@ -4707,6 +5272,19 @@ window.__ModuleLoader__.load({
 		module.exports.imageVersionsUrl = imageVersionsUrl;
 		module.exports.pickImageVersion = pickImageVersion;
 		module.exports.__registerImageReferenceTab = registerImageReferenceTab;
+		module.exports.__registerOfficialPluginsTab = registerOfficialPluginsTab;
+		module.exports.__officialPluginsTabType = OFFICIAL_PLUGINS_TAB_TYPE;
+		module.exports.__officialPluginsOf = officialPluginsOf;
+		module.exports.__experimentalPluginsOf = experimentalPluginsOf;
+		module.exports.__pluginActionRequest = pluginActionRequest;
+		module.exports.__openHostPluginList = openHostPluginList;
+		module.exports.__pluginSwitchStateOf = pluginSwitchStateOf;
+		module.exports.__pluginBundles = OFFICIAL_PLUGIN_BUNDLES;
+		module.exports.__lockedPluginBundles = LOCKED_PLUGIN_BUNDLES;
+		module.exports.__experimentalPluginsPage = ExperimentalPluginsPage;
+		module.exports.__createPluginPageSections = createPluginPageSections;
+		module.exports.__officialPluginsPage = OfficialPluginsPage;
+		module.exports.__pluginPageSections = pluginPageSections;
 		module.exports.__openImageReference = openImageReference;
 		module.exports.__setSidebarLayoutV1 = setSidebarLayoutV1;
 		module.exports.__sidebarLayoutV1Enabled = () => sidebarLayoutV1Enabled;

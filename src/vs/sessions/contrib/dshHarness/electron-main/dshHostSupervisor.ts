@@ -56,7 +56,7 @@ import { orphanLeaseCandidates } from '../common/dshHostRunOwnership.js';
 import { readPreferredHostPort, reclaimLoopbackPort, rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
 import { reapOrphanHosts } from './dshHostReaper.js';
 import { repairBundledPluginFiles, repairProfileDeps } from './dshProfileDepsRepair.js';
-import { copyProfileSeed, planProfileRuntimeSync, profileSeedDirFor, readProfileRuntimeVersion, syncProfilePluginLayer, writeProfileRuntimeMarker } from './dshProfileRuntimeSync.js';
+import { copyProfileSeed, IBundledPluginSyncResult, isBundledRepoPluginName, planProfileRuntimeSync, profileSeedDirFor, readProfileRuntimeVersion, syncBundledPluginDirs, syncProfilePluginLayer, writeProfileRuntimeMarker } from './dshProfileRuntimeSync.js';
 import { createSharedProfile, isSharedProfile, isSharedSeedInRuntimeTree, materializeSharedProfile, removeProfileSafely, sharedProfileEnabled, unlinkSharedNodeModules } from './dshSharedProfile.js';
 import { DshRuntimeError, DshRuntimeManager, injectBundledPnpm, IResolvedDsh, IResolvedNode, sanitizedEnv } from './dshRuntimeManager.js';
 import { IDshHealthReport, IHostActivity, summarizeHealth } from '../common/dshUpgrade.js';
@@ -546,6 +546,8 @@ export class DshHostSupervisor extends Disposable {
 	private _ownershipHeartbeat: ReturnType<typeof setInterval> | undefined;
 	private _starting: Promise<IDshHostStatus> | undefined;
 	private _stopping: Promise<void> | undefined;
+	/** P2：ready 之后才做、但不阻塞 running/UI 的记账写盘；清理 run 文件前必须等它落地。 */
+	private _postReadyBookkeeping: Promise<void> | undefined;
 	private _generation = 0;
 	/**
 	 * 启动阶段**进度感知的截止**（`_appendLog` 里 touch）。
@@ -1432,6 +1434,15 @@ export class DshHostSupervisor extends Disposable {
 				plugins.length = 0;
 				plugins.push(...deduped);
 			}
+			// ★ 2026-11-24（打包版启动慢定位）：用户 profile 里的随包插件同版本但入口内容陈旧时，
+			//   `_planPluginInstall` 会判 wants > 0 ⇒ pnpm 重装 5s + `_pluginsStale` ⇒ 放弃复用
+			//   常驻 Host ⇒ 每次冷启动 18–19s。这里用 `dsh-plugins` 当前源码直接修好漂移插件，
+			//   让 wants 归零；不从 profile-seed 同步，避免种子自身也可能落后于源码。
+			const bundledSync = await this._syncBundledPluginDirs(plugins, this._profileDir(profile, env));
+			if (bundledSync.changed) {
+				this._pluginsStale = true;
+				this._appendLog(`bundled plugin sync: refreshed ${bundledSync.synced.length} plugin(s) from source; existing Host must not be reused`);
+			}
 			const wants: { name: string; dir: string; label: string; bundled: string; installed?: string; fingerprint?: string }[] = [];
 			for (let i = 0; i < plugins.length; i++) {
 				const [name, dir, label] = plugins[i];
@@ -2007,26 +2018,34 @@ export class DshHostSupervisor extends Disposable {
 				this._throwIfStale(generation);
 
 				this._connection = { origin: connection.origin, authUrl: connection.authUrl };
-				// 记下**真正监听到的**端口（取自 `origin`，而不是我们请求的值）供下次启动复用。
-				// 只在 ready 之后写：记错了反而会让端口更不稳定（见 dshHostPortManager 纪律 ②）。
-				await rememberHostPort(this.effectiveDshHome(options.dshHome), connection.origin);
 				child.once('exit', (code, signal) => this._onUnexpectedExit(generation, code, signal));
+				// 拥有者 pid 必须同步登记：stop 可能紧跟着 ready 到来，不能等后台记账写盘后再记。
 				if (child.pid !== undefined) {
-					await leases.write({
-						format: 1, pid: child.pid,
-						origin: connection.origin, authUrl: connection.authUrl,
-						dshVersion: dsh.version, profile,
-						pipe, bridgeToken: token,
-						instanceId: this._opts.instanceId, startedAt: Date.now(),
-					});
 					this._leaseOwnedPid = child.pid;
-					// ★ 2026-10-13：给这次 run 留一份**拥有者记录** ✓。为什么必须有 ✗：`host.json` 只留
-					//   **最后一份**租约 ⇒ 应用重启后没人知道"runDir 里那些老 run 是谁拉起的、那人还在不在" ✗
-					//   ⇒ 下一次 start 无从判定"可以回收哪些" ✗（症状：同一会话被两份 Host 同时写 ⇒ 斜杠命令
-					//   目录预热直接 `SessionAlreadyOwnedError` ✗）。判据与回收见 `common/dshHostRunOwnership.ts`
-					//   与 `electron-main/dshHostReaper.ts` ✓。
-					await this._writeOwnershipRecord({ runId, hostPid: child.pid, profile, files: overlays.map(f => basename(f)) });
 				}
+				// ★ P2（2026-11-24）：端口记忆 / 租约 / 拥有者记录都不是 UI 可交互的前置条件。
+				//   原来三段 `await` 会把 running 状态与 start() 返回一起拖住；改为后台链，失败只记日志。
+				//   `_cleanupRunFiles()` 会先等这条链落地，避免 overlay / owner 文件被边写边删。
+				const bookkeeping = (async () => {
+					// 记下真正监听到的端口（取自 origin）；记错了反而会让端口更不稳定。
+					await rememberHostPort(this.effectiveDshHome(options.dshHome), connection.origin);
+					if (child.pid !== undefined) {
+						await leases.write({
+							format: 1, pid: child.pid,
+							origin: connection.origin, authUrl: connection.authUrl,
+							dshVersion: dsh.version, profile,
+							pipe, bridgeToken: token,
+							instanceId: this._opts.instanceId, startedAt: Date.now(),
+							...(newestPluginFile?.fingerprint ? { pluginFingerprint: newestPluginFile.fingerprint } : {}),
+						});
+						// 拥有者记录供 orphan reaper 判定；判据见 common/dshHostRunOwnership.ts。
+						await this._writeOwnershipRecord({ runId, hostPid: child.pid, profile, files: overlays.map(f => basename(f)) });
+					}
+				})().catch(e => {
+					this._appendLog(`post-ready bookkeeping failed: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+				});
+				this._postReadyBookkeeping = bookkeeping;
+				void bookkeeping;
 
 				this._setStatus({
 					state: 'running',
@@ -2450,8 +2469,9 @@ export class DshHostSupervisor extends Disposable {
 	 *   ⇒ Host code 1。打包版新机器首启用同版本种子，不会踩；只有复用旧 profile 会踩。
 	 *
 	 *   ⇒ **用户数据永不覆盖，随包插件层随版本同步**：只在 marker 版本 ≠ 当前 bundled 时，
-	 *     备份旧目录、从同版本种子替换插件层（种子顶层那几项），再把种子没有的条目拷回。
-	 *     会话 / 设置 / 工作区本就不在 profile 目录内，不受影响 ✓。
+	 *     先回收无主旧 Host 释放文件锁，再按同版本种子的顶层条目就地覆盖插件层；不再 rename 整个
+	 *     profile 目录（Windows 上旧进程占用时会 EPERM，真机表现为一直卡在「正在加载 dsh 桌面界面…」）。
+	 *     种子没有的用户条目原样保留；会话 / 设置 / 工作区本就不在 profile 目录内，不受影响 ✓。
 	 *
 	 *   安全边界（见 `dshProfileRuntimeSync.ts`）：老 profile 无 marker ⇒ 只 stamp 不动文件；
 	 *   版本一致 ⇒ keep；没有同版本种子 ⇒ 只警告、绝不重建（那会清空 profile）。
@@ -2485,14 +2505,26 @@ export class DshHostSupervisor extends Disposable {
 			return;
 		}
 		if (plan.kind === 'rebuild') {
-			const backup = `${dir}.bak-runtime-${plan.from.replace(/[^0-9A-Za-z.-]/g, '_')}-${Date.now()}`;
 			this._progress('版本变更：正在同步内置运行时，可能需要几分钟，请勿关闭窗口');
-			this._appendLog(`profile runtime ${plan.from} → ${dsh.version}：备份到 ${basename(backup)} 并从 ${plan.seedDir} 同步插件层`);
-			// 共享态先摘掉依赖树联接：否则同步失败时的递归清理会顺着 junction 删到安装目录。
+			this._appendLog(`profile runtime ${plan.from} → ${dsh.version}：从 ${plan.seedDir} 就地同步插件层`);
+			// ★ 2026-11-24：旧 keepAlive Host 会占住 profile/native 模块；先回收已无拥有者的 Host，
+			//   再覆盖文件。拥有者还活着的多实例一律不动（reapOrphanHosts 的既有安全判据）。
+			await this._killChild();
+			await reapOrphanHosts({
+				runDir: this._opts.runDir || tmpdir(),
+				selfAppPid: process.pid,
+				log: line => this._appendLog(line),
+			});
+			// 共享态先摘掉依赖树联接：否则就地复制会顺着 junction 写回安装目录。
 			await unlinkSharedNodeModules(dir);
-			const { restoredUserData } = await syncProfilePluginLayer(plan.seedDir, dir, backup);
+			const { restoredUserData } = await syncProfilePluginLayer(plan.seedDir, dir);
+			// 就地覆盖不会删除旧 runtime / 旧 pnpm 版本留下的 `.pnpm` 目录；只诊断，不自动删用户数据。
+			const pnpmEntries = await fsp.readdir(join(dir, 'node_modules', '.pnpm')).catch(() => [] as string[]);
+			if (pnpmEntries.length > 1000) {
+				this._appendLog(`⚠ profile .pnpm has ${pnpmEntries.length} entries after runtime sync；dev profile 已膨胀，建议在关闭全部 VsSaros/Host 后重建 profile 以缩短后续 pnpm/文件扫描`);
+			}
 			if (!existsSync(manifest)) {
-				throw new Error(`profile 插件层同步后缺 package.json（备份：${backup}）`);
+				throw new Error('profile 插件层同步后缺 package.json');
 			}
 			await writeProfileRuntimeMarker(dir, dsh.version);
 			this._appendLog(`profile plugin layer synced to ${dsh.version}；保留的用户数据条目：${restoredUserData.join(', ') || '(无)'}`);
@@ -2925,6 +2957,83 @@ export class DshHostSupervisor extends Disposable {
 	 *        从 `<appPath>` 起最多向上 5 级逐级试 `<dir>/dsh-runtime` ⇒ 能命中仓库根 ✓。
 	 *   所有候选都要求 `package.json` 存在才返回 ⇒ 半成品种子不会被误用。
 	 */
+	/**
+	 * 用 `dsh-plugins` 当前源码直接修好用户 profile 的同版本内容漂移。
+	 *
+	 * 放在 `_planPluginInstall` 之前：修好后 `wants` 归零，既不会启动 pnpm，也不会因
+	 * `_pluginsStale` 放弃复用常驻 Host。失败只记日志，既有安装链继续兜底。
+	 */
+	private async _syncBundledPluginDirs(
+		plugins: readonly [string, string | undefined, string][],
+		profileDir: string,
+	): Promise<IBundledPluginSyncResult> {
+		const empty: IBundledPluginSyncResult = { scanned: 0, synced: [], skipped: [], errors: [], changed: false };
+		const sources = plugins
+			.filter(([name, dir]) => typeof dir === 'string' && isBundledRepoPluginName(name))
+			.map(([name, dir]) => ({ name, sourceDir: dir as string }));
+		if (sources.length === 0) {
+			return empty;
+		}
+		// ★ 2026-11-24：无种子 / web 模板初始化时，源码同步把插件目录放进来了，但
+		//   package.json.dependencies 仍只有官方模板项；随后 `dsh plugin add` 会把未登记的
+		//   `@vssaros/*` 当 extraneous 清掉，最终 bundles 也只剩官方项 ⇒ 原生 UI。
+		//   先把随包源码 spec 写进 dependencies，再让 pnpm / bundle 修复跑。
+		await this._writeBundledPluginDeps(profileDir, sources);
+		try {
+			return await syncBundledPluginDirs(sources, profileDir, {
+				matches: (sourceDir, installedPackageDir) => {
+					const want = this._readPkgVersion(join(sourceDir, 'package.json'));
+					const have = this._readPkgVersion(join(installedPackageDir, 'package.json'));
+					return want !== undefined && want === have && this._installedEntryMatches(sourceDir, installedPackageDir);
+				},
+				log: line => this._appendLog(line),
+			});
+		} catch (e) {
+			this._appendLog(`bundled plugin sync failed, falling back to the legacy install path: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+			return empty;
+		}
+	}
+
+	/**
+	 * 把 `dsh-plugins` 源码登记进 profile 的 `dependencies`。
+	 *
+	 * 这不替代目录同步，而是防止后续 `dsh plugin add` / pnpm 把源码同步进来的包当 extraneous 清掉。
+	 * 只写白名单内、确实带 package.json 的源码目录；用户其它依赖原样保留。
+	 */
+	private async _writeBundledPluginDeps(
+		profileDir: string,
+		sources: readonly { readonly name: string; readonly sourceDir: string }[],
+	): Promise<void> {
+		if (await isSharedProfile(profileDir)) {
+			return; // 共享态 node_modules 指向只读种子，package.json 不应被写
+		}
+		const pkgFile = join(profileDir, 'package.json');
+		try {
+			const json = JSON.parse(await fsp.readFile(pkgFile, 'utf8')) as { dependencies?: Record<string, string> };
+			json.dependencies = json.dependencies ?? {};
+			let changed = 0;
+			for (const { name, sourceDir } of sources) {
+				if (!existsSync(join(sourceDir, 'package.json'))) {
+					continue;
+				}
+				const spec = toFileSpec(sourceDir);
+				if (json.dependencies[name] !== spec) {
+					json.dependencies[name] = spec;
+					changed++;
+				}
+			}
+			if (changed === 0) {
+				return;
+			}
+			const tmp = `${pkgFile}.tmp-${process.pid}`;
+			await fsp.writeFile(tmp, JSON.stringify(json, undefined, 2) + '\n', 'utf8');
+			await fsp.rename(tmp, pkgFile);
+			this._appendLog(`bundled plugin sync: registered ${changed} source plugin spec(s) in profile dependencies`);
+		} catch (e) {
+			this._appendLog(`bundled plugin sync: failed to register source plugin specs: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+		}
+	}
+
 	private _profileSeedDir(profile: string, dsh: IResolvedDsh): string | undefined {
 		const fromBundled = profileSeedDirFor(this._opts.runtime.bundledRoot, dsh.version, profile);
 		if (fromBundled) {
@@ -3311,6 +3420,25 @@ export class DshHostSupervisor extends Disposable {
 			let output = '';
 			let urlFromLog: IDshHostConnection | undefined;
 			let settled = false;
+			let earlyAuthKey: string | undefined;
+			/**
+			 * ★ 2026-11-24：最早可下发的 `{origin, authUrl}` 不是 stdout 的 `dsh web:` 行，
+			 *   而是控制桥 `client.register` 返回的 hello（实测 URL 行反而比 ready 晚约 10s）。
+			 *   URL 行与 bridge hello 谁先到都由这里统一 fire，按 origin|authUrl 去重，
+			 *   避免 later URL 行重复重挂 auth 定时器 / 触发二次导航。
+			 */
+			const fireEarlyAuth = (conn: IDshHostConnection) => {
+				const key = `${conn.origin}|${conn.authUrl}`;
+				if (earlyAuthKey === key) {
+					return;
+				}
+				earlyAuthKey = key;
+				this._onEarlyAuth.fire({ origin: conn.origin, authUrl: conn.authUrl });
+				if (!this._muxProbeStarted) {
+					this._muxProbeStarted = true;
+					void this._probeMuxAfterReady(conn.origin, generation, true);
+				}
+			};
 			let graceTimer: ReturnType<typeof setTimeout> | undefined;
 			let filePoll: ReturnType<typeof setInterval> | undefined;
 			let readLogTail: (() => Promise<void>) | undefined;
@@ -3408,13 +3536,8 @@ export class DshHostSupervisor extends Disposable {
 				const parsed = parseAuthUrl(output);
 				if (parsed) {
 					urlFromLog = parsed;
-					// P0-3：URL 行比 running 早；立刻让视图层预热各分区的 dsh-auth cookie，
-					// 并在 spawn 没拿到固定端口时用真实 origin 补起 mux 探针。
-					this._onEarlyAuth.fire({ origin: parsed.origin, authUrl: parsed.authUrl });
-					if (!this._muxProbeStarted) {
-						this._muxProbeStarted = true;
-						void this._probeMuxAfterReady(parsed.origin, this._generation, true);
-					}
+					// URL 行先到时同样立即下发连接；bridge hello 后到会由 fireEarlyAuth 去重。
+					fireEarlyAuth(parsed);
 					if (!pipe) {
 						finish(() => resolve(withTiming(parsed)), true);
 					} else {
@@ -3471,6 +3594,9 @@ export class DshHostSupervisor extends Disposable {
 							return;
 						}
 						this._bridge = bridge;
+						// ★ 比 `_awaitReady` resolve / running / `dsh web:` stdout 行都早：
+						//   hello 已带完整 authUrl，立刻让视图层加载页面，与后续插件 apply 并行。
+						fireEarlyAuth({ origin: hello.host.origin, authUrl: hello.host.authUrl });
 						this._registerReverseHandler(bridge);
 						this._runDisposables.add(bridge.onDidClose(() => {
 							if (this._bridge === bridge && this._status.state === 'running') {
@@ -3569,6 +3695,10 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	private async _cleanupRunFiles(): Promise<void> {
+		// P2：后台记账可能仍在写 owner / overlay 文件；删文件前必须等它结束。
+		const bookkeeping = this._postReadyBookkeeping;
+		this._postReadyBookkeeping = undefined;
+		await bookkeeping?.catch(() => undefined);
 		const files = [this._overlayFile, this._kanbanOverlayFile, this._codebaseOverlayFile, this._mcpOverlayFile, this._skillsOverlayFile, this._agentsOverlayFile, this._dataRootOverlayFile, this._sandboxOverlayFile, this._ownershipFile];
 		this._ownershipFile = undefined;
 		this._overlayFile = undefined;
@@ -3818,29 +3948,32 @@ export class DshHostSupervisor extends Disposable {
 	 * `statSync` 跟随链接 ⇒ 链接到 runtime 的包按目标文件算（runtime 不变就不会误判）。
 	 * 扫描失败一律当"没扫到"（undefined）⇒ 回退到原有判定，绝不因为诊断失败而阻止启动。
 	 */
-	private _newestPluginFile(profileDir: string, names: readonly string[]): { path: string; mtimeMs: number } | undefined {
+	private _newestPluginFile(profileDir: string, names: readonly string[]): { path: string; mtimeMs: number; fingerprint?: string } | undefined {
 		let newest: { path: string; mtimeMs: number } | undefined;
-		const consider = (file: string) => {
+		const files: { readonly rel: string; readonly full: string }[] = [];
+		const consider = (file: string, rel: string) => {
 			try {
 				const st = statSync(file);
 				const mtimeMs = Math.max(st.mtimeMs, st.ctimeMs);
 				if (!newest || mtimeMs > newest.mtimeMs) {
 					newest = { path: file, mtimeMs };
 				}
+				files.push({ rel: rel.replace(/\\/g, '/'), full: file });
 			} catch { /* 读不到就跳过 */ }
 		};
 		const isClientChunk = (fileName: string) => /^client(?:\.[^.]+)*\.(?:m?js|cjs)$/.test(fileName);
-		const walk = (dir: string, depth: number, clientEntry: string | undefined) => {
+		const walk = (dir: string, relDir: string, depth: number, clientEntry: string | undefined) => {
 			if (depth > 6) { return; }
 			let entries;
 			try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
 			for (const entry of entries) {
 				if (entry.name === 'node_modules' || entry.name.startsWith('.')) { continue; }
 				const full = join(dir, entry.name);
+				const rel = `${relDir}/${entry.name}`;
 				if (entry.isDirectory()) {
-					walk(full, depth + 1, clientEntry);
+					walk(full, rel, depth + 1, clientEntry);
 				} else if (entry.name === 'package.json' || (/\.(?:m?js|cjs)$/.test(entry.name) && !isClientChunk(entry.name) && full !== clientEntry)) {
-					consider(full);
+					consider(full, rel);
 				}
 			}
 		};
@@ -3855,9 +3988,20 @@ export class DshHostSupervisor extends Disposable {
 				const rel = typeof client === 'string' ? client : (client && typeof client === 'object' ? (client as { default?: unknown }).default : undefined);
 				clientEntry = typeof rel === 'string' ? join(dir, rel) : undefined;
 			} catch { /* 读不到 exports ⇒ 只按文件名排除 client 分包 */ }
-			walk(dir, 0, clientEntry);
+			walk(dir, name, 0, clientEntry);
 		}
-		return newest;
+		if (!newest) {
+			return undefined;
+		}
+		// ★ 内容指纹：dev 部署每次刷新 ctime 但内容未变时，仍允许复用 Host。
+		//   只 hash 本次扫描到的服务端文件（已排除 client chunk / 嵌套 node_modules）。
+		const hash = createHash('sha1');
+		for (const file of files.sort((a, b) => a.rel.localeCompare(b.rel))) {
+			try {
+				hash.update(file.rel).update('\0').update(readFileSync(file.full)).update('\0');
+			} catch { /* 单文件读失败不阻断启动，按可读取的部分算 */ }
+		}
+		return { ...newest, fingerprint: hash.digest('hex') };
 	}
 
 	private _profileManifest(profile: string, env: NodeJS.ProcessEnv): string {

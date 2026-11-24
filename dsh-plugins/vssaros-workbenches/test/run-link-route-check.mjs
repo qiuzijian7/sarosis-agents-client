@@ -72,12 +72,12 @@ console.log('[link-route] /link 路由（实跑 apply）');
 	const route = [...routes.entries()].find(([k]) => k.endsWith('/link'));
 	ck('注册了 /link 路由', !!route, [...routes.keys()].join(','));
 	if (route) {
-		const { status, body } = await call(route[1], 'http://dsh.internal/api/vssaros-workbenches/link?wb=vssaros%2Fstudio');
+		const { status, body } = await call(route[1], 'http://dsh.internal/api/vssaros-workbenches/link?wb=vssaros%2Fkanban');
 		ck('/link 返回 200', status === 200, String(status));
 		ck('链接含现签 token', /[?&]token=TK1/.test(String(body?.url)), String(body?.url));
 		ck('链接 host 是回环地址（不是 dsh.internal）',
 			String(body?.url).startsWith('http://127.0.0.1:6474/'), String(body?.url));
-		ck('链接 hash 带工作台 id', String(body?.url).includes('#wb=vssaros%2Fstudio'), String(body?.url));
+		ck('链接 hash 带工作台 id', String(body?.url).includes('#wb=vssaros%2Fkanban'), String(body?.url));
 		// ★ 外开 = 只显示工作台：链接必须带 alone=1（前端据此收起左侧会话栏）
 		ck('链接带 alone=1（进去后收起左侧栏）', /[#&]alone=1/.test(String(body?.url)), String(body?.url));
 		ck('响应里带 origin 便于排查', body?.origin === 'http://127.0.0.1:6474', String(body?.origin));

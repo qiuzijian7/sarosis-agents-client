@@ -41,20 +41,20 @@ if (linkSrc && parseSrc) {
 	const build = new Function(linkSrc + '\nreturn buildWorkbenchDeepLink;')();
 	const parse = new Function(parseSrc + '\nreturn parseDeepLinkWorkbench;')();
 
-	const withToken = build('http://127.0.0.1:6474', '/', '?token=abc123', 'vssaros/studio');
-	ck('带 token：query + hash 都在', withToken === 'http://127.0.0.1:6474/?token=abc123#wb=vssaros%2Fstudio&alone=1', withToken);
+	const withToken = build('http://127.0.0.1:6474', '/', '?token=abc123', 'vssaros/kanban');
+	ck('带 token：query + hash 都在', withToken === 'http://127.0.0.1:6474/?token=abc123#wb=vssaros%2Fkanban&alone=1', withToken);
 	const noToken = build('http://127.0.0.1:6474', '/', '', 'vssaros/marketplace');
 	ck('无 token：不带 ?', noToken === 'http://127.0.0.1:6474/#wb=vssaros%2Fmarketplace&alone=1', noToken);
 	const withPath = build('http://h:1', '/app/', '?x=1', 'vssaros/kb');
 	ck('保留非根 pathname', withPath === 'http://h:1/app/#wb=vssaros%2Fkb&alone=1', withPath);
 	ck('id 会被 URL 编码（含 / 也要编）', build('http://h', '/', '', 'a/b c').endsWith('#wb=a%2Fb%20c&alone=1'));
 
-	ck('hash 深链能解析', parse('', '#wb=vssaros/studio', '') === 'vssaros/studio');
+	ck('hash 深链能解析', parse('', '#wb=vssaros/kanban', '') === 'vssaros/kanban');
 	ck('query 深链仍兼容', parse('?wb=vssaros%2Fkanban', '', '') === 'vssaros/kanban');
 	ck('localStorage 标记仍兼容', parse('', '', 'vssaros:agents') === 'vssaros/agents');
 	ck('hash 优先于 query', parse('?wb=vssaros/a', '#wb=vssaros/b', 'vssaros/c') === 'vssaros/b');
 	ck('都没有 ⇒ 空串（不误伤普通打开）', parse('', '', '') === '');
-	ck('vssaros: 前缀归一成 vssaros/', parse('', '#wb=vssaros:studio', '') === 'vssaros/studio');
+	ck('vssaros: 前缀归一成 vssaros/', parse('', '#wb=vssaros:kanban', '') === 'vssaros/kanban');
 }
 
 // ── ② 静态结构 ─────────────────────────────────────────────────────────
@@ -119,10 +119,10 @@ ck('预取地址指向 /link', /LINK_PATH_PREFIX = '\/api\/vssaros-workbenches\/
 
 		// ① 正常路径
 		{
-			const fresh = 'http://127.0.0.1:6474/?token=fresh#wb=vssaros%2Fstudio&alone=1';
+			const fresh = 'http://127.0.0.1:6474/?token=fresh#wb=vssaros%2Fkanban&alone=1';
 			const { api, win, calls } = mk({ fresh });
 			let reported = null;
-			const ret = api.openWorkbenchInBrowser('vssaros/studio', (ok) => { reported = ok; });
+			const ret = api.openWorkbenchInBrowser('vssaros/kanban', (ok) => { reported = ok; });
 			ck('同步返回 true（不阻塞点击手势）', ret === true);
 			ck('先同步开空白窗占位', calls.open === 1 && calls.openUrl === '' && win.location.href === '');
 			await new Promise((r) => setTimeout(r, 0));
@@ -134,16 +134,16 @@ ck('预取地址指向 /link', /LINK_PATH_PREFIX = '\/api\/vssaros-workbenches\/
 		// ② 取链接失败 ⇒ 回落本地拼（且不阻断）
 		{
 			const { api, win } = mk({ fresh: '' });
-			api.openWorkbenchInBrowser('vssaros/studio');
+			api.openWorkbenchInBrowser('vssaros/kanban');
 			await new Promise((r) => setTimeout(r, 0));
-			ck('取不到 ⇒ 回落本地拼', String(win.location.href).includes('/fallback#wb=vssaros%2Fstudio'), win.location.href);
+			ck('取不到 ⇒ 回落本地拼', String(win.location.href).includes('/fallback#wb=vssaros%2Fkanban'), win.location.href);
 		}
 
 		// ③ 弹窗被拦截 ⇒ 回调报失败（按钮可变橙）
 		{
 			const { api } = mk({ fresh: 'http://x', openThrows: true });
 			let reported = null;
-			api.openWorkbenchInBrowser('vssaros/studio', (ok) => { reported = ok; });
+			api.openWorkbenchInBrowser('vssaros/kanban', (ok) => { reported = ok; });
 			await new Promise((r) => setTimeout(r, 0));
 			ck('open 被拦截 ⇒ 回调 false', reported === false);
 		}

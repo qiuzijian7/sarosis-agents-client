@@ -255,5 +255,9 @@ function finish() {
 	const skipped = results.filter((row) => row.ok === undefined).length;
 	console.log(`\n[dsh-compat-e2e] ${ok} 通过 / ${bad.length} 失败 / ${skipped} 跳过`);
 	if (bad.length) { for (const row of bad) console.error(`  - ${row.name}: ${row.detail}`); process.exitCode = 1; }
-	if (MODE === 'preflight') process.exit(process.exitCode ?? 0);
+	// ★ 2026-11-24：finish() 必须**真的终止**。原实现只在 --preflight 退出，
+	//   --all 在 dev app 未启动（desktop-control.json 缺失）时 skip 完会继续往下跑，
+	//   到 `endpoint.version` 直接 TypeError ✗。所有调用点（无 endpoint / 无 WebSocket /
+	//   握手失败 / 末尾汇总）都把 finish() 当终点，统一退出才符合语义。
+	process.exit(process.exitCode ?? 0);
 }

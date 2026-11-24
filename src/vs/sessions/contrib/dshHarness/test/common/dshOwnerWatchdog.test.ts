@@ -120,4 +120,19 @@ suite('dshHarness / owner watchdog pairing (host ↔ bridge plugin)', () => {
 		assert.match(src, /this\._rememberStart\(start\);/, '首次 B 启动也要落盘有效选项，供下次预热');
 		assert.match(src, /return this\._supervisor\.start\(start\);/, '必须用合成后的完整选项启动');
 	});
+
+	test('★ P0/P1：lease 记录插件内容指纹，URL 行直接下发视图连接', () => {
+		// 读原文：这两个文件的注释含片段化块注释标记，剥离正则可能吞掉后续代码。
+		const sup = read(SUPERVISOR);
+		assert.match(sup, /const hash = createHash\('sha1'\)/, '必须计算随包服务端插件内容指纹');
+		assert.match(sup, /pluginFingerprint: newestPluginFile\.fingerprint/, 'Host 租约必须写入插件内容指纹');
+
+		assert.match(sup, /const fireEarlyAuth = \(conn: IDshHostConnection\) =>/, 'URL 行与 bridge hello 必须共用一个去重下发入口');
+		assert.match(sup, /fireEarlyAuth\(\{ origin: hello\.host\.origin, authUrl: hello\.host\.authUrl \}\)/, 'bridge hello 必须比 ready 更早下发连接');
+
+		const ch = read(CHANNEL);
+		assert.match(ch, /onEarlyAuth\(conn => this\._views\.setConnection\(conn\)\)/, '早连接必须下发到视图层并触发加载');
+		assert.doesNotMatch(ch, /onEarlyAuth\(conn => this\._views\.prefetchAuth\(conn\)\)/, '不许只预热 cookie 而不加载视图');
+		assert.match(ch, /state === 'stopped' \|\| state === 'stopping' \|\| state === 'error'/, '只有终态才允许清空 earlyAuth 连接');
+	});
 });

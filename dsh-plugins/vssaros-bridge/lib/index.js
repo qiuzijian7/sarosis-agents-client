@@ -327,11 +327,12 @@ export function apply(ctx, config = {}) {
 		},
 		log: line => console.log(line),
 	});
-	// 首次同步延迟：有 IDE 托管时原来等 20s（为了先拿到计费代理地址再写，避免两次 profile 重写）。
-	// 但 volatile 路由不落盘 ⇒ Host 一重启就没有模型，20s 里页面已经加载完并首拉了空目录。
-	// ⇒ 缩到 2s 先重放一版（直连），`client.register` 到来后再由既有 syncRoute('client-register')
-	//   改写成代理地址；多一次 profile 重写，但换来"重启后目录一定非空" ✓。
-	ctx.effect(() => codebuddy.start({ initialDelayMs: 2_000 }));
+	// ★ P2（2026-11-24）：首轮 token / models 维护不再在 Host 启动 2s 后抢跑。
+	//   `client.register` 到来时已有 `void codebuddy.syncRoute('client-register')` 在后台补齐路由与目录；
+	//   这里只保留 20s 定时维护兜底（含 60s tick），避免独立 dsh 没有客户端注册时永不刷新。
+	//   start() 只注册 timer，不 await 网络；模型/令牌同步不再占 ready → UI 可交互窗口 ✓。
+	const CODEBUDDY_POST_READY_DELAY_MS = 20_000;
+	ctx.effect(() => codebuddy.start({ initialDelayMs: CODEBUDDY_POST_READY_DELAY_MS }));
 
 	// ── LightAI（2026-10-22，用户选方案 ①：用本仓浏览器插件开登录页、登录后自动读 Cookie）──────────────
 	// 浏览器插件是**可选**依赖：`ctx.inject([...], cb)` 动态取（不在 ⇒ 本插件照常起，只是登录时明说"需要浏览器插件"）✓。

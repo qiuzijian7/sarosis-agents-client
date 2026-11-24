@@ -511,7 +511,9 @@ try {
 			[/ctx\.emit\('settings\/document-updated', 'llm-pi-ai'\)/, '必须补发 settings/document-updated'],
 			[/notifyModelDirectory\('route-written'\)/, '路由写入成功后必须立刻通知目录刷新'],
 			[/notifyModelDirectory\('client-register'\)/, '客户端注册时必须再补发一次（页面此刻才订阅）'],
-			[/codebuddy\.start\(\{ initialDelayMs: 2_000 \}\)/, 'Host 启动后必须尽快重放路由（不能等 20s ⇒ 页面已首拉空目录）'],
+			[/const CODEBUDDY_POST_READY_DELAY_MS = 20_000;/, 'P2：首轮 token/models 维护必须延后到 ready 之后'],
+		[/codebuddy\.start\(\{ initialDelayMs: CODEBUDDY_POST_READY_DELAY_MS \}\)/, '定时维护必须用延后常量，不能回到 2s 抢跑'],
+		[/void codebuddy\.syncRoute\('client-register'\)/, '客户端注册时仍要在后台补齐路由与模型目录'],
 			[/const applied = !!after && after\.provider === want\.provider && after\.model === want\.model;/, 'saveSelection 后必须读回校验（官方在无 configEditor 时是 no-op）'],
 			[/改写未生效（saveSelection 为 no-op）/, '改写未生效时必须明确留痕，不许再打"请求改写"的假成功文案'],
 		];

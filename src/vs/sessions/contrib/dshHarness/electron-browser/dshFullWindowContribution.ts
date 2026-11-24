@@ -1474,7 +1474,7 @@ export class DshFullWindowContribution extends Disposable {
 	 *
 	 * 右侧工作台页签 = P2（先把"能进会话、能打字"这条主线立住）。
 	 */
-	private async _openComposed(auxWindow: Awaited<ReturnType<IAuxiliaryWindowService['open']>>, windowId: number, sessionId: string | undefined, booting?: HTMLElement, titleBarH = 0, windowTitle = getDshDesktopWindowTitle(this._environmentService.isBuilt)): Promise<boolean> {
+	private async _openComposed(auxWindow: Awaited<ReturnType<IAuxiliaryWindowService['open']>>, windowId: number, sessionId: string | undefined, booting?: HTMLElement, titleBarH = 0, windowTitle = getDshDesktopWindowTitle(this._environmentService.isBuilt), deferShow = false): Promise<boolean> {
 		const win = auxWindow.window;
 		const container = auxWindow.container;
 		container.style.background = 'var(--vscode-editor-background)';
@@ -1603,14 +1603,20 @@ export class DshFullWindowContribution extends Disposable {
 		if (!vssarosReady) {
 			this._log.warn('[dshHarness] desktop: 等换皮超时（9s）⇒ 仍然显示视图（可能是页面本身有问题）');
 		}
-		await this._dsh.setViewVisible(chatViewId, true, true);
-		// 视图已显示（原生层盖住 DOM）⇒ 这时才撤占位（见上面 createView 后的注释）
-		booting?.remove();
+		// `deferShow`：先把视图创建/换皮预热起来，但保留启动占位可见，等会话绑定成功后再显示。
+		// 这样 mux / session 等待与页面加载可以并行，且失败黄条仍然盖在 DOM 上不被原生视图遮住。
+		if (!deferShow) {
+			await this._dsh.setViewVisible(chatViewId, true, true);
+			// 视图已显示（原生层盖住 DOM）⇒ 这时才撤占位（见上面 createView 后的注释）
+			booting?.remove();
+		}
 
 		const focusChat = () => { void this._dsh.setViewVisible(chatViewId, true, true).catch(() => undefined); };
-		win.setTimeout(focusChat, 0);
-		win.setTimeout(focusChat, 400);
-		win.addEventListener('focus', focusChat);
+		if (!deferShow) {
+			win.setTimeout(focusChat, 0);
+			win.setTimeout(focusChat, 400);
+			win.addEventListener('focus', focusChat);
+		}
 
 		const unloadSub = auxWindow.onUnload(() => {
 			resizeObserver.disconnect();
@@ -1889,50 +1895,82 @@ export class DshFullWindowContribution extends Disposable {
 			return false;
 		}
 		booting.textContent = '后台服务已启动，正在等待会话通道就绪…';
-		// ★★ 2026-10-29（真机 logs/20261029T101501）：Host 说 ready 时，mux 升级路由还没注册
-		//   （mux route available +4777 ms after Host ready，历史样本到 +11.4s）⇒ 这段时间里任何
-		//   session.start 都必然失败 ⇒ 桌面窗口原本只能退避重试（4s/12s）并弹一条假的"启动失败"黄条。
-		//   ⇒ 发起会话之前先等路由通：一次成功、没有黄条，也不必白等 8~16s。
-		//   等不到（Host 没了 / 超过 20s）⇒ 照旧走原来的失败重试路径。
-		const muxReady = await this._dsh.waitForMuxReady();
-		if (muxReady) {
-			booting.textContent = '后台服务已就绪，正在加载界面…';
-		} else {
-			this._log.warn('[dshHarness] full window: mux 路由未在等待窗口内就绪 ⇒ 照旧走会话重试');
-			booting.textContent = '后台服务已启动，正在加载界面…';
-		}
-		if (closedWhileBooting) {
-			this._desktopBootDisposables.delete(bootDisposables);
-			this._log.info('[dshHarness] desktop window closed while the Host was starting ⇒ 不再继续建视图');
-			return false;
-		}
-		// 会话解析放在窗口之后：独立会话 id 依赖 windowId（见 _ensurePopoutSessionId）
-		// ★ 2026-10-27：失败时**在窗口里显示原因 + 重试按钮**（否则用户只看到 hero + 禁用输入框，
-		//   而答案只在日志里 ✗）；重试 = 重新跑一遍这整段（含再建视图）。
-		const sessionId = await this._ensurePopoutSessionId(windowId, (message, attempt, level) => {
-			this._showStartupBanner(auxWindow.container, titleBarH, message, attempt, () => {
-				this._clearStartupBanner();
-				void this._open(args).catch(err => this._log.warn('[dshHarness] desktop: 会话重试失败', err));
-			}, level ?? 'error');
-		});
-		if (sessionId) {
-			this._clearStartupBanner();
-		}
-		// ★ 2026-10-18（默认形态）：**拼装式 desktop** —— 左=会话列表页、右=dsh 聊天（surface=chat）。
-		//   为什么不用上游 `createAuxiliaryEditorPart`：它经渲染进程 `window.open` 建窗，在这个构建里
-		//   建出来的窗口 URL 永远是 `about:blank`（真机实测：窗口存在但从不加载 → 白窗），而本贡献用的
-		//   `IAuxiliaryWindowService.open()` 是**已验证可用**的那条路 ✓。
-		//   聊天用 `surface=chat`（长期稳定）；不加载会整页卡死的官方 full 页 ✓。
 		const popoutStyle = this._configurationService.getValue<string>(DshHarnessSettings.PopoutStyle) ?? 'composed';
+		// ★ 2026-11-24（P2 深度提速）：拼装式桌面先以空 sessionId 创建/预热视图，再等 mux 并启动会话；
+		//   页面加载与 mux 探测并行。视图在会话绑定成功前保持隐藏，启动占位/失败黄条不被原生视图盖住。
+		let revealComposedView: () => Promise<void> = async () => undefined;
+		let retrySession: () => void = () => undefined;
+		const reporter = (message: string, attempt: number, level?: 'error' | 'waiting') => {
+			this._showStartupBanner(auxWindow.container, titleBarH, message, attempt, () => retrySession(), level ?? 'error');
+		};
+		// ★★ 2026-10-29：mux 路由可能比 Host ready 晚 10s；任何 `startSession` 之前都必须等它。
+		//   这里把等待放进会话准备函数，仍严格早于 `_ensurePopoutSessionId()` 内的 startSession。
+		const ensureSessionAfterMux = async (): Promise<{ ok: boolean; sessionId?: string }> => {
+			const muxReady = await this._dsh.waitForMuxReady();
+			if (muxReady) {
+				booting.textContent = '后台服务已就绪，正在加载界面…';
+			} else {
+				this._log.warn('[dshHarness] full window: mux 路由未在等待窗口内就绪 ⇒ 照旧走会话重试');
+				booting.textContent = '后台服务已启动，正在加载界面…';
+			}
+			if (closedWhileBooting || bootCancellation.token.isCancellationRequested) {
+				this._log.info('[dshHarness] desktop window closed while waiting for the session channel ⇒ 不再继续');
+				return { ok: false };
+			}
+			const sessionId = await this._ensurePopoutSessionId(windowId, reporter);
+			if (sessionId) {
+				this._clearStartupBanner();
+			}
+			return { ok: true, ...(sessionId ? { sessionId } : {}) };
+		};
+		const bindComposedSession = async (sessionId?: string): Promise<void> => {
+			if (sessionId) {
+				const viewId = this._desktopWindows.get(windowId)?.viewId;
+				if (viewId) {
+					await this._dsh.rebindSession(viewId, sessionId);
+				}
+			}
+			await revealComposedView();
+		};
+		retrySession = () => {
+			this._clearStartupBanner();
+			if (popoutStyle === 'composed') {
+				void ensureSessionAfterMux().then(r => r.ok ? bindComposedSession(r.sessionId) : undefined)
+					.catch(err => this._log.warn('[dshHarness] desktop: 会话重试失败', err));
+			} else {
+				void this._open(args).catch(err => this._log.warn('[dshHarness] desktop: 会话重试失败', err));
+			}
+		};
 		if (popoutStyle === 'composed') {
-			// 启动期的关窗处理一直留到拼装完成（它注册了自己的 onUnload）⇒ 中途关窗也能正确收场 ✓
-			//（两者都触发时 `_quitAfterDesktopClosed` / `_quit` 是幂等的：标记先同步清掉）
 			try {
-				return await this._openComposed(auxWindow, windowId, sessionId, booting, titleBarH, windowTitle);
+				const created = await this._openComposed(auxWindow, windowId, undefined, booting, titleBarH, windowTitle, true);
+				if (!created) {
+					return false;
+				}
+				revealComposedView = async () => {
+					const viewId = this._desktopWindows.get(windowId)?.viewId;
+					if (viewId) {
+						await this._dsh.setViewVisible(viewId, true, true);
+					}
+					booting.remove();
+				};
+				const result = await ensureSessionAfterMux();
+				if (!result.ok) {
+					return false;
+				}
+				await bindComposedSession(result.sessionId);
+				return true;
 			} finally {
 				this._desktopBootDisposables.delete(bootDisposables);
 			}
 		}
+		// web 档仍按原顺序：先等 mux + 拿 sessionId，再创建全屏视图。
+		const webSession = await ensureSessionAfterMux();
+		if (!webSession.ok) {
+			this._desktopBootDisposables.delete(bootDisposables);
+			return false;
+		}
+		const sessionId = webSession.sessionId;
 		this._desktopBootDisposables.delete(bootDisposables);
 		// web 档有自己的占位（文案不同）⇒ 先撤掉启动占位，免得两层叠字
 		booting.remove();

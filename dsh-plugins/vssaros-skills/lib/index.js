@@ -2094,7 +2094,7 @@ async function scanAgentsOf(config) {
 // ★ 2026-11-04（用户要求「看板 / 流程 / 生图暂时下线」）：这份只读镜像也跟着收口。
 //   带 `offline` 的条目仍留在全表里（清单完整、便于恢复），但计数 / 徽章 / 列表一律用 VISIBLE_ 那份。
 //   下线真源在 `vssaros-dashboard/lib/catalog.js::OFFLINE_WORKBENCH_ROUTES`（守卫 ⑥ 对账）。
-/* @generated-workbench-directory:start skills-mirror hash=bef767c4eff1 */
+/* @generated-workbench-directory:start skills-mirror hash=8cb59bb5077f */
 import { TOOLS_WORKBENCHES as GENERATED_TOOLS_WORKBENCHES, VISIBLE_TOOLS_WORKBENCHES as GENERATED_VISIBLE_TOOLS_WORKBENCHES } from './workbench-directory.generated.js';
 const TOOLS_WORKBENCHES = GENERATED_TOOLS_WORKBENCHES;
 const VISIBLE_TOOLS_WORKBENCHES = GENERATED_VISIBLE_TOOLS_WORKBENCHES;

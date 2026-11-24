@@ -735,7 +735,7 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 			 *
 			 * ⚠ 拿不到就返回空数组（**不编造**）—— 商城界面只显示目录里真有的东西。
 			 */
-			/* @generated-workbench-directory:start market-installed-items hash=bef767c4eff1 */
+			/* @generated-workbench-directory:start market-installed-items hash=8cb59bb5077f */
 const GENERATED_INSTALLED_ITEMS = [
 			{ id: "vssaros-wb-dashboard", name: "主页", ico: "🏠", route: "/x/dashboard/", offline: false },
 			{ id: "vssaros-wb-sessions", name: "会话", ico: "💬", route: "/x/sessions/", offline: false },

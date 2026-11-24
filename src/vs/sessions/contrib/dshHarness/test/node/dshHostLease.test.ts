@@ -72,6 +72,30 @@ suite('dshHostLease', () => {
 		assert.strictEqual(staleHostByPluginFiles(host, { path: 'a', mtimeMs: Number.NaN }), undefined);
 	});
 
+	test('stale-by-files: 内容指纹相同可复用，指纹变化必须冷启动（忽略 ctime 抖动）', () => {
+		const startedAt = Date.UTC(2026, 10, 24, 13, 26, 45);
+		const host = lease({ startedAt, pluginFingerprint: 'same-content' });
+		// dev 部署刷新了 ctime，但内容没变 ⇒ 不许因时间戳误判 Host 过期
+		assert.strictEqual(staleHostByPluginFiles(host, {
+			path: 'x/@vssaros/dsh-workbenches/package.json',
+			mtimeMs: startedAt + 5 * 60_000,
+			fingerprint: 'same-content',
+		}), undefined);
+		const changed = staleHostByPluginFiles(host, {
+			path: 'x/@vssaros/dsh-workbenches/package.json',
+			mtimeMs: startedAt + 5 * 60_000,
+			fingerprint: 'new-content',
+		});
+		assert.match(changed!, /随包插件内容已变化/);
+		// 旧租约没有指纹 ⇒ 保持原时间判据，避免兼容性回退
+		const legacy = lease({ startedAt });
+		assert.match(staleHostByPluginFiles(legacy, {
+			path: 'x/@vssaros/dsh-workbenches/package.json',
+			mtimeMs: startedAt + 5 * 60_000,
+			fingerprint: 'new-content',
+		})!, /比运行中的 Host 新/);
+	});
+
 	suite('store', () => {
 		let dir: string;
 		let store: DshHostLeaseStore;

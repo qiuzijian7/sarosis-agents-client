@@ -460,8 +460,10 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		}));
 		// ★ 2026-10-20：mux 路由可用 ⇒ 让页面跳过 dsh 连接剩余的退避（见 DshViewHost.notifyMuxReady）。
 		this._register(this._supervisor.onMuxReady(e => this._views.notifyMuxReady(e.afterReadyMs)));
-		// P0-3：URL 行一出现就预热各视图分区的 dsh-auth cookie，不等 running / _load 串行交换。
-		this._register(this._supervisor.onEarlyAuth(conn => this._views.prefetchAuth(conn)));
+		// ★ 2026-11-24：URL 行一出现就下发连接，不等 Host running。
+		//   `setConnection()` 内部仍会 prefetchAuth，且会对已创建的视图槽立即 `_load()`；
+		//   running 到来时 origin 相同 ⇒ 不会二次导航，页面加载与 Host 冷启动并行。
+		this._register(this._supervisor.onEarlyAuth(conn => this._views.setConnection(conn)));
 		this._pluginActivation = new DshPluginActivationStore(() => this._supervisor.profileDirectory(), log);
 		// ★ 2026-11-09 单版本模型：升级闸门（快照/切指针/健康检查失败回滚）、
 		//   远端兼容清单缓存、伴生插件 peer 预检整体下线 ——
@@ -730,6 +732,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private async _applyConnection(): Promise<void> {
 		const gen = ++this._connectionGen;
 		const conn = this._supervisor.connection;
+		const state = this._supervisor.status.state;
 		const bridge = conn ? this._supervisor.bridge : undefined;
 		// 反向通道的处理器**不在这里注册**：`supervisor` 在桥客户端创建时就挂好了（见其 options
 		// `reverseRequestHandler`）——在这里按"状态变化"注册会漏掉"客户端尚未建好"的那段时间。
@@ -751,7 +754,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			} catch { /* 探针失败不影响流程 */ }
 			this._logService.info(`[dshHarness] bridge probe after ensure: ${Date.now() - tp} ms`);
 		}
-		if (!conn) {
+		// earlyAuth 已经把 URL 行连接交给视图层；starting / 中间态的 `connection === undefined`
+		// 不能把它清掉，否则刚开始加载的页面会被切成 Host unavailable。只有明确终态才断开。
+		if (!conn && (state === 'stopped' || state === 'stopping' || state === 'error')) {
 			this._views.setConnection(undefined);
 		}
 	}

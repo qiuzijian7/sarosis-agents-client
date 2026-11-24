@@ -445,16 +445,28 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 			[...r3].join(',') === 'a,b,c', [...r3].join(','));
 
 		const idx = strip(read('lib/index.js'));
+		// P2 新接线含 `/*...*/` 形态的注释文本；strip 的块注释正则会把后续代码吞掉，
+		// 所以新守卫改读原文（代码行断言仍以 idx 为准，负对照也看原文）。
+		const rawIdx = read('lib/index.js');
 		// ⚠ applyDesired 现在带第 4 个参数（计时用的 phase 标签）⇒ 只钉前三个实参，末尾允许 `, …`
 		check('lazy：阶段 2 必须用同一批 key 门控（否则会把全部注册回去）',
 			/await applyDesired\(okPresetIds, true, phase2Only(?:,|\))/.test(idx)
 			&& /const phase2Only = lazyMode \? new Set\(\[\.\.\.eagerKeys\]/.test(idx));
 		check('lazy：补齐整个 state 只排一个定时器',
 			/function scheduleLazyFill\(state, config, total\) \{\s*if \(state\.lazyFill\) \{\s*return;/.test(idx));
-		check('lazy：补齐 / 启动首轮 / rescan 都走 syncSerial（先等在飞的一轮，避免并发重复注册）',
+		check('lazy：补齐 / rescan 都走 syncSerial（先等在飞的一轮，避免并发重复注册）',
 			/async function syncSerial\(state, presets, config, options = \{\}\) \{\s*try \{ await state\.syncing; \}[\s\S]{0,80}return syncOnce\(state, presets, config, options\);/.test(idx)
-			&& (idx.match(/await syncSerial\(state, state\.presets, config(?:, \{ force: true \})?\)/g) || []).length >= 3,
+			&& (idx.match(/await syncSerial\(state, state\.presets, config(?:, \{ force: true \})?\)/g) || []).length >= 2,
 			(idx.match(/await syncSerial\(state, state\.presets, config(?:, \{ force: true \})?\)/g) || []).length + ' 处');
+		check('P2 深度延后：首轮 preset 同步只在页面请求 / 15s 兜底 / 按需补齐时启动',
+			/function requestAgentsBootSync\(reason\)/.test(rawIdx)
+			&& /requestAgentsBootSync\('page-request'\)/.test(rawIdx)
+			&& /scheduleLazyFill\(state, config, 0\)/.test(rawIdx)
+			&& /agentsBootSyncHook = \(reason\) => \{/.test(rawIdx)
+			&& /return state\.lazyFill\?\.fillNow\(\)/.test(rawIdx)
+			&& !/const bootSyncTimer = setTimeout/.test(rawIdx)
+			&& /const LAZY_FILL_DELAY_MS = 15_000;/.test(rawIdx)
+			&& /async function ensureLazyPreset\(presetId\)/.test(rawIdx));
 		check('P0-2：页面/后台同步走稳定签名缓存 + debounce，且 lazy 补齐带 force',
 			/const sourceSig = await quickScanSignatureOf\(config\);/.test(idx)
 			&& /async function scheduleSync\(state, config, options = \{\}\)/.test(idx)

@@ -102,7 +102,7 @@ window.__ModuleLoader__.load({
 		 *   ⚠ 条目**不能删**：`itemByRoute()` 与 `coveredByFixedEntry()` 都靠这份全表 ⇒ 删了会让
 		 *     深链失效、宿主注册快照里又冒出同名入口。下线清单真源在 dashboard/lib/catalog.js。
 		 */
-		/* @generated-workbench-directory:start chat-surface-nav hash=bef767c4eff1 */
+		/* @generated-workbench-directory:start chat-surface-nav hash=8cb59bb5077f */
 const DEFAULT_ITEMS = [
 			{ id: "vssaros-wb-dashboard", name: "主页", ico: "🏠", route: "/x/dashboard/" },
 			{ id: "vssaros-wb-sessions", name: "会话", ico: "💬", route: "/x/sessions/" },

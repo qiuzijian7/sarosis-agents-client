@@ -25,6 +25,11 @@ export interface IDshHostLease {
 	readonly bridgeToken?: string;
 	readonly instanceId: string;
 	readonly startedAt: number;
+	/**
+	 * Host 启动时 profile 内随包服务端插件的内容指纹（2026-11-24）。
+	 * 有这个字段时优先按内容判断能否复用，避免 dev 部署只刷新 ctime 就误判 Host 过期。
+	 */
+	readonly pluginFingerprint?: string;
 }
 
 /** 解析 host.json；结构不完整一律视为无效（调用方按"没有租约"处理）。 */
@@ -48,7 +53,9 @@ export function parseHostLease(text: string): IDshHostLease | undefined {
 		|| typeof o.startedAt !== 'number') {
 		return undefined;
 	}
-	if ((o.pipe !== undefined && typeof o.pipe !== 'string') || (o.bridgeToken !== undefined && typeof o.bridgeToken !== 'string')) {
+	if ((o.pipe !== undefined && typeof o.pipe !== 'string')
+		|| (o.bridgeToken !== undefined && typeof o.bridgeToken !== 'string')
+		|| (o.pluginFingerprint !== undefined && typeof o.pluginFingerprint !== 'string')) {
 		return undefined;
 	}
 	return o as unknown as IDshHostLease;
@@ -80,11 +87,27 @@ export const PLUGIN_STALE_TOLERANCE_MS = 2_000;
  * ⇒ 改用一个**跨进程都成立**的事实：profile 里插件文件的最新写盘时间晚于租约的 `startedAt`
  *   （`startedAt` 是 Host 就绪时写下的，复用时不刷新 ⇒ 它就是"那份内存代码的出生时间"）。
  *
- * @param newest 本次扫描到的最新插件文件（路径只用于日志，便于排查误判）；undefined = 没扫到任何文件。
+ * ★ 2026-11-24：dev 启动器每次把源码插件部署到 profile 时都会刷新 ctime，即使内容没变；
+ *   单靠 mtime/ctime 会让「Host 已跑同一份代码」仍被判旧并每次冷启动。因此租约带
+ *   `pluginFingerprint` 时优先按**内容指纹**判定：hash 相同即可复用，hash 不同才冷启动。
+ *   旧租约没有指纹时仍回退到原时间判据。
+ *
+ * @param newest 本次扫描结果；`path` 只用于时间判据日志，`fingerprint` 为服务端插件内容 hash。
  */
-export function staleHostByPluginFiles(lease: IDshHostLease, newest: { readonly path: string; readonly mtimeMs: number } | undefined, toleranceMs: number = PLUGIN_STALE_TOLERANCE_MS): string | undefined {
+export function staleHostByPluginFiles(
+	lease: IDshHostLease,
+	newest: { readonly path: string; readonly mtimeMs: number; readonly fingerprint?: string } | undefined,
+	toleranceMs: number = PLUGIN_STALE_TOLERANCE_MS,
+): string | undefined {
 	if (!newest || !Number.isFinite(newest.mtimeMs) || !Number.isFinite(lease.startedAt)) {
 		return undefined;
+	}
+	if (lease.pluginFingerprint && newest.fingerprint) {
+		if (lease.pluginFingerprint === newest.fingerprint) {
+			return undefined;
+		}
+		return `profile 里的随包插件内容已变化（Host 指纹 ${lease.pluginFingerprint.slice(0, 8)} → 当前 ${newest.fingerprint.slice(0, 8)}，最新文件 ${newest.path}）`
+			+ ' ⇒ 它内存里跑的是旧插件代码';
 	}
 	if (newest.mtimeMs <= lease.startedAt + toleranceMs) {
 		return undefined;

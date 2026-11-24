@@ -441,7 +441,10 @@ function findTreeProps(node, predicate) {
 }
 await t('开始页「浏览更多插件」直达商城工作台，不再打开宿主插件目录', () => {
 	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
-	assert.doesNotMatch(source, /pluginNavigation/, '不得再调用宿主插件目录服务');
+	// 语义收敛到「浏览更多插件」这一个函数：官方插件页要打开宿主插件页装官方包，不该被全文禁令误伤。
+	const browse = /const browsePlugins = \(\) => \{[\s\S]*?\n\t\t\t\};/.exec(source);
+	assert.ok(browse, '必须能定位「浏览更多插件」实现');
+	assert.doesNotMatch(browse[0], /pluginNavigation/, '「浏览更多插件」不得再调用宿主插件目录服务');
 	assert.match(source, /canonicalId === MARKET_WORKBENCH_ID/, '必须按目录真源的 canonicalId 定位商城页');
 	assert.match(source, /service\.open\(MARKET_WORKBENCH_ID\)/, '右栏目录未就绪时必须回落商城工作台本体');
 
@@ -896,7 +899,7 @@ await t('阶段2 统一目录清单：单一 manifest 生成隐藏/退役/离线
 		'生成视图必须导出供自检');
 	const manifest = client.workbenchManifest();
 	assert.ok(Object.isFrozen(manifest), 'manifest 必须冻结');
-	assert.equal(manifest.length, 20, '12 个 hidden + 4 个 offline + 1 个 retired + 3 个 active manifest route');
+	assert.equal(manifest.length, 19, '11 个 hidden + 4 个 offline + 1 个 retired + 3 个 active manifest route');
 	assert.equal(manifest.filter(row => row.state === 'active' && row.sourceKind === 'manifest').length, 3,
 		'active manifest route 行必须恰好 3 条');
 	const requiredFields = ['key', 'workbenchId', 'pageId', 'canonicalId', 'state', 'visibility', 'aliases', 'replacedBy', 'route', 'title', 'sourceKind'];
@@ -909,13 +912,13 @@ await t('阶段2 统一目录清单：单一 manifest 生成隐藏/退役/离线
 	assert.equal(new Set(manifest.map(row => row.key)).size, manifest.length, 'manifest key 不得重复');
 	const hiddenKeys = [
 		'vssaros/marketplace/default', 'vssaros/sessions/default', 'vssaros/workflow/default', 'vssaros/kanban/default',
-		'vssaros/kb/default', 'vssaros/studio/default',
+		'vssaros/kb/default',
 		'legacy:/x/sessions//vssaros-wb-sessions', 'legacy:/x/sessions/?view=tiles/vssaros-wb-session-tiles',
 		'legacy:/x/media//vssaros-wb-media', 'legacy:/x/codebase//vssaros-wb-codebase',
 		'legacy:/x/workflow//vssaros-wb-workflow', 'legacy:/x/kanban//vssaros-wb-kanban',
 	];
 	const hiddenIds = [
-		'vssaros/marketplace', 'vssaros/sessions', 'vssaros/workflow', 'vssaros/kanban', 'vssaros/kb', 'vssaros/studio',
+		'vssaros/marketplace', 'vssaros/sessions', 'vssaros/workflow', 'vssaros/kanban', 'vssaros/kb',
 		'legacy:/x/sessions/', 'legacy:/x/sessions/?view=tiles',
 		'legacy:/x/media/', 'legacy:/x/codebase/', 'legacy:/x/workflow/', 'legacy:/x/kanban/',
 	];
@@ -937,8 +940,8 @@ await t('阶段2 统一目录清单：单一 manifest 生成隐藏/退役/离线
 		'生成视图必须保持旧 hidden key 全部下线');
 	assert.equal(client.selectStartPages([mk('vssaros/kb/default', '知识库')]).length, 0,
 		'注册式知识库默认页必须被稳定 key/身份下线');
-	assert.equal(client.selectStartPages([mk('vssaros/studio/default', '萨罗斯管理平台')]).length, 0,
-		'旧 profile 里残留的 studio 注册式默认页必须从开始页摘掉');
+	assert.equal(client.selectStartPages([mk('vssaros/studio/default', '已退役工作台')]).length, 0,
+		'宿主退役身份的注册式默认页必须从开始页摘掉');
 	assert.equal(client.selectStartPages([mk('acme/tasks/default', 'Tasks')]).length, 1,
 		'新 key 的同名工作台不得被误吞');
 });
@@ -996,7 +999,7 @@ await t('阶段3/4 单一目录生成视图与 legacy 桥硬退役', () => {
 	assert.deepStrictEqual([...probe.launcherPages], ['acme/active/default']);
 	assert.deepStrictEqual([...probe.nativeTabPages], ['acme/active/default', 'vssaros/marketplace/default']);
 	assert.deepStrictEqual([...probe.routeWhitelist], ['/x/a/', '/x/marketplace/']);
-	assert.equal(probe.hiddenWorkbenchIds.length, 12, '策略视图必须带 12 个隐藏身份');
+	assert.equal(probe.hiddenWorkbenchIds.length, 11, '策略视图必须带 11 个隐藏身份');
 	assert.deepStrictEqual([...probe.retiredWorkbenchIds], ['vssaros/loop']);
 	assert.deepStrictEqual([...probe.offlineRoutes], ['/x/kanban/', '/x/workflow/', '/x/imagegen/', '/x/skills/']);
 	const entries = client.catalogEntriesOf([]);
@@ -1856,6 +1859,200 @@ await t('安装记录：同名同版本覆盖、不同版本追加、落盘不�
 		assert.deepEqual(readdirSync(dir).filter(name => name.endsWith('.tmp')), []);
 		assert.equal(await recordLocalInstall('', { name: 'x' }), false, '没有数据根 ⇒ 不写（不猜目录）');
 	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── 官方插件 item / 右栏独立插件页 / 第三方 UI 扩展点（2026-11-24）─────────────────
+await t('官方插件：内容 tab 自动成为开始页 item，点击链路走统一 openTool', () => {
+	const tabRegs = [];
+	const disposed = [];
+	const sidebar = {
+		getTabs: () => tabRegs.slice(),
+		subscribe: () => () => { },
+		registerTab(descriptor) { tabRegs.push(descriptor); return () => { disposed.push(descriptor.id); }; },
+		openTab: () => { },
+	};
+	const dispose = client.__registerOfficialPluginsTab(sidebar);
+	assert.equal(tabRegs.length, 1);
+	const descriptor = tabRegs[0];
+	assert.equal(descriptor.id, client.__officialPluginsTabType);
+	assert.equal(descriptor.title, '官方插件');
+	assert.equal(descriptor.single, true, '插件页必须是单例，避免重复开出多个右栏页');
+	assert.equal(typeof descriptor.component, 'function');
+	assert.equal(descriptor.vssarosOwner, undefined, '内容 tab 不能打宿主承载标记，否则会被开始页排除');
+	assert.equal(client.isHostOwnedTab(descriptor), false);
+	const view = client.toolViewOf(descriptor);
+	assert.equal(view.title, '官方插件');
+	assert.equal(view.icon, 'plugin', '图标必须走两来源共用的关键字规则');
+	const service = {
+		getCatalogSnapshot: () => ({ revision: 0, pages: [] }),
+		subscribeCatalog: () => () => { },
+	};
+	const registry = client.createHomeItemRegistry(service, sidebar);
+	const item = registry.get(client.homeItemKey('tool', descriptor.id));
+	assert.ok(item, 'tab 必须自动进入统一 HomeItemRegistry，无需改任何硬编码名单');
+	assert.equal(item.source, '官方');
+	assert.equal(item.tabId, descriptor.id);
+	assert.equal(item.origin.registry, 'betterSidebar', '点击必须走 openTool(destination tab) 链路');
+	assert.ok(client.selectHomeItems(registry.snapshot(), 'start').some(entry => entry.key === item.key),
+		'官方插件必须出现在开始页 start 投影');
+	dispose();
+	assert.deepEqual(disposed, [descriptor.id], '注销必须撤掉右栏 tab type');
+});
+await t('插件页扩展点：第三方注册 / 排序 / 订阅 / 重复拒绝 / 注销', () => {
+	const globalRegistry = client.__testGetGlobal('__vssarosPluginPageSections');
+	assert.equal(typeof globalRegistry.register, 'function', '扩展点必须在模块加载时建立，不依赖页面挂载');
+	assert.equal(client.__testGetGlobal('__vssarosPluginPageSectionsReady'), true,
+		'就绪标志必须立即可读，供比宿主先加载的第三方插件判断');
+	const registry = client.__createPluginPageSections();
+	let notified = 0;
+	const off = registry.subscribe(() => { notified += 1; });
+	const A = () => null;
+	const B = () => null;
+	assert.throws(() => registry.register(null, A), /Invalid plugin page section id/);
+	assert.throws(() => registry.register({ id: 'x' }, null), /Invalid plugin page section component/);
+	const disposeB = registry.register({ id: 'b', title: 'B', order: 200, source: '@acme/market' }, B);
+	const disposeA = registry.register({ id: 'a', title: 'A', order: 10 }, A);
+	assert.throws(() => registry.register({ id: 'a' }, A), /Duplicate plugin page section/);
+	assert.deepEqual(registry.snapshot().map(section => section.id), ['a', 'b'], '按 order 升序投影');
+	assert.equal(registry.snapshot().find(section => section.id === 'b').source, '@acme/market');
+	assert.ok(notified >= 2, '注册必须通知订阅者，页面无需轮询');
+	disposeA();
+	assert.deepEqual(registry.snapshot().map(section => section.id), ['b']);
+	off();
+	disposeB();
+	assert.equal(registry.snapshot().length, 0);
+});
+await t('插件页：按宿主插件页目录展示「内置插件配置 + 实验性插件」，不得再投影工作台目录', () => {
+	const rows = client.__officialPluginsOf();
+	assert.equal(rows.length, 8, '内置 4 项 + 实验性 4 项，必须是单一展示目录');
+	assert.deepEqual(rows.map(row => row.group),
+		['builtin', 'builtin', 'builtin', 'builtin', 'experimental', 'experimental', 'experimental', 'experimental'],
+		'分组顺序必须与截图一致：先内置配置项，后实验性插件');
+	assert.deepEqual(rows.map(row => row.title),
+		['子智能体', '网页搜索与获取', 'Agent 循环', '终端', '语音输入', '自定义插件索引', '自动授权审查', '变更请求与工作树']);
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.doesNotMatch(source, /function officialPluginsOf\(\) \{[\s\S]{0,400}WORK_DIRECTORY_ROWS/,
+		'官方插件清单不得再把工作台目录当数据源');
+	const dispose = client.__pluginPageSections.register(
+		{ id: 'probe-market', title: '第三方商城', source: 'dsh-market' }, () => null);
+	const markup = JSON.stringify(client.__officialPluginsPage({ tab: { id: 't1' }, visible: true }));
+	assert.match(markup, /data-vssaros-plugin-page/);
+	assert.match(markup, /安装、启用和配置插件/, '页头副标题按截图展示');
+	assert.match(markup, /内置插件配置/);
+	assert.match(markup, /实验性插件/);
+	assert.match(markup, /data-vssaros-plugin-package/, '官方插件行必须渲染');
+	assert.match(markup, /data-vssaros-plugin-group/);
+	assert.match(markup, /实验性/, '实验性标签必须渲染');
+	assert.match(markup, /data-vssaros-plugin-switch/, '实验性插件开关必须渲染');
+	assert.match(markup, /设置子智能体的递归层级、数量和模型。/, '内置项说明必须按截图渲染');
+	assert.match(markup, /在本机使用 SenseVoice 转录录音。首次使用需安装依赖。/, '实验项说明必须按截图渲染');
+	assert.doesNotMatch(markup, /@vssaros\//, '不得再把工作台包名当官方插件内容展示');
+	assert.match(markup, /probe-market/, '第三方注入的 UI 区块必须渲染在插件页内');
+	assert.match(markup, /data-vssaros-plugin-section/);
+	assert.doesNotMatch(markup, /data-vssaros-plugin-sections-empty/);
+	dispose();
+	const empty = JSON.stringify(client.__officialPluginsPage({}));
+	assert.match(empty, /data-vssaros-plugin-sections-empty/);
+	assert.match(empty, /暂无第三方插件插入界面/, '空态必须有文案，不能是空白');
+});
+await t('「更多」→ 实验性插件详情：返回入口 + 截图完整清单', () => {
+	const rows = client.__experimentalPluginsOf();
+	assert.equal(rows.length, 11, '「更多」页清单必须与截图一致');
+	assert.deepEqual(rows.map(row => row.title), [
+		'自定义插件索引', '自动授权审查', '变更请求与工作树', '个性化推荐', '开发者工具',
+		'思考过程机器翻译', '随对话更新的标题', 'DSH 徽章技能', 'DeepSeek 会话导入',
+		'Codex 子智能体', 'Claude Code 子智能体',
+	]);
+	assert.deepEqual(rows.map(row => row.badge), [
+		'实验性', '实验性', '实验性', '实验性', '实验性', '实验性', '实验性', '实验性', '实验性',
+		'未安装', '未安装',
+	], '最后两项是「未安装」，其余带实验性标签');
+	const markup = JSON.stringify(client.__experimentalPluginsPage({ onBack() { } }));
+	assert.match(markup, /data-vssaros-plugin-page":"experimental"/);
+	assert.match(markup, /实验性插件/, '详情页标题必须渲染');
+	assert.match(markup, /data-vssaros-plugin-back/, '必须有返回插件页入口');
+	assert.match(markup, /data-vssaros-plugin-switch/, '详情行必须渲染开关');
+	assert.match(markup, /未安装/);
+	assert.match(markup, /针对你对 DSH 的个性化需求/, '详情页说明必须按截图渲染');
+	for (const row of rows) {
+		assert.ok(markup.includes(row.title), '详情页必须渲染：' + row.title);
+	}
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.match(source, /setView\('experimental'\)/, '「更多」必须切到实验性插件详情视图');
+	assert.doesNotMatch(source, /'data-vssaros-plugin-more': '1', onClick: openPluginMarket/,
+		'「更多」不得再打开商城工作台');
+});
+await t('实验性开关：接真实 pluginState / setPluginEnabled，不再全员只读', async () => {
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.match(source, /pluginActionRequest\('pluginState'/, '挂载时必须读真实插件状态');
+	assert.match(source, /pluginActionRequest\('setPluginEnabled'/, '切换必须写真实插件状态');
+	assert.match(source, /@deepseek-ai\/dsh-experimental-voice-input-bundle/, '开关必须按完整 npm 包名定位');
+	assert.match(source, /@deepseek-ai\/dsh-experimental-forge-bundle/, 'Host 必需包必须登记在锁定表');
+	assert.doesNotMatch(source, /title: '实验性插件的启停由宿主「插件」页管理，本页只展示目录。'/,
+		'不得再保留「只读展示」的旧口径');
+	const rows = client.__officialPluginsOf();
+	const voice = rows.find(row => row.id === 'voice-input');
+	const forge = rows.find(row => row.id === 'change-request-worktree');
+	const autoReview = rows.find(row => row.id === 'auto-review');
+	const off = new Map([['@deepseek-ai/dsh-experimental-voice-input-bundle', { enabled: false, installed: true }]]);
+	const on = new Map([['@deepseek-ai/dsh-experimental-voice-input-bundle', { enabled: true, installed: true }]]);
+	assert.equal(client.__pluginSwitchStateOf(voice, null, '', '').disabled, true, '真源未就绪时不许假开');
+	assert.equal(client.__pluginSwitchStateOf(voice, off, '', '').disabled, false, '已安装且状态就绪 ⇒ 开关可点');
+	assert.equal(client.__pluginSwitchStateOf(voice, off, '', '').checked, false);
+	assert.equal(client.__pluginSwitchStateOf(voice, on, '', '').checked, true);
+	assert.equal(client.__pluginSwitchStateOf(voice, on, '', 'bundle-busy').disabled, true, '切换中必须锁定');
+	assert.equal(client.__pluginSwitchStateOf(forge, on, '', '').locked, true, 'Host 运行必需包必须锁住');
+	assert.equal(client.__pluginSwitchStateOf(forge, on, '', '').disabled, true);
+	const missing = client.__pluginSwitchStateOf(autoReview, new Map(), '', '');
+	assert.equal(missing.missing, true, '未安装项必须如实标注并给出引导');
+	assert.equal(missing.disabled, false, '未安装项可点，不能是无声的灰开关');
+	assert.equal(client.__pluginSwitchStateOf(voice, on, '插件状态服务不可用', '').disabled, true,
+		'状态服务不可用时不许切换');
+	assert.equal(client.__pluginSwitchStateOf(rows[0], on, '', ''), null, '内置配置项没有开关');
+	// HTTP 形状：与商城/技能页同一条 Host 动作通道。
+	const calls = [];
+	const wired = loadClient(async (url, opts) => {
+		calls.push({ url, body: JSON.parse(opts.body) });
+		return { ok: true, status: 200, json: async () => ({ ok: true, plugins: [] }) };
+	});
+	await wired.__pluginActionRequest('pluginState', {});
+	assert.equal(calls[0].url, '/x/marketplace/api/action');
+	assert.deepEqual(calls[0].body, { op: 'pluginState', params: {} });
+	await wired.__pluginActionRequest('setPluginEnabled', {
+		name: '@deepseek-ai/dsh-experimental-voice-input-bundle', enabled: true,
+	});
+	assert.equal(calls[1].body.op, 'setPluginEnabled');
+	assert.equal(calls[1].body.params.enabled, true);
+});
+await t('未安装项：Host 真源裁决 + 宿主插件页安装入口，不再出现自相矛盾的提示', () => {
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.doesNotMatch(source, /请先在插件页或商城安装/, '旧提示里「插件页」就是当前页，必须删掉');
+	assert.match(source, /name: sw\.bundle, enabled: sw\.missing \? true : !sw\.checked/,
+		'未安装项必须真的调用 setPluginEnabled，由 Host 裁决能否启用');
+	assert.match(source, /本页是 VsSaros 的插件展示页，不能安装官方包/, '失败时必须说明当前页身份');
+	assert.match(source, /data-vssaros-plugin-open-host/, '必须提供宿主原生插件页安装入口');
+	assert.match(source, /ctx\.get\('pluginNavigation'\)/, '入口必须走宿主 pluginNavigation.openList');
+	assert.match(source, /registerOfficialPluginsTab\(betterSidebar, service, ctx\)/, 'ctx 必须传到插件页');
+	assert.equal(client.__openHostPluginList({
+		get: name => name === 'pluginNavigation' ? { openList() { } } : undefined,
+	}), true, '宿主服务可用时必须打开宿主插件页');
+	assert.equal(client.__openHostPluginList({ get: () => undefined }), false, '没有宿主服务时如实返回 false');
+	assert.equal(client.__openHostPluginList(null), false);
+	const browsed = /const browsePlugins = \(\) => \{[\s\S]*?\n\t\t\t\};/.exec(source);
+	assert.ok(browsed);
+	assert.doesNotMatch(browsed[0], /pluginNavigation/, '「浏览更多插件」仍不得打开宿主插件目录');
+});
+await t('插件页样式：容器查询 + 设计令牌 + 插件行/开关 + 第三方区块错误隔离', () => {
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.match(source, /@container \(min-width:520px\) \{ \.vssaros-plugin-page-grid/, '必须按容器宽度响应，不用 @media');
+	assert.match(source, /\.vssaros-plugin-page-row \{/, '插件行样式必须存在');
+	assert.match(source, /\.vssaros-plugin-page-switch \{/, '实验性开关样式必须存在');
+	assert.match(source, /\.vssaros-plugin-page-switch\.is-on/, '真实启用态必须有可见样式');
+	assert.match(source, /\.vssaros-plugin-page-back \{/, '详情页返回入口样式必须存在');
+	assert.match(source, /\.vssaros-plugin-page-list-plain/, '详情页列表样式必须存在');
+	assert.match(source, /class PluginPageSectionBoundary extends React\.Component/, '每块第三方 UI 必须独立错误边界');
+	assert.match(source, /vssaros-plugin-page-sections-ready/, '必须派发就绪事件，覆盖第三方 chunk 先于宿主加载的时序');
+	assert.match(source, /vssaros-plugin-page \{[^}]*--dsw-alias-label-primary/, '不得使用裸色值');
 });
 
 console.log(results.join('\n'));

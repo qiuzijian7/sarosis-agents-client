@@ -476,7 +476,7 @@ function parentWorkbenches() {
 	} catch { return null; }
 }
 
-/* @generated-workbench-directory:start dashboard-app-fixed-entries hash=bef767c4eff1 */
+/* @generated-workbench-directory:start dashboard-app-fixed-entries hash=8cb59bb5077f */
 const GENERATED_FIXED_ENTRIES = [
 	{ id: "vssaros-wb-dashboard", route: "/x/dashboard/", hidden: false, offline: false },
 	{ id: "vssaros-wb-sessions", route: "/x/sessions/", hidden: false, offline: false },

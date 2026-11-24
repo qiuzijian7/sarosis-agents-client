@@ -129,16 +129,17 @@ suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 		}
 	});
 
-	test('种子校验失败也必须恢复版本变更前的 profile', async () => {
+	test('种子校验失败时必须原样保留 profile，不产生备份/半成品', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-seed-rollback-'));
 		try {
-			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile'), backup = path.join(root, 'backup');
+			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile');
 			fs.mkdirSync(seed);
 			fs.writeFileSync(path.join(seed, 'package.json'), '{ broken json');
 			fs.mkdirSync(profile);
 			fs.writeFileSync(path.join(profile, 'keep.txt'), 'USER-DATA');
-			await assert.rejects(() => syncProfilePluginLayer(seed, profile, backup));
+			await assert.rejects(() => syncProfilePluginLayer(seed, profile));
 			assert.strictEqual(fs.readFileSync(path.join(profile, 'keep.txt'), 'utf8'), 'USER-DATA');
+			assert.strictEqual(fs.existsSync(path.join(profile, 'package.json')), false, '坏种子不许写 profile');
 			assert.deepStrictEqual(fs.readdirSync(root).sort(), ['profile', 'seed']);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
@@ -196,10 +197,10 @@ suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 		}
 	});
 
-	test('5) ★ syncProfilePluginLayer：插件层换成种子版本，用户数据原样保留', async () => {
+	test('5) ★ syncProfilePluginLayer：就地覆盖插件层，用户数据原样保留且不 rename 目录', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-layer-'));
 		try {
-			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile'), backup = path.join(root, 'backup');
+			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile');
 			fs.mkdirSync(path.join(seed, 'node_modules'), { recursive: true });
 			fs.writeFileSync(path.join(seed, 'package.json'), '{"deps":"NEW"}');
 			fs.writeFileSync(path.join(seed, 'node_modules', 'new.txt'), 'NEW-LAYER');
@@ -209,13 +210,13 @@ suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 			fs.mkdirSync(path.join(profile, 'user-custom'), { recursive: true });
 			fs.writeFileSync(path.join(profile, 'user-custom', 'a.txt'), 'KEEP-ME');
 
-			const r = await syncProfilePluginLayer(seed, profile, backup);
+			const r = await syncProfilePluginLayer(seed, profile);
 			assert.deepStrictEqual(r.restoredUserData.sort(), ['my-session.json', 'user-custom']);
 			assert.strictEqual(fs.readFileSync(path.join(profile, 'package.json'), 'utf8'), '{"deps":"NEW"}', '插件层已换');
 			assert.strictEqual(fs.readFileSync(path.join(profile, 'node_modules', 'new.txt'), 'utf8'), 'NEW-LAYER');
 			assert.strictEqual(fs.readFileSync(path.join(profile, 'my-session.json'), 'utf8'), 'USER-DATA', '★ 用户数据不许丢');
 			assert.strictEqual(fs.readFileSync(path.join(profile, 'user-custom', 'a.txt'), 'utf8'), 'KEEP-ME');
-			assert.strictEqual(fs.readFileSync(path.join(backup, 'package.json'), 'utf8'), '{"deps":"OLD"}', '旧目录完整备份');
+			assert.deepStrictEqual(fs.readdirSync(root).sort(), ['profile', 'seed'], '★ 不再生成 .bak-runtime 目录');
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -267,19 +268,19 @@ suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 		assert.match(src, /blocked/, 'bundled 不许同时被拉黑');
 	});
 
-	test('10) ★ 同步失败必须删半成品 + 还原备份（绝不留一个空 profile）', async () => {
+	test('10) ★ 同步失败不得改名/清空 profile（Windows EPERM 回归）', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-layer-fail-'));
 		try {
-			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile'), backup = path.join(root, 'backup');
-			// 种子目录必须**存在**（否则 readdir 在 rename 之前就抛，测不到回滚分支 ⇒ 假绿）
+			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile');
+			// 种子目录必须**存在**（否则 readdir 在复制之前就抛，测不到失败分支 ⇒ 假绿）
 			fs.mkdirSync(seed, { recursive: true });
 			fs.writeFileSync(path.join(seed, 'package.json'), '{}');
 			fs.mkdirSync(profile, { recursive: true });
 			fs.writeFileSync(path.join(profile, 'keep.txt'), 'OLD-PROFILE');
-			await assert.rejects(() => syncProfilePluginLayer(seed, profile, backup,
+			await assert.rejects(() => syncProfilePluginLayer(seed, profile,
 				async () => { throw new Error('copy failed'); }));
-			assert.strictEqual(fs.readFileSync(path.join(profile, 'keep.txt'), 'utf8'), 'OLD-PROFILE', '★ 备份必须还原');
-			assert.ok(!fs.existsSync(backup), '备份目录应已改回原名');
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'keep.txt'), 'utf8'), 'OLD-PROFILE', '★ 用户数据必须原样保留');
+			assert.deepStrictEqual(fs.readdirSync(root).sort(), ['profile', 'seed'], '不许产生备份目录 / 半成品目录');
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -295,5 +296,22 @@ suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 		const block = src.slice(at, at + 900);
 		assert.match(block, /for \(let i = 0; i < 6; i\+\+\)/, 'dev 的 appPath 下没有 dsh-runtime ⇒ 必须逐级向上找到仓库根');
 		assert.match(block, /existsSync\(join\(candidate, bundledPin, \.\.\.tail\)\)/, '只有 pin 版本 bin 真的存在才认');
+	});
+
+	test('12) ★ 无种子 / web 模板启动也必须登记随包源码依赖，避免定制 UI 被 pnpm 清掉', () => {
+		// 这里读原文：该文件的注释里含 `/*` 片段，块注释剥离正则会吞掉后续代码造成假红。
+		const src = read(SUPERVISOR);
+		const syncAt = src.indexOf('private async _syncBundledPluginDirs(');
+		const depsCallAt = src.indexOf('await this._writeBundledPluginDeps(profileDir, sources)', syncAt);
+		const syncCallAt = src.indexOf('return await syncBundledPluginDirs(sources, profileDir', syncAt);
+		assert.ok(syncAt > 0 && depsCallAt > syncAt && syncCallAt > depsCallAt, '源码同步前必须先写 dependencies');
+
+		const depsAt = src.indexOf('private async _writeBundledPluginDeps(');
+		const depsEnd = src.indexOf('private _profileSeedDir(', depsAt);
+		const deps = src.slice(depsAt, depsEnd > depsAt ? depsEnd : src.length);
+		assert.match(deps, /isSharedProfile\(profileDir\)/, '共享 profile 不能写只读种子');
+		assert.match(deps, /toFileSpec\(sourceDir\)/, '必须写入 file: 源码 spec');
+		assert.match(deps, /json\.dependencies\[name\] = spec/, '必须登记到 dependencies');
+		assert.match(deps, /await fsp\.rename\(tmp, pkgFile\)/, 'package.json 必须原子写');
 	});
 });
