@@ -244,6 +244,8 @@ export function marketToolDefinitions(deps) {
 			//   任何「不要改用别处」的指引 ⇒ 助手容易凭印象走 npm / GitHub。
 			//   现在：slug 或 name/q 都行，内部**强制先查商城**；命中才装，
 			//   多命中返回候选让 LLM 确认，未命中返回 notFound 并明确禁止擅自换源。
+			// ★ 2026-11-24：安装成功按 dsh 官方做法给「重启生效」提醒（结构化 restartNotice）。
+			//   官方约定：只提醒用户重启，绝不擅自重启 VsSaros / Harness。
 			name: 'market_install',
 			description:
 				'从 VsSaros 商城**安装或升级**一个商品到本机（技能 / Agent / 连接器 / 插件 / 工作台）。'
@@ -276,6 +278,7 @@ export function marketToolDefinitions(deps) {
 						resolvedFrom: { type: 'string' }, query: { type: 'string' },
 						notFound: { type: 'boolean' }, ambiguous: { type: 'boolean' },
 						candidates: { type: 'array' }, error: { type: 'string' },
+						restartNotice: { type: 'object' },
 					},
 					required: ['ok'],
 				},
@@ -297,9 +300,14 @@ export function marketToolDefinitions(deps) {
 					if (res.resolvedFrom && res.resolvedFrom !== 'slug') {
 						lines.push(`（由商城检索解析：${res.resolvedFrom}）`);
 					}
-					if (res.restartRequired) { lines.push('⚠ 需要**重启 VsSaros** 才生效。'); }
-					if (res.mcpNote) { lines.push(res.mcpNote); }
-					if (res.agentsRescan) { lines.push(`agent 重扫：${res.agentsRescan}`); }
+					// ★ dsh 官方约定：只提醒用户重启，绝不擅自重启 VsSaros / Harness
+					if (res.restartNotice?.text) {
+						lines.push(res.restartNotice.text + ' 请自行重启 VsSaros，我不会替你重启。');
+					} else {
+						if (res.restartRequired) { lines.push('⚠ 需要**重启 VsSaros** 才生效（请自行重启）。'); }
+						if (res.mcpNote) { lines.push(res.mcpNote); }
+						if (res.agentsRescan) { lines.push(`agent 重扫：${res.agentsRescan}`); }
+					}
 					return [{ type: 'text', text: lines.join('\n') }];
 				},
 			},
@@ -353,7 +361,23 @@ export function marketToolDefinitions(deps) {
 
 				try {
 					const r = await installPackage({ slug: targetSlug, version });
-					return { ...r, slug: targetSlug, resolvedFrom, ok: r?.ok !== false };
+					// ★ 安装回执里的 restartRequired / mcpNote / agentsRescan 归一化成一条明确的重启提醒。
+					//   dsh 官方做法：把「需重启生效」如实交回给用户，**绝不擅自重启**。
+					const needsRestart = r?.restartRequired === true
+						|| (typeof r?.agentsRescan === 'string' && r.agentsRescan !== 'ok');
+					let restartNotice = null;
+					if (r?.ok !== false && (needsRestart || r?.mcpNote)) {
+						const parts = [];
+						if (needsRestart) { parts.push('⚠ 已装好，但需要**重启 VsSaros** 才生效。'); }
+						if (r.mcpNote) { parts.push(String(r.mcpNote)); }
+						if (r.agentsRescan && r.agentsRescan !== 'ok') { parts.push('Agent 重扫状态：' + String(r.agentsRescan)); }
+						restartNotice = { kind: needsRestart ? 'warn' : 'info', restartRequired: needsRestart, text: parts.join(' ') };
+					}
+					return {
+						...r, slug: targetSlug, resolvedFrom,
+						...(restartNotice ? { restartNotice } : {}),
+						ok: r?.ok !== false,
+					};
 				} catch (e) {
 					return { ok: false, slug: targetSlug, resolvedFrom, error: String(e?.message ?? e).slice(0, 400) };
 				}

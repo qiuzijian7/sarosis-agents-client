@@ -43,14 +43,14 @@ async function checkAsync(name, fn) {
 	}
 }
 
-function makeInstall(items = []) {
+function makeInstall(items = [], installResult) {
 	const state = { installCalls: [], listCalls: [] };
 	const defs = marketToolDefinitions({
 		inspectGithubRepo: async () => ({}),
 		publishDistribution: async () => ({}),
 		installPackage: async ({ slug, version }) => {
 			state.installCalls.push({ slug, version });
-			return { ok: true, kind: 'mcp', version: version || '1.0.0' };
+			return installResult ?? { ok: true, kind: 'mcp', version: version || '1.0.0' };
 		},
 		market: () => ({
 			list: async (opts) => {
@@ -195,6 +195,55 @@ async function main() {
 		assert.match(src, /第一步永远是查 VsSaros 商城/);
 		assert.match(src, /notFound/);
 		assert.match(src, /绝不自行改用/);
+	});
+	check('PERSONA 要求转述重启提醒且不擅自重启', () => {
+		const src = fs.readFileSync(path.join(LIB, 'marketAgent.js'), 'utf8');
+		assert.match(src, /必须把「需重启 VsSaros 才生效」明确告诉用户/);
+		assert.match(src, /只提醒、绝不擅自重启/);
+	});
+
+	// ── F. 安装成功后的重启提醒（dsh 官方做法）──────────────────
+	await checkAsync('回执 restartRequired ⇒ 生成 warn 级 restartNotice', async () => {
+		const { def } = makeInstall([], { ok: true, kind: 'plugin', version: '1.0.0', restartRequired: true });
+		const r = await def.execute({ slug: 'x' });
+		assert.equal(r.ok, true);
+		assert.equal(r.restartNotice?.kind, 'warn');
+		assert.equal(r.restartNotice?.restartRequired, true);
+		assert.match(r.restartNotice?.text ?? '', /重启 VsSaros/);
+	});
+	await checkAsync('mcpNote / agentsRescan 也并入重启提醒', async () => {
+		const { def } = makeInstall([], {
+			ok: true, kind: 'agent', version: '1.0.0',
+			agentsRescan: 'restart', mcpNote: 'MCP 需要填环境变量',
+		});
+		const r = await def.execute({ slug: 'x' });
+		assert.equal(r.restartNotice?.restartRequired, true);
+		assert.match(r.restartNotice?.text ?? '', /MCP 需要填环境变量/);
+		assert.match(r.restartNotice?.text ?? '', /Agent 重扫状态：restart/);
+	});
+	await checkAsync('无需重启 ⇒ 不生成 restartNotice', async () => {
+		const { def } = makeInstall([], { ok: true, kind: 'skill', version: '1.0.0' });
+		const r = await def.execute({ slug: 'x' });
+		assert.equal(r.restartNotice, undefined);
+	});
+	check('render 醒目提示重启且声明不擅自重启', () => {
+		const { def } = makeInstall();
+		const out = def.output.render({}, {
+			ok: true, slug: 'x', kind: 'plugin', version: '1.0.0',
+			restartNotice: { kind: 'warn', restartRequired: true, text: '⚠ 需要**重启 VsSaros** 才生效。' },
+		});
+		assert.match(out[0].text, /重启 VsSaros/);
+		assert.match(out[0].text, /不会替你重启/);
+	});
+	check('工作台页面用 dsh 官方页面桥弹 toast', () => {
+		const src = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
+		assert.match(src, /window\.vssarosDsh/);
+		assert.match(src, /pageBridge\.notify\('warn', notice\)/);
+		assert.match(src, /不会自动重启/);
+	});
+	check('工具 schema 声明 restartNotice', () => {
+		const { def } = makeInstall();
+		assert.ok(def.output.schema.properties.restartNotice);
 	});
 
 	console.log('\n================================================');
