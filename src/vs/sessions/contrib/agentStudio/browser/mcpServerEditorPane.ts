@@ -899,15 +899,14 @@ export class McpServerEditorPane extends EditorPane {
 		return map;
 	}
 
-	/** Remove a single MCP entry from installed-packages.json */
+	/**
+	 * Remove a single MCP entry from installed-packages.json.
+	 * ★ 2026-11-24：统一走 IMarketplaceService.forgetInstalled → removeInstalled
+	 *   （同一把跨进程 `<file>.lock`），不再自己 read→filter→writeFile 造成丢更新。
+	 */
 	private async _removeInstalledEntry(slug: string): Promise<void> {
 		try {
-			const uri = await this._getInstalledPackagesUri();
-			if (!await this.fileService.exists(uri)) { return; }
-			const content = await this.fileService.readFile(uri);
-			const entries: IInstalledEntry[] = JSON.parse(content.value.toString());
-			const filtered = entries.filter(e => !(e.kind === 'mcp' && e.storeId === slug));
-			await this.fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
+			await this.marketplaceService.forgetInstalled('mcp', slug);
 		} catch (e) {
 			console.warn('[McpServerEditor] Failed to remove installed entry:', e);
 		}

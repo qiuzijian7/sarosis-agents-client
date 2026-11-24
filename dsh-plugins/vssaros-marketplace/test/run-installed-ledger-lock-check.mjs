@@ -93,6 +93,42 @@ await check('IDE 侧：3 个写点都包同一把锁', async () => {
   assert.equal((s.match(/await release\(\)/g) || []).length >= 3, true);
   assert.match(s, /from '\.\.\/common\/fileWriteLock\.js'/);
 });
+await check('IDE 侧：2 个 pane 不再裸写台账，统一走 IMarketplaceService', async () => {
+  const base = path.join(ROOT, 'src/vs/sessions/contrib/agentStudio/browser');
+  const editor = fs.readFileSync(path.join(base, 'marketplaceEditorPane.ts'), 'utf8');
+  const mcp = fs.readFileSync(path.join(base, 'mcpServerEditorPane.ts'), 'utf8');
+  const ra = editor.indexOf('private async _recordInstalled(');
+  const recordBody = editor.slice(ra, editor.indexOf('override layout(', ra));
+  const ma = mcp.indexOf('private async _removeInstalledEntry(');
+  const removeBody = mcp.slice(ma, mcp.indexOf('/** Remove a single server entry', ma));
+  assert.match(recordBody, /this\.marketplaceService\.recordInstalled\(\{ kind, storeId, version \}\)/);
+  assert.match(removeBody, /this\.marketplaceService\.forgetInstalled\('mcp', slug\)/);
+  assert.doesNotMatch(recordBody, /this\.fileService\.(writeFile|readFile)/);
+  assert.doesNotMatch(removeBody, /this\.fileService\.(writeFile|readFile)/);
+});
+await check('service 的 recordInstalled / forgetInstalled 都落到加锁写方法', async () => {
+  const s = fs.readFileSync(path.join(ROOT, 'src/vs/sessions/contrib/agentStudio/browser/marketplaceService.ts'), 'utf8');
+  assert.match(s, /async recordInstalled\([\s\S]{0,600}await this\.upsertInstalled\(/);
+  assert.match(s, /async forgetInstalled\(kind[\s\S]{0,300}await this\.removeInstalled\(kind, storeId\)/);
+  assert.equal((s.match(/acquireFileLock\(lockResourceFor\(installedFileUri\)/g) || []).length, 3);
+  const iface = fs.readFileSync(path.join(ROOT, 'src/vs/sessions/contrib/agentStudio/common/marketplace.ts'), 'utf8');
+  assert.match(iface, /recordInstalled\(entry:/);
+  assert.match(iface, /forgetInstalled\(kind: PackageKind/);
+});
+await check('IDE 侧已无第四套台账写点（只剩 service 三个加锁入口）', async () => {
+  const base = path.join(ROOT, 'src/vs/sessions/contrib/agentStudio/browser');
+  const editor = fs.readFileSync(path.join(base, 'marketplaceEditorPane.ts'), 'utf8');
+  const mcp = fs.readFileSync(path.join(base, 'mcpServerEditorPane.ts'), 'utf8');
+  // marketplaceEditorPane 改后完全不再碰台账文件
+  assert.doesNotMatch(editor, /SarosPath\.installedPackages/);
+  // mcpServerEditorPane 只剩一处读路径（_getInstalledVersions），不再写台账
+  assert.equal((mcp.match(/SarosPath\.installedPackages/g) || []).length, 1);
+  const ma = mcp.indexOf('private async _removeInstalledEntry(');
+  const removeEnd = mcp.indexOf('/** Remove a single server entry', ma);
+  assert.doesNotMatch(mcp.slice(ma, removeEnd), /writeFile/);
+  const svc = fs.readFileSync(path.join(base, 'marketplaceService.ts'), 'utf8');
+  assert.equal((svc.match(/acquireFileLock\(lockResourceFor\(installedFileUri\)/g) || []).length, 3);
+});
 await check('双端锁协议常量一致（同一把 <file>.lock）', async () => {
   const dsh = fs.readFileSync(path.join(ROOT, 'dsh-plugins/vssaros-foundation/lib/lock.js'), 'utf8');
   const ide = fs.readFileSync(path.join(ROOT, 'src/vs/sessions/contrib/agentStudio/common/fileWriteLock.ts'), 'utf8');
@@ -105,6 +141,22 @@ await check('out/ 自动编译产物含锁（若存在）', async () => {
   const p = path.join(ROOT, 'out/vs/sessions/contrib/agentStudio/browser/marketplaceService.js');
   if (!fs.existsSync(p)) { console.log('    -- out/ 无产物，跳过'); return; }
   assert.match(fs.readFileSync(p, 'utf8'), /acquireFileLock/);
+});
+await check('out/ 两个 pane 产物已改为委托 service（本机运行生效）', async () => {
+  const base = path.join(ROOT, 'out/vs/sessions/contrib/agentStudio/browser');
+  for (const [f, marker, delegate] of [
+    ['marketplaceEditorPane.js', 'async _recordInstalled(', 'this.marketplaceService.recordInstalled'],
+    ['mcpServerEditorPane.js', 'async _removeInstalledEntry(', 'this.marketplaceService.forgetInstalled'],
+  ]) {
+    const p = path.join(base, f);
+    if (!fs.existsSync(p)) { console.log(`    -- ${f} 无产物，跳过`); continue; }
+    const s = fs.readFileSync(p, 'utf8');
+    const i = s.indexOf(marker);
+    assert.ok(i >= 0, `${f} 缺方法定义（产物可能被 mangle）`);
+    const body = s.slice(i, i + 400);
+    assert.ok(body.includes(delegate), `${f} 产物仍是旧版裸写`);
+    assert.doesNotMatch(body, /writeFile/);
+  }
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });

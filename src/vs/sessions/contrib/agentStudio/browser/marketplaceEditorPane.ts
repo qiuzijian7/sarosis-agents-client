@@ -2372,20 +2372,17 @@ export class MarketplaceEditorPane extends EditorPane {
 		return server;
 	}
 
-	/** 记录到 installed-packages.json */
+	/**
+	 * 记录到 installed-packages.json（★ 2026-11-24：统一走 IMarketplaceService）。
+	 *
+	 * 以前这里是第二套裸 read→filter→push→writeFile：
+	 *   · 只写 4 个字段 ⇒ 覆盖条目时抹掉 dsh 侧登记的 packageName / format / owner
+	 *     （插件卸不掉、Bot 组合包级联卸载失灵）；
+	 *   · 无跨进程锁 ⇒ 与 dsh Host 并发写同一份台账会丢更新。
+	 * service.recordInstalled → upsertInstalled 已同时解决字段合并与同协议 `<file>.lock` 互斥 ✓
+	 */
 	private async _recordInstalled(kind: PackageKind, storeId: string, version: string): Promise<void> {
-		const fileUri = resolveSarosPath(this._getSarosRoot(), SarosPath.installedPackages);
-		let entries: Array<{ kind: string; storeId: string; version: string; installedAt: string }> = [];
-		try {
-			if (await this.fileService.exists(fileUri)) {
-				const content = await this.fileService.readFile(fileUri);
-				entries = JSON.parse(content.value.toString());
-			}
-		} catch { /* ignore */ }
-		entries = entries.filter(e => !(e.kind === kind && e.storeId === storeId));
-		entries.push({ kind, storeId, version, installedAt: new Date().toISOString() });
-		await this.fileService.createFolder(URI.joinPath(fileUri, '..'));
-		await this.fileService.writeFile(fileUri, VSBuffer.fromString(JSON.stringify(entries, null, 2)));
+		await this.marketplaceService.recordInstalled({ kind, storeId, version });
 	}
 
 	override layout(_dimension: Dimension): void {
