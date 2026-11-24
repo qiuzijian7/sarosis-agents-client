@@ -198,7 +198,7 @@ async function main() {
 	});
 	check('PERSONA 要求转述重启提醒且不擅自重启', () => {
 		const src = fs.readFileSync(path.join(LIB, 'marketAgent.js'), 'utf8');
-		assert.match(src, /必须把「需重启 VsSaros 才生效」明确告诉用户/);
+		assert.match(src, /必须把 `nextStep` 原样转述/);
 		assert.match(src, /只提醒、绝不擅自重启/);
 	});
 
@@ -209,7 +209,10 @@ async function main() {
 		assert.equal(r.ok, true);
 		assert.equal(r.restartNotice?.kind, 'warn');
 		assert.equal(r.restartNotice?.restartRequired, true);
-		assert.match(r.restartNotice?.text ?? '', /重启 VsSaros/);
+		assert.equal(r.application, 'restart-required');
+		assert.equal(r.restartReason, 'no-hmr');
+		assert.match(r.restartNotice?.text ?? '', /重启 Host 进程/);
+		assert.match(r.nextStep ?? '', /不要只 Reload Window/);
 	});
 	await checkAsync('mcpNote / agentsRescan 也并入重启提醒', async () => {
 		const { def } = makeInstall([], {
@@ -230,9 +233,10 @@ async function main() {
 		const { def } = makeInstall();
 		const out = def.output.render({}, {
 			ok: true, slug: 'x', kind: 'plugin', version: '1.0.0',
-			restartNotice: { kind: 'warn', restartRequired: true, text: '⚠ 需要**重启 VsSaros** 才生效。' },
+			application: 'restart-required',
+			restartNotice: { kind: 'warn', restartRequired: true, text: '⚠ 已装好，但需重启 Host 进程后才生效。我不会替你重启。' },
 		});
-		assert.match(out[0].text, /重启 VsSaros/);
+		assert.match(out[0].text, /重启 Host 进程/);
 		assert.match(out[0].text, /不会替你重启/);
 	});
 	check('工作台页面用 dsh 官方页面桥弹 toast', () => {
@@ -244,6 +248,45 @@ async function main() {
 	check('工具 schema 声明 restartNotice', () => {
 		const { def } = makeInstall();
 		assert.ok(def.output.schema.properties.restartNotice);
+	});
+
+	// ── G. P0：ChangeResult 回执与提示分通道 ───────────────────
+	await checkAsync('无重启回执 ⇒ applied 且 render 成功静默', async () => {
+		const { def } = makeInstall([], { ok: true, kind: 'skill', version: '1.0.0' });
+		const r = await def.execute({ slug: 'x' });
+		assert.equal(r.application, 'applied');
+		assert.equal(r.restartNotice, undefined);
+		assert.doesNotMatch(def.output.render({}, r)[0].text, /重启/);
+	});
+	await checkAsync('上游 application=applied 不被误判为需重启', async () => {
+		const { def } = makeInstall([], { ok: true, application: 'applied', mcpNote: '运行时挂载会自动连接' });
+		const r = await def.execute({ slug: 'x' });
+		assert.equal(r.application, 'applied');
+		assert.equal(r.restartNotice, undefined);
+	});
+	await checkAsync('packageName 回执 ⇒ package-moved 与启动器指引', async () => {
+		const { def } = makeInstall([], { ok: true, application: 'restart-required', packageName: '@x/wb', via: 'dsh' });
+		const r = await def.execute({ slug: 'x' });
+		assert.equal(r.restartReason, 'package-moved');
+		assert.match(r.nextStep, /工作台启动器/);
+	});
+	check('工作台页面按 application 分通道（applied 不弹 toast）', () => {
+		const src = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
+		assert.match(src, /var application = String\(res\.application/);
+		assert.match(src, /application !== 'applied'/);
+		assert.match(src, /pageBridge\.notify\('warn', notice\)/);
+	});
+	check('归一化纯函数是唯一真源且被 agentTools 引用', () => {
+		const d = fs.readFileSync(path.join(LIB, 'dispatch.js'), 'utf8');
+		const a = fs.readFileSync(path.join(LIB, 'agentTools.js'), 'utf8');
+		assert.match(d, /export function toChangeReceipt/);
+		assert.match(a, /import \{ toChangeReceipt \} from '\.\/dispatch\.js'/);
+		assert.match(a, /const receipt = toChangeReceipt\(r, \{ op: 'install' \}\)/);
+	});
+	check('PERSONA 按 application 区分 applied / restart-required', () => {
+		const src = fs.readFileSync(path.join(LIB, 'marketAgent.js'), 'utf8');
+		assert.match(src, /`applied` ⇒ 已即时生效/);
+		assert.match(src, /`restart-required` ⇒/);
 	});
 
 	console.log('\n================================================');

@@ -1264,13 +1264,17 @@
 			}
 			setMsg({ kind: 'ok', text: text });
 		}
-			// ★ 2026-11-24：安装成功后按 dsh 官方页面桥弹消息提醒「重启生效」。
-			//   `window.vssarosDsh.notify(kind,text)` → IDE INotificationService（官方机制，见
-			//   preload-dshView.ts:223 / dshHarness.contribution.ts:1492）。页面桥只在 dsh
-			//   webview 里存在 ⇒ 防御式调用；不可用时退回上面的页内 MsgBar 消息条。
-			//   按 dsh 官方约定「请用户重启、不擅自重启」：这里只弹提醒，不触发任何重启。
-			if (res.restartRequired === true || (res.agentsRescan && res.agentsRescan !== 'ok')) {
-				var notice = '「' + String((params && (params.slug || params.localId)) || '资源') + '」已安装，需要重启 VsSaros 才生效；请自行重启（不会自动重启）。';
+			// ★ 2026-11-24 P0：提示分通道 —— 上游 dsh Web 插件管理器「成功不显示 toast，
+			//   只有等重启 / 被覆盖的变更才弹会自行消失的 toast」。
+			//   `application: 'applied'` 表示已即时生效 ⇒ 只留上面的页内 MsgBar。
+			//   页面桥只在 dsh webview 里存在 ⇒ 防御式调用；不可用时页内条已兜底。
+			//   按官方约定「请用户重启、不擅自重启」：这里只弹提醒，不触发任何重启。
+			var application = String(res.application || '');
+			var needsRestart = application === 'restart-required'
+				|| (application !== 'applied' && (res.restartRequired === true || (res.agentsRescan && res.agentsRescan !== 'ok')));
+			if (needsRestart) {
+				var notice = (res.changeReceipt && res.changeReceipt.nextStep)
+					|| '「' + String((params && (params.slug || params.localId)) || '资源') + '」已安装，需重启 Host 进程后才生效。KeepAlive 下 IDE 退出不会重启 Host；请在 IDE 插件页点「重启 Host」，不要只 Reload Window。请自行重启（不会自动重启）。';
 				try {
 					var pageBridge = window.vssarosDsh;
 					if (pageBridge && typeof pageBridge.notify === 'function') { pageBridge.notify('warn', notice); }

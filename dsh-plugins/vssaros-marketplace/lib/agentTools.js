@@ -24,6 +24,7 @@
  */
 
 import { normalizeRepo, detectExternalDeps } from './githubInspect.js';
+import { toChangeReceipt } from './dispatch.js';
 
 const KIND_SET = new Set(['skill', 'agent', 'mcp', 'plugin', 'workbench']);
 const VIA_SET = new Set(['npm', 'github-source']);
@@ -279,6 +280,7 @@ export function marketToolDefinitions(deps) {
 						notFound: { type: 'boolean' }, ambiguous: { type: 'boolean' },
 						candidates: { type: 'array' }, error: { type: 'string' },
 						restartNotice: { type: 'object' },
+						application: { type: 'string' }, restartReason: { type: 'string' }, nextStep: { type: 'string' },
 					},
 					required: ['ok'],
 				},
@@ -300,14 +302,14 @@ export function marketToolDefinitions(deps) {
 					if (res.resolvedFrom && res.resolvedFrom !== 'slug') {
 						lines.push(`（由商城检索解析：${res.resolvedFrom}）`);
 					}
-					// ★ dsh 官方约定：只提醒用户重启，绝不擅自重启 VsSaros / Harness
+					// ★ P0：成功静默（application='applied'），只有「等重启」才给醒目提醒。
+					//   对齐上游 dsh Web 插件管理器「成功不显示 toast，等重启的变更才提示」。
 					if (res.restartNotice?.text) {
-						lines.push(res.restartNotice.text + ' 请自行重启 VsSaros，我不会替你重启。');
-					} else {
-						if (res.restartRequired) { lines.push('⚠ 需要**重启 VsSaros** 才生效（请自行重启）。'); }
-						if (res.mcpNote) { lines.push(res.mcpNote); }
-						if (res.agentsRescan) { lines.push(`agent 重扫：${res.agentsRescan}`); }
+						lines.push(res.restartNotice.text);
+					} else if (res.restartRequired) {
+						lines.push('⚠ 需要**重启 Host 进程**才生效（请自行重启，我不会替你重启）。');
 					}
+					if (res.mcpNote) { lines.push(res.mcpNote); }
 					return [{ type: 'text', text: lines.join('\n') }];
 				},
 			},
@@ -361,20 +363,23 @@ export function marketToolDefinitions(deps) {
 
 				try {
 					const r = await installPackage({ slug: targetSlug, version });
-					// ★ 安装回执里的 restartRequired / mcpNote / agentsRescan 归一化成一条明确的重启提醒。
-					//   dsh 官方做法：把「需重启生效」如实交回给用户，**绝不擅自重启**。
-					const needsRestart = r?.restartRequired === true
-						|| (typeof r?.agentsRescan === 'string' && r.agentsRescan !== 'ok');
-					let restartNotice = null;
-					if (r?.ok !== false && (needsRestart || r?.mcpNote)) {
-						const parts = [];
-						if (needsRestart) { parts.push('⚠ 已装好，但需要**重启 VsSaros** 才生效。'); }
-						if (r.mcpNote) { parts.push(String(r.mcpNote)); }
-						if (r.agentsRescan && r.agentsRescan !== 'ok') { parts.push('Agent 重扫状态：' + String(r.agentsRescan)); }
-						restartNotice = { kind: needsRestart ? 'warn' : 'info', restartRequired: needsRestart, text: parts.join(' ') };
-					}
+					// ★ P0：用统一 ChangeResult 归一化 Host 回执（唯一真源在 dispatch.js）。
+					//   兼容没带 changeReceipt 的旧回执：toChangeReceipt 会自己从布尔推导。
+					const receipt = toChangeReceipt(r, { op: 'install' });
+					const restartNotice = receipt.restartRequired
+						? {
+							kind: 'warn',
+							application: receipt.application,
+							restartRequired: true,
+							restartReason: receipt.restartReason,
+							text: receipt.nextStep || '⚠ 需重启 Host 进程才生效（请自行重启，我不会替你重启）。',
+						}
+						: null;
 					return {
 						...r, slug: targetSlug, resolvedFrom,
+						application: receipt.application,
+						restartReason: receipt.restartReason,
+						nextStep: receipt.nextStep,
 						...(restartNotice ? { restartNotice } : {}),
 						ok: r?.ok !== false,
 					};

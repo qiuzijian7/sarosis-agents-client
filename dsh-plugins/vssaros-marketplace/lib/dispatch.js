@@ -183,3 +183,47 @@ export function resolveOp(op, params = {}) {
 export function isKnownOp(op) {
 	return ALL_OPS.includes(String(op ?? ''));
 }
+
+
+// ── ★ 2026-11-24 P0：安装回执归一化（对齐上游 ChangeResult）────────────
+// 上游 @deepseek-ai/dsh-plugin-manager/src/types.ts:171-176 用
+//   application: 'applied'|'restart-required'|'overridden'|'failed'|'cancelled'
+//   restartReason?: 'no-hmr'|'package-moved'|'host-module'|'unmanaged-plugin'|'module-comparison'
+//   nextStep?: string
+// 本项目此前只有布尔 restartRequired，丢失了「为什么」和「用户下一步做什么」。
+// 这里做成纯函数，供 market_install 与页面消费；不产生任何副作用（尤其**不重启**）。
+export function toChangeReceipt(res, ctx = {}) {
+	const stage = ctx.op === 'uninstall' ? 'remove'
+		: (ctx.op === 'set-plugin-enabled' ? 'enable' : 'install');
+	if (!res || res.ok === false) {
+		return { application: 'failed', restartRequired: false, restartReason: null, nextStep: null, stage, changed: false };
+	}
+	const KNOWN = new Set(['applied', 'restart-required', 'overridden', 'failed', 'cancelled']);
+	let application = KNOWN.has(String(res.application))
+		? String(res.application)
+		: (res.restartRequired === true ? 'restart-required' : 'applied');
+	const rescanPending = typeof res.agentsRescan === 'string' && res.agentsRescan !== 'ok';
+	if (rescanPending && application === 'applied') { application = 'restart-required'; }
+	const needsRestart = application === 'restart-required' || res.restartRequired === true || rescanPending;
+	if (needsRestart) { application = 'restart-required'; }
+	// 只判可靠可得的两类；host-module / module-comparison / unmanaged-plugin 需要宿主级探测，不猜测
+	const restartReason = !needsRestart ? null
+		: ((res.packageName || res.resources || res.via === 'dsh') ? 'package-moved' : 'no-hmr');
+	const parts = [];
+	if (needsRestart) {
+		parts.push(restartReason === 'package-moved'
+			? '⚠ 已装好，但需重启 Host 进程后从工作台启动器打开。'
+			: '⚠ 已装好，但需重启 Host 进程后才生效。');
+		parts.push('KeepAlive 下 IDE 退出不会重启 Host；请在 IDE 插件页点「重启 Host」，不要只 Reload Window。请自行重启，我不会替你重启。');
+		if (res.mcpNote) { parts.push(String(res.mcpNote)); }
+		if (rescanPending) { parts.push('Agent 重扫状态：' + String(res.agentsRescan)); }
+	}
+	return {
+		application,
+		restartRequired: needsRestart,
+		restartReason,
+		nextStep: parts.length ? parts.join(' ') : null,
+		stage,
+		changed: res.changed !== false,
+	};
+}
