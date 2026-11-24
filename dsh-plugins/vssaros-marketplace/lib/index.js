@@ -41,6 +41,7 @@ import { listTarGzEntries } from './tar.js';
 import { classifyDistribution, classifyInstallSpec } from './installSpec.js';
 // ★ 2026-11-10（P0）：安装前预览（告警扫描 / 来源汇总），纯函数模块
 import { distributionWarnings, finishPreview, scanPackageFiles, summarizeDistribution } from './preview.js';
+import { currentDshVersion } from './hostVersion.js';
 // ★ 2026-11-10 P2：离线便携包（导出 / 预览 / 原子导入）
 import { exportPortable, importPortable, previewPortable } from './portable.js';
 import { listPublishables, deriveVersion } from './localResources.js';
@@ -414,6 +415,15 @@ export async function apply(ctx, config) {
 			if (!row) { throw new Error(`「${slug}」没有可用版本`); }
 			const kind = String(pkg.kind ?? '');
 			const dist = row.manifest?.distribution ?? null;
+			// ★ 2026-11-24：外部源 peerRange 的兼容性提示需要宿主版本。
+			//   由这里注入，preview.js 保持纯函数（不读磁盘）。
+			//   与 checkPeerCompat 同口径：版本来源不可靠（只是 dsh-runtime 目录名）⇒ 不判定。
+			let previewHostVersion = '';
+			try {
+				const hv = currentDshVersion();
+				const reliable = hv.source === 'process.argv[1]' || hv.source === 'require.resolve';
+				previewHostVersion = reliable ? String(hv.version || '') : '';
+			} catch { /* 读不到就不判定，只展示登记值 */ }
 			const base = {
 				ok: true,
 				slug,
@@ -422,7 +432,7 @@ export async function apply(ctx, config) {
 				version: String(row.version ?? ''),
 				sha256: String(row.sha256 ?? '').trim(),
 				distribution: summarizeDistribution(dist),
-				warnings: distributionWarnings(dist, kind),
+				warnings: distributionWarnings(dist, kind, { runtimeVersion: previewHostVersion }),
 				files: [],
 			};
 			if (isPluginEnvelope(row.manifest)) {

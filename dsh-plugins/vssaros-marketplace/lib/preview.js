@@ -4,6 +4,33 @@
 // 有没有可疑内容」摊开给人看，两步（预览 → 确认）才落盘。
 // 这里是**纯函数**：不碰网络、不碰磁盘、不改任何状态 ⇒ 可被守卫直接单测。
 //
+import { satisfies } from './hostVersion.js';
+
+/**
+ * ★ 2026-11-24：解析 `distribution.peerRange`。
+ * 它是 `peerRangeOf()` 压出来的一行 `name@range name@range`（最多 500 字符），
+ * 而 range 自身可能含空格分隔的多个比较器（`>=0.1.7-0 <0.3.0-0`）
+ * ⇒ 只按「下一条 name@ 的起点」切段，绝不按空格硬切。
+ * 只保留 `@deepseek-ai/dsh*` 前缀（与 hostVersion.js 的 HOST_PEERS 同口径）。
+ */
+function dshPeerEntries(peerRange) {
+	const raw = String(peerRange ?? '').trim();
+	if (!raw) { return []; }
+	const re = /(?:^|\s)(@?[a-z0-9][a-z0-9._~-]*(?:\/[a-z0-9][a-z0-9._~-]*)?)@/gi;
+	const marks = [];
+	let m;
+	while ((m = re.exec(raw))) {
+		marks.push({ name: m[1], start: m.index, from: m.index + m[0].length });
+	}
+	const out = [];
+	for (let i = 0; i < marks.length; i++) {
+		if (!/^@deepseek-ai\/dsh(?:-|$)/.test(marks[i].name)) { continue; }
+		const end = i + 1 < marks.length ? marks[i + 1].start : raw.length;
+		const range = raw.slice(marks[i].from, Math.max(marks[i].from, end)).trim();
+		if (range) { out.push({ name: marks[i].name, range }); }
+	}
+	return out;
+}
 // ⚠ 语义分级（别一刀切）：
 //   · danger ⇒ 前端禁用「确认安装」（真凭据形态 / 缺校验 / 当前根本装不了）
 //   · warn  ⇒ 只提示，仍可安装（绝对路径、未锁 commit 等「可装但要注意」）
@@ -64,7 +91,7 @@ export function scanPackageFiles(files) {
  * @param {unknown} dist
  * @param {string} kind
  */
-export function distributionWarnings(dist, kind) {
+export function distributionWarnings(dist, kind, opts = {}) {
 	const out = [];
 	if (!dist || typeof dist !== 'object' || !dist.type) { return out; }
 	const d = dist;
@@ -80,6 +107,21 @@ export function distributionWarnings(dist, kind) {
 	if (d.type === 'npm' && !d.name) {
 		out.push({ level: 'danger', text: 'npm 发布源缺少包名' });
 	}
+
+	// ★ 2026-11-24：外部源登记了 peerRange ⇒ 按宿主版本给「只提示、不阻断」的兼容性提示。
+	//   宿主版本由调用方注入（本文件保持纯函数、不读磁盘）；读不到 / range 看不懂 ⇒ 不判定。
+	//   与 checkPeerCompat 同口径：绝不因版本要求把 warn 升级成 danger（不禁用安装按钮）。
+	const host = String(opts?.runtimeVersion ?? '').trim();
+	if (host && d.peerRange) {
+		for (const { name, range } of dshPeerEntries(d.peerRange)) {
+			if (satisfies(host, range) === false) {
+				out.push({
+					level: 'warn',
+					text: `当前宿主 dsh ${host} 不满足发布源登记的 ${name} ${range}：可能装不上或运行异常（仅提示，不阻断安装）`,
+				});
+			}
+		}
+	}
 	return out;
 }
 
@@ -94,6 +136,7 @@ export function summarizeDistribution(dist) {
 	if (d.url) { fields.push({ k: '资产地址', v: String(d.url) }); }
 	if (d.commit) { fields.push({ k: '锁定 commit', v: String(d.commit) }); }
 	if (d.sha256) { fields.push({ k: 'sha256', v: String(d.sha256) }); }
+	if (d.peerRange) { fields.push({ k: '宿主版本要求', v: String(d.peerRange) }); }
 	return { label: '外部发布源（' + String(d.type) + '）', fields };
 }
 
