@@ -365,7 +365,9 @@ export function marketToolDefinitions(deps) {
 					const r = await installPackage({ slug: targetSlug, version });
 					// ★ P0：用统一 ChangeResult 归一化 Host 回执（唯一真源在 dispatch.js）。
 					//   兼容没带 changeReceipt 的旧回执：toChangeReceipt 会自己从布尔推导。
-					const receipt = toChangeReceipt(r, { op: 'install' });
+					const receipt = (r?.changeReceipt && typeof r.changeReceipt.application === 'string')
+						? r.changeReceipt
+						: toChangeReceipt(r, { op: 'install' });
 					const restartNotice = receipt.restartRequired
 						? {
 							kind: 'warn',

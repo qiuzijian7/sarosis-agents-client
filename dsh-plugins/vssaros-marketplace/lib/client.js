@@ -1237,7 +1237,7 @@
 				setMsg({ kind: 'error', text: String((res && res.error) || '操作失败') });
 				return null;
 			}
-			if (res.restartRequired === true || op === 'uninstall') { _restartReceipts[1](function (old) { var next = Object.assign({}, old); if (op === 'uninstall') { delete next[operationKey]; } else { next[operationKey] = true; } return next; }); }
+			if ((res.changeReceipt && res.changeReceipt.restartRequired) || res.restartRequired === true || op === 'uninstall') { _restartReceipts[1](function (old) { var next = Object.assign({}, old); if (op === 'uninstall') { delete next[operationKey]; } else { next[operationKey] = true; } return next; }); }
 			if (okText) {
 			var text = okText;
 			// ★ 2026-11-09：Bot 组合包按 Host 的**分项回执**如实说明生效状态，
@@ -1269,7 +1269,7 @@
 			//   `application: 'applied'` 表示已即时生效 ⇒ 只留上面的页内 MsgBar。
 			//   页面桥只在 dsh webview 里存在 ⇒ 防御式调用；不可用时页内条已兜底。
 			//   按官方约定「请用户重启、不擅自重启」：这里只弹提醒，不触发任何重启。
-			var application = String(res.application || '');
+			var application = String((res.changeReceipt && res.changeReceipt.application) || res.application || '');
 			var needsRestart = application === 'restart-required'
 				|| (application !== 'applied' && (res.restartRequired === true || (res.agentsRescan && res.agentsRescan !== 'ok')));
 			if (needsRestart) {

@@ -89,6 +89,27 @@ check('空回执不抛异常', () => {
   assert.equal(toChangeReceipt(null, {}).application, 'failed');
   assert.equal(toChangeReceipt(undefined, {}).application, 'failed');
 });
+check('P1：HMR 可用但仍需重启 ⇒ host-module（不误报 applied）', () => {
+  const r = toChangeReceipt({ ok: true, restartRequired: true }, { op: 'install', hmrAvailable: true });
+  assert.equal(r.application, 'restart-required', '保守口径：不因 HMR 存在就宣称已生效');
+  assert.equal(r.restartReason, 'host-module');
+  assert.match(r.nextStep, /HMR/);
+  assert.match(r.nextStep, /启动期模块/);
+});
+check('P1：未启用 HMR ⇒ no-hmr 且原因写在文案里', () => {
+  const r = toChangeReceipt({ ok: true, restartRequired: true }, { op: 'install', hmrAvailable: false });
+  assert.equal(r.restartReason, 'no-hmr');
+  assert.match(r.nextStep, /未启用 HMR/);
+});
+check('P1：nextStep 给出可执行的重启 Host 命令', () => {
+  const r = toChangeReceipt({ ok: true, restartRequired: true }, { op: 'install' });
+  assert.match(r.nextStep, /dshHarness\.restartHost/);
+  assert.match(r.nextStep, /不要只 Reload Window/);
+});
+check('P1：package-moved 优先于 HMR 原因', () => {
+  const r = toChangeReceipt({ ok: true, restartRequired: true, via: 'dsh' }, { op: 'install', hmrAvailable: true });
+  assert.equal(r.restartReason, 'package-moved');
+});
 
 console.log('\n================================================');
 console.log(`  通过: ${passed}`);

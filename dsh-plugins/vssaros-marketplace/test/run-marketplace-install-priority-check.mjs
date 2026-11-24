@@ -272,21 +272,49 @@ async function main() {
 	});
 	check('工作台页面按 application 分通道（applied 不弹 toast）', () => {
 		const src = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
-		assert.match(src, /var application = String\(res\.application/);
+		assert.match(src, /var application = String\(\(res\.changeReceipt/);
 		assert.match(src, /application !== 'applied'/);
 		assert.match(src, /pageBridge\.notify\('warn', notice\)/);
+		assert.match(src, /res\.changeReceipt && res\.changeReceipt\.restartRequired/);
 	});
 	check('归一化纯函数是唯一真源且被 agentTools 引用', () => {
 		const d = fs.readFileSync(path.join(LIB, 'dispatch.js'), 'utf8');
 		const a = fs.readFileSync(path.join(LIB, 'agentTools.js'), 'utf8');
 		assert.match(d, /export function toChangeReceipt/);
 		assert.match(a, /import \{ toChangeReceipt \} from '\.\/dispatch\.js'/);
-		assert.match(a, /const receipt = toChangeReceipt\(r, \{ op: 'install' \}\)/);
+		assert.match(a, /toChangeReceipt\(r, \{ op: 'install' \}\)/);
 	});
 	check('PERSONA 按 application 区分 applied / restart-required', () => {
 		const src = fs.readFileSync(path.join(LIB, 'marketAgent.js'), 'utf8');
 		assert.match(src, /`applied` ⇒ 已即时生效/);
 		assert.match(src, /`restart-required` ⇒/);
+	});
+
+	// ── H. P1：Host 出口统一回执 + HMR 探测 ────────────────────
+	await checkAsync('工具优先采信 Host 的 changeReceipt（HMR 信息不丢失）', async () => {
+		const hostReceipt = {
+			application: 'restart-required', restartRequired: true,
+			restartReason: 'host-module', nextStep: 'HMR 已启用但涉及启动期模块，需重启 Host。',
+			stage: 'install', changed: true,
+		};
+		const { def } = makeInstall([], { ok: true, kind: 'workbench', changeReceipt: hostReceipt });
+		const r = await def.execute({ slug: 'x' });
+		assert.equal(r.application, 'restart-required');
+		assert.equal(r.restartReason, 'host-module');
+		assert.match(r.restartNotice.text, /HMR 已启用/);
+	});
+	check('index.js 两个出口附 changeReceipt 且探测 ctx.hmr', () => {
+		const src = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8');
+		assert.match(src, /import \{ ALL_OPS,.*toChangeReceipt \} from '\.\/dispatch\.js'/);
+		assert.match(src, /function withChangeReceipt\(res, op\)/);
+		assert.match(src, /ctx\.get\('hmr'\)/);
+		assert.match(src, /withChangeReceipt\(await runLocalByTarget/);
+		assert.match(src, /withChangeReceipt\(await callIde/);
+		assert.match(src, /withChangeReceipt\(\{ kind, \.\.\.result \}, 'install'\)/);
+	});
+	check('agentTools 消费 Host changeReceipt 而非重复推导', () => {
+		const src = fs.readFileSync(path.join(LIB, 'agentTools.js'), 'utf8');
+		assert.match(src, /r\?\.changeReceipt && typeof r\.changeReceipt\.application === 'string'/);
 	});
 
 	console.log('\n================================================');

@@ -53,7 +53,7 @@ import { preflightPublish } from './publishPreflight.js';
 import { marketToolDefinitions } from './agentTools.js';
 // ★ 2026-10-26：商城专用 agent（写 .agent.md，让新建会话默认选中）
 import { ensureMarketAgent, MARKET_PRESET } from './marketAgent.js';
-import { ALL_OPS, LOCAL_WRITE_KINDS, LOCAL_PLUGIN_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
+import { ALL_OPS, LOCAL_WRITE_KINDS, LOCAL_PLUGIN_KINDS, WRITE_OPS, isKnownOp, resolveOp, toChangeReceipt } from './dispatch.js';
 // ★ 服务端 pkg → 前端形状的**唯一映射**（list/detail/reviewList/installed 共用）
 import { toInstalledItem, toPackageDetail, toPackageSummary } from './shape.js';
 // ★ 2026-10-29：台账只增不减 ⇒ "算不算已安装"必须以**磁盘落地物**为准（见该文件头注释）
@@ -113,6 +113,18 @@ export async function apply(ctx, config) {
 	};
 	// 可选注入：老 Host / 未装 vssaros-mcp 时回调不跑 ⇒ state.mcpOsv 保持 null，
 	// 安装链照常工作（fail-open），不会让整个商城插件 pending ✗。
+	/** ★ 2026-11-24 P1：探测上游 HMR 服务（对齐 dsh-plugin-manager/src/index.ts:1379-1386）。
+	 *  老 Host / 无 HMR 时返回 false ⇒ 回执 reason 标 no-hmr，不影响安装。 */
+	function hmrAvailable() {
+		try { return typeof ctx.get === 'function' && ctx.get('hmr') !== undefined; }
+		catch { return false; }
+	}
+	/** 给安装类回执附加统一 ChangeResult；只读/错误响应原样返回，不污染响应体。 */
+	function withChangeReceipt(res, op) {
+		if (!res || typeof res !== 'object') { return res; }
+		if (!['install', 'upgrade', 'uninstall', 'set-plugin-enabled'].includes(String(op))) { return res; }
+		return { ...res, changeReceipt: toChangeReceipt(res, { op, hmrAvailable: hmrAvailable() }) };
+	}
 	ctx.inject(['vssarosMcpOsv'], scope => {
 		state.mcpOsv = scope.vssarosMcpOsv ?? null;
 		return () => { state.mcpOsv = null; };
@@ -1439,10 +1451,10 @@ export async function apply(ctx, config) {
 				if (LOCAL_PLUGIN_KINDS.has(kind)) {
 					const result = await runLocalPlugin('install', { kind, slug: s, version: v });
 					if (!result) { throw new Error('插件管理服务未就绪，未安装'); }
-					return { kind, ...result };
+					return withChangeReceipt({ kind, ...result }, 'install');
 				}
 				if (LOCAL_WRITE_KINDS.has(kind)) {
-					return { kind, ...(await runLocalWrite('install', { kind, slug: s, version: v })) };
+					return withChangeReceipt({ kind, ...(await runLocalWrite('install', { kind, slug: s, version: v })) }, 'install');
 				}
 				// knowledge 之类：dsh 侧没有可落盘的本体 ⇒ 如实拒绝，别让 Agent 以为装上了
 				throw new Error(`「${kind}」这一类暂不支持由 dsh 侧安装（请在商城页面上操作）`);
@@ -1537,7 +1549,7 @@ export async function apply(ctx, config) {
 					const target = resolveOp(op, params);
 					if (target !== 'ide') {
 						try {
-							json(200, await runLocalByTarget(target, op, params));
+							json(200, withChangeReceipt(await runLocalByTarget(target, op, params), op));
 						} catch (e) {
 							json(200, { ok: false, error: String(e?.message ?? e), ...(e?.code === 'revision-conflict' ? { code: e.code, current: e.current } : {}) });
 						}
@@ -1547,7 +1559,7 @@ export async function apply(ctx, config) {
 					// ⚠ 这里也**包了 try/catch**：原先是裸调用 ⇒ 唯一会返回 500 的分支
 					//   （错误契约不一致 ✗）。现在统一成 200 + ok:false ✓
 					try {
-						json(200, await callIde(op, params));
+						json(200, withChangeReceipt(await callIde(op, params), op));
 					} catch (e) {
 						json(200, { ok: false, error: `商城通道出错：${String(e?.message ?? e)}` });
 					}
