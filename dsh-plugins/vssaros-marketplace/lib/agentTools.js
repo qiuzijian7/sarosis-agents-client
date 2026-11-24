@@ -239,43 +239,65 @@ export function marketToolDefinitions(deps) {
 		},
 
 		{
-			// ★ 2026-10-26（用户：「商城助手中，增加安装功能」）
+			// ★ LLM_INSTALL_MARKET_FIRST 2026-11-24 阶段3：LLM 安装优先查 VsSaros 商城。
+			//   之前只收 slug ⇒ Agent 拿到展示名（"TAPD MCP"）就装不了；查不到时也没有
+			//   任何「不要改用别处」的指引 ⇒ 助手容易凭印象走 npm / GitHub。
+			//   现在：slug 或 name/q 都行，内部**强制先查商城**；命中才装，
+			//   多命中返回候选让 LLM 确认，未命中返回 notFound 并明确禁止擅自换源。
 			name: 'market_install',
 			description:
-				'从 VsSaros 商城**安装或升级**一个商品到本机（技能 / 工作流 / Agent / 连接器 / 插件 / 工作台）。'
+				'从 VsSaros 商城**安装或升级**一个商品到本机（技能 / Agent / 连接器 / 插件 / 工作台）。'
 				+ '⚠ 这是**写操作**：会真的落盘，装完可能提示要重启。'
+				+ '★ 安装前会**先查商城**：给 `slug` 直接用；只给 `name` / `q` 时按名称在商城检索，'
+				+ '唯一命中才安装，多个命中会返回候选让你确认，查不到会返回 notFound。'
+				+ '**商城没命中时不要自行改用 npm / GitHub 安装**，先把结果如实告诉用户。'
 				+ '类型（kind）由商城登记决定，不用你传 —— 传了也会被忽略。'
-				+ '只想看看有什么、不想装时**不要调它**。',
+				+ '只想看看有什么、不想装时**不要调它**（用 `market_search`）。',
 			parameters: {
 				type: 'object',
 				properties: {
-					slug: { type: 'string', description: '商品的商城标识（slug，不是展示名）。' },
+					slug: { type: 'string', description: '商品的商城标识（slug，不是展示名）。有它就不必给 name/q。' },
+					name: { type: 'string', description: '商品展示名；不给 slug 时用它先在商城检索（如 "TAPD MCP"）。' },
+					q: { type: 'string', description: '检索关键词；不给 slug 时与 name 二选一，用于模糊匹配。' },
+					kind: {
+						type: 'string', description: '可选，限定商城检索的类型，避免同名歧义。',
+						enum: ['skill', 'agent', 'mcp', 'plugin', 'workbench'],
+					},
 					version: { type: 'string', description: '要装的版本号；省略 ⇒ 装最新版。' },
 				},
-				required: ['slug'],
+				required: [],
 			},
 			output: {
 				schema: {
 					type: 'object',
 					properties: {
-						ok: { type: 'boolean' },
-						kind: { type: 'string' },
-						version: { type: 'string' },
-						restartRequired: { type: 'boolean' },
-						slug: { type: 'string' },
-						error: { type: 'string' },
+						ok: { type: 'boolean' }, kind: { type: 'string' }, version: { type: 'string' },
+						restartRequired: { type: 'boolean' }, slug: { type: 'string' },
+						resolvedFrom: { type: 'string' }, query: { type: 'string' },
+						notFound: { type: 'boolean' }, ambiguous: { type: 'boolean' },
+						candidates: { type: 'array' }, error: { type: 'string' },
 					},
 					required: ['ok'],
 				},
 				render: (_args, res) => {
+					if (res?.notFound) {
+						return [{ type: 'text', text: `商城里没有「${res.query}」。${res.error || ''}` }];
+					}
+					if (res?.ambiguous && Array.isArray(res.candidates) && res.candidates.length) {
+						const lines = ['商城里有多个候选，请用准确的 slug 再装：'];
+						for (const c of res.candidates) {
+							lines.push(`· ${c.name}（${c.kind}）\`${c.slug}\`` + (c.installable === false ? ' ⚠ 当前不可安装' : ''));
+						}
+						return [{ type: 'text', text: lines.join('\n') }];
+					}
 					if (!res || res.ok === false) {
 						return [{ type: 'text', text: `安装失败：${(res && res.error) || '未知原因'}` }];
 					}
 					const lines = [`已安装 ${res.slug}（${res.kind}）· v${res.version}`];
-					if (res.restartRequired) {
-						lines.push('⚠ 需要**重启 VsSaros** 才生效。');
+					if (res.resolvedFrom && res.resolvedFrom !== 'slug') {
+						lines.push(`（由商城检索解析：${res.resolvedFrom}）`);
 					}
-					// 不同 kind 的"生效条件"不一样 —— 如实带出，别让用户以为装完就能用
+					if (res.restartRequired) { lines.push('⚠ 需要**重启 VsSaros** 才生效。'); }
 					if (res.mcpNote) { lines.push(res.mcpNote); }
 					if (res.agentsRescan) { lines.push(`agent 重扫：${res.agentsRescan}`); }
 					return [{ type: 'text', text: lines.join('\n') }];
@@ -285,19 +307,59 @@ export function marketToolDefinitions(deps) {
 			isConcurrencySafe: () => false,
 			execute: async (params) => {
 				const slug = String(params?.slug ?? '').trim();
-				if (!slug) { return { ok: false, error: '缺少 slug 参数' }; }
+				const name = String(params?.name ?? '').trim();
+				const query = String(params?.q ?? '').trim();
+				const kind = String(params?.kind ?? '').trim();
+				const version = String(params?.version ?? '').trim() || undefined;
+				let targetSlug = slug;
+				let resolvedFrom = slug ? 'slug' : '';
+
+				// ★ 没有 slug ⇒ 强制先查商城，绝不直接把名称当包名交给其它来源
+				if (!targetSlug) {
+					const q = (name || query).trim();
+					if (!q) { return { ok: false, error: '需要 slug，或 name / q 至少给一个（会先在商城检索）' }; }
+					try {
+						const r = await market().list({
+							q, kind: KIND_SET.has(kind) ? kind : undefined, pageSize: 20, page: 1,
+						});
+						const rows = (Array.isArray(r?.items) ? r.items : []).filter(it => it && it.slug);
+						const norm = (s) => String(s ?? '').toLowerCase().replace(/[\s_\-]+/g, '').trim();
+						// 名称精确匹配优先；否则只有唯一搜索结果才自动采用（避免装错）
+						const exact = name ? rows.filter(it => norm(it.name) === norm(name)) : [];
+						const picked = exact.length === 1 ? exact[0] : (rows.length === 1 ? rows[0] : null);
+						if (picked) {
+							targetSlug = String(picked.slug);
+							resolvedFrom = exact.length === 1 ? 'name-exact' : 'name-unique';
+						} else {
+							const candidates = rows.slice(0, 8).map(it => ({
+								slug: String(it.slug), name: String(it.name ?? ''),
+								kind: String(it.kind ?? ''), installable: it.installable !== false,
+							}));
+							return {
+								ok: false,
+								notFound: candidates.length === 0,
+								ambiguous: candidates.length > 1,
+								query: q,
+								candidates,
+								error: candidates.length
+									? `商城里「${q}」有 ${rows.length} 个候选，请用 market_search 确认后传准确的 slug`
+									: `商城里没有「${q}」；不要自行改用 npm / GitHub 安装，先告知用户`,
+							};
+						}
+					} catch (e) {
+						return { ok: false, error: `商城检索失败：${String(e?.message ?? e).slice(0, 200)}` };
+					}
+				}
+
 				try {
-					const r = await installPackage({
-						slug,
-						version: String(params?.version ?? '').trim() || undefined,
-					});
-					return { ...r, slug, ok: r?.ok !== false };
+					const r = await installPackage({ slug: targetSlug, version });
+					return { ...r, slug: targetSlug, resolvedFrom, ok: r?.ok !== false };
 				} catch (e) {
-					// 服务端 / 落盘错误原样带出（比"安装失败"有用得多）
-					return { ok: false, slug, error: String(e?.message ?? e).slice(0, 400) };
+					return { ok: false, slug: targetSlug, resolvedFrom, error: String(e?.message ?? e).slice(0, 400) };
 				}
 			},
 		},
+
 
 		{
 			name: 'market_publish',
