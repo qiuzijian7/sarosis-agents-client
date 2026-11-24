@@ -141,13 +141,20 @@ export function satisfies(version, range) {
 	if (!r || r === '*' || r === 'latest') { return true; }
 
 	for (const part of r.split('||').map(s => s.trim()).filter(Boolean)) {
-		const res = satisfiesOne(v, part);
-		if (res === true) { return true; }
-		if (res === null) { return null; }   // 有一段看不懂 ⇒ 整体"未知"
+		// ★ 2026-11-24：一段里可以空格分隔多个比较器（AND），例如 `>=0.1.7-0 <0.3.0-0`。
+		//   以前整段喂给 satisfiesOne 会把上界静默吞掉（等价于只判 `>=0.1.7`）
+		//   ⇒ 0.3.x 宿主拦不住 ✗。现在逐个比较器判定，全 true 才算这一段满足。
+		const comparators = part.split(/\s+/).filter(Boolean);
+		let allTrue = true;
+		for (const cmp of comparators) {
+			const res = satisfiesOne(v, cmp);
+			if (res === null) { return null; }   // 有一段看不懂 ⇒ 整体"未知"（保守放行）
+			if (res !== true) { allTrue = false; break; }
+		}
+		if (allTrue) { return true; }
 	}
 	return false;
 }
-
 function satisfiesOne(version, range) {
 	const norm = (x) => x.replace(/^v/, '');
 	const v = norm(version);

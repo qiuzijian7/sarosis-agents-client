@@ -322,6 +322,7 @@ async function installBotPack({ dataRoot, storeId, version, files, bot, upgrade,
 	// ★ 命名空间：落位的 `.agent.md` 必须把 skills:/tools: 里的引用同步改成加前缀后的名字，
 	//   否则 Bot 会指向一个不存在的技能；落盘 bot.json 记下实际 id 供级联卸载反查。
 	const agentFiles = files.filter(f => f.path !== 'manifest.json'
+		&& f.path !== 'package.json'
 		&& !skillPrefixes.some(p => f.path.startsWith(p))
 		&& !mcpPrefixes.some(p => f.path.startsWith(p)))
 		.map(f => {
@@ -463,7 +464,7 @@ async function installComponentsPack({ dataRoot, kind, storeId, version, files, 
 	const written = [];
 	try {
 		for (const item of plan) {
-			const runtime = item.files.filter(f => f.path !== SIDECAR_FILE);
+			const runtime = item.files.filter(f => f.path !== SIDECAR_FILE && f.path !== 'package.json');
 			// ★ P1-A：技能正文保持纯内容，溯源写侧车
 			if (item.kind === 'skill') {
 				runtime.push({ path: SIDECAR_FILE, data: Buffer.from(sidecarOf({ storeId: item.id, version, owner: storeId }), 'utf8') });
@@ -609,7 +610,7 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 	// ★ 2026-10-22（真机端到端抓到）：`manifest.json` 是**打包元数据**，不属于资源本体
 	//   ⇒ **不落盘**（三种 kind 都一样）。此前它会跟着写进 `<数据根>/<kind根>/<id>/` ⇒
 	//   资源目录里多出一个服务端格式的文件（污染，且下次发布还会把它当资源内容打进去 ✗）
-	const runtimeFiles = files.filter(f => f.path !== 'manifest.json' && f.path !== SIDECAR_FILE);
+	const runtimeFiles = files.filter(f => f.path !== 'manifest.json' && f.path !== SIDECAR_FILE && f.path !== 'package.json');
 	// ★ 2026-11-10 P1：安装溯源写侧车 —— SKILL.md 正文一个字节都不动，
 	//   装回来的技能可原样拷到官方 dsh / Claude Code / Cursor 仍能用。
 	if (kind === 'skill') {

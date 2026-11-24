@@ -55,6 +55,14 @@ const EXCLUDE_DIRS = new Set(['node_modules', '.git', '.upgrade-backup', '.saros
 // ★ 2026-11-10 P1：`.market.json` 是**安装溯源侧车**，属于本机状态不是作者内容。
 //   发布时排除 ⇒ 别人装到的包不会带着上一个来源的 storeId/版本。
 const EXCLUDE_FILES = new Set(['.DS_Store', 'Thumbs.db', '.market.json']);
+/**
+ * ★ 2026-11-24：注入包内的宿主 dsh 版本声明（让安装端 preflight 门禁真正生效）。
+ * 与 `../package.json` 的 `peerDependencies["@deepseek-ai/dsh"]` **逐字一致**（唯一真源，
+ * `run-engines-declaration-check.mjs` 钉住两者不许漂移）。
+ * ⚠ 绝不能用 `currentDshVersion()`：那是单机运行时版本、可能为空、有进程缓存，
+ *   拿来当「最低要求」会误拒老宿主，还会破坏 `tar.js` 的确定性打包字节 ✗
+ */
+const DSH_SUPPORTED_RANGE = '>=0.1.7-0 <0.3.0-0';
 
 /**
  * ★ 2026-10-31：知识库打包的**额外排除项**（与 KB 的 `.gitignore` 同口径）。
@@ -256,10 +264,26 @@ export async function preparePublishBundle({ dataRoot, kind, localId, version, m
 			);
 		}
 	}
-	const files = await collectDir(dir, { skipManifest: true, knowledge: kind === 'knowledge' });
+	let files = await collectDir(dir, { skipManifest: true, knowledge: kind === 'knowledge' });
 	if (files.length === 0) {
 		throw new Error(`「${localId}」目录里没有文件（拒绝发布一个空包）`);
 	}
+	// ★ 2026-11-24：让安装端 `installPreflight.readPackageManifest` 真正有东西可判。
+	//   包里原本只有 `manifest.json`，而门禁只认 `package.json` ⇒ 永远 unknown 放行。
+	//   · 先去掉作者自带的同名文件，避免 tar 里同路径两条 ⇒ 最浅优先排序可能读到
+	//     无声明那份，把门禁绕过 ✗
+	//   · 注入内容全常量（localId / safeVersion / DSH_SUPPORTED_RANGE）⇒ 打包字节确定 ✓
+	//   · 老包没有这个文件 ⇒ 安装端仍按 unknown 放行，向后兼容 ✓
+	files = files.filter(f => f.path !== 'package.json');
+	files.push({
+		path: 'package.json',
+		data: Buffer.from(JSON.stringify({
+			name: localId,
+			version: safeVersion,
+			private: true,
+			engines: { dsh: DSH_SUPPORTED_RANGE },
+		}, null, 2), 'utf8'),
+	});
 
 	// ★ 2026-11-09 Bot 组合包发布预检（三件事都必须在"上传之前"做，否则坏包会进商城）：
 	//   ① 闭包 —— 清单声明的每个技能/MCP 在包里要有实体（否则别人装完是「半个 Bot」）；

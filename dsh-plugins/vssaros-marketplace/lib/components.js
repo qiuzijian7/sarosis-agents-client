@@ -26,7 +26,7 @@ export const COMPONENT_DIR = { skill: 'skills', agent: 'agents', mcp: 'mcp', kno
 export const COMPONENT_ENTRY = { skill: 'SKILL.md', agent: '.agent.md', mcp: 'config.json' };
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const META_FILES = new Set(['manifest.json', COMPONENTS_FILE]);
+const META_FILES = new Set(['manifest.json', COMPONENTS_FILE, 'package.json']);
 
 /**
  * 解析并做**结构**校验。包里没有 components.json ⇒ null（走原有单 kind 链路，零影响）。
