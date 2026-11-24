@@ -116,8 +116,16 @@ Name: "{app}"; AfterInstall: DisableAppDirInheritance
 Source: "{#RepoDir}\build\saros\stop-vssaros-runtime.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 ; 2026-11-23：dsh-runtime 的 profile-seed/.pnpm 接近 Win32 MAX_PATH；主行的 restartreplace
 ; 在升级时会先给旧文件加 old_* 临时名 ⇒ 目标路径超过 260 后 MoveFile 报错误代码 3。
-; 单独复制 dsh-runtime，且不带 restartreplace；其余文件继续保留原有升级语义。
-Source: "resources\app\dsh-runtime\*"; DestDir: "{code:GetDestDir}\resources\app\dsh-runtime"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; ⇒ 单独复制 dsh-runtime，批量行不带 restartreplace。
+; ★★ 2026-11-24（真机：DeleteFile 失败；错误代码 5，koffi.node 被 detached Host 占用）：
+;   拆行时把「*.node 被占用」的兜底一起丢掉了 —— 主 [Files] 行已 Excludes 掉整个
+;   dsh-runtime，它的 restartreplace 兜不到这里 ✗ ⇒ 清理脚本一旦没杀干净占用者，
+;   Inno 就直接弹错误框中断安装（半装）。
+;   ⇒ 把 *.node 单独拎出来带 restartreplace（路径短，不碰超长 profile-seed），
+;     其余文件仍走不带 restartreplace 的批量行。Inno 的 Excludes 里不含反斜杠的
+;     `*.node` 匹配任意层级的文件名（同本文件已有的 `*.map` 用法）⇒ 不会被重复安装。
+Source: "resources\app\dsh-runtime\*.node"; DestDir: "{code:GetDestDir}\resources\app\dsh-runtime"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist restartreplace
+Source: "resources\app\dsh-runtime\*"; DestDir: "{code:GetDestDir}\resources\app\dsh-runtime"; Excludes: "*.node"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 Source: "*"; Excludes: "\CodeSignSummary*.md,\tools,\tools\**,\policies,\policies\**,\appx,\appx\**,\resources\app\product.json,\resources\app\dsh-runtime,\resources\app\dsh-runtime\**,\{#ExeBasename}.exe,{#ifdef ProxyExeBasename}\{#ProxyExeBasename}.exe,{#endif}\{#ExeBasename}.VisualElementsManifest.xml,\bin,\bin\**,*.map,*.js.map,*.css.map,dxcompiler.dll,dxil.dll,vk_swiftshader.dll,LICENSES.chromium.html,\resources\app\node_modules\@github\copilot,\resources\app\node_modules\@github\copilot\**,\resources\app\node_modules\@github\copilot-sdk,\resources\app\node_modules\@github\copilot-sdk\**,\resources\app\node_modules\@microsoft\1ds-post-js,\resources\app\node_modules\@microsoft\1ds-post-js\**,\resources\app\node_modules\@microsoft\1ds-core-js,\resources\app\node_modules\@microsoft\1ds-core-js\**,\resources\app\node_modules\@microsoft\applicationinsights-core-js,\resources\app\node_modules\@microsoft\applicationinsights-core-js\**,\resources\app\node_modules\@microsoft\applicationinsights-shims,\resources\app\node_modules\@microsoft\applicationinsights-shims\**,\resources\app\node_modules\@microsoft\dynamicproto-js,\resources\app\node_modules\@microsoft\dynamicproto-js\**,\resources\app\node_modules\@microsoft\dev-tunnels-ssh,\resources\app\node_modules\@microsoft\dev-tunnels-ssh\**,\resources\app\node_modules\@microsoft\dev-tunnels-connections,\resources\app\node_modules\@microsoft\dev-tunnels-connections\**,\resources\app\node_modules\@microsoft\dev-tunnels-contracts,\resources\app\node_modules\@microsoft\dev-tunnels-contracts\**,\resources\app\node_modules\@microsoft\dev-tunnels-management,\resources\app\node_modules\@microsoft\dev-tunnels-management\**,\resources\app\node_modules\@microsoft\dev-tunnels-ssh-tcp,\resources\app\node_modules\@microsoft\dev-tunnels-ssh-tcp\**,\resources\app\node_modules\katex,\resources\app\node_modules\katex\**,\resources\app\node_modules\opentype.js,\resources\app\node_modules\opentype.js\**,\resources\app\node_modules\@vscode\vscode-languagedetection,\resources\app\node_modules\@vscode\vscode-languagedetection\**,\resources\app\node_modules\@xterm\addon-webgl,\resources\app\node_modules\@xterm\addon-webgl\**,\resources\app\dsh-runtime\*\profile-seed.deleting-*,\resources\app\dsh-runtime\*\profile-seed.deleting-*\**,\resources\app\node_modules\@parcel,\resources\app\node_modules\@parcel\**,\resources\app\node_modules\node-pty\prebuilds\darwin-arm64,\resources\app\node_modules\node-pty\prebuilds\darwin-arm64\**,\resources\app\node_modules\node-pty\prebuilds\darwin-x64,\resources\app\node_modules\node-pty\prebuilds\darwin-x64\**,\resources\app\node_modules\node-pty\prebuilds\linux-arm64,\resources\app\node_modules\node-pty\prebuilds\linux-arm64\**,\resources\app\node_modules\node-pty\prebuilds\linux-x64,\resources\app\node_modules\node-pty\prebuilds\linux-x64\**,\resources\app\node_modules\node-pty\prebuilds\win32-arm64,\resources\app\node_modules\node-pty\prebuilds\win32-arm64\**,\resources\app\extensions\ms-vscode.vscode-js-profile-table,\resources\app\extensions\ms-vscode.vscode-js-profile-table\**,*\resources\app\out\**\test\*,\resources\app\out\**\test\**,\locales\am.pak,\locales\ar.pak,\locales\bg.pak,\locales\bn.pak,\locales\ca.pak,\locales\cs.pak,\locales\da.pak,\locales\de.pak,\locales\el.pak,\locales\en-GB.pak,\locales\es.pak,\locales\es-419.pak,\locales\et.pak,\locales\fa.pak,\locales\fi.pak,\locales\fil.pak,\locales\fr.pak,\locales\gu.pak,\locales\he.pak,\locales\hi.pak,\locales\hr.pak,\locales\hu.pak,\locales\id.pak,\locales\it.pak,\locales\ja.pak,\locales\kn.pak,\locales\ko.pak,\locales\lt.pak,\locales\lv.pak,\locales\ml.pak,\locales\mr.pak,\locales\ms.pak,\locales\nb.pak,\locales\nl.pak,\locales\pl.pak,\locales\pt-BR.pak,\locales\pt-PT.pak,\locales\ro.pak,\locales\ru.pak,\locales\sk.pak,\locales\sl.pak,\locales\sq.pak,\locales\sr.pak,\locales\sr-Latn.pak,\locales\sv.pak,\locales\sw.pak,\locales\ta.pak,\locales\te.pak,\locales\th.pak,\locales\tr.pak,\locales\uk.pak,\locales\ur.pak,\locales\vi.pak,\locales\zh-TW.pak"; DestDir: "{code:GetDestDir}"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace
 Source: "{#ExeBasename}.exe"; DestDir: "{code:GetDestDir}"; DestName: "{code:GetExeBasename}"; Flags: ignoreversion
 Source: "{#ExeBasename}.VisualElementsManifest.xml"; DestDir: "{code:GetDestDir}"; DestName: "{code:GetVisualElementsManifest}"; Flags: ignoreversion
@@ -1446,9 +1454,10 @@ var
 #endif
 
 // 文件替换前结束 detached dsh Host；后台更新额外保留主客户端，以便安装完弹「重启」提示。
-// 后台自动更新带 /nocloseapplications，CloseApplications=force 与 AppMutex 都会被绕过，
-// 而 dsh-runtime 的原生模块又没有 restartreplace ⇒ 必须在这里主动清一次。
-// 失败不阻断安装：主 Files 行的 restartreplace 仍是兜底。
+// 后台自动更新带 /nocloseapplications，CloseApplications=force 与 AppMutex 都会被绕过
+// ⇒ 必须在这里主动清一次。失败不阻断安装：*.node 那条 Files 行带 restartreplace，
+//   会把被占用的原生模块排到重启后替换（用户看到「需要重启完成安装」而不是错误框）。
+//   ⚠ 主 Files 行的 restartreplace 已 Excludes 掉 dsh-runtime，兜不到 koffi.node。
 function StopVsSarosRuntimeProcesses(): Boolean;
 var
 	ScriptPath: String;

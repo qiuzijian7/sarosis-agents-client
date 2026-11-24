@@ -60,6 +60,13 @@ suite('升级安装不许被 detached dsh Host 锁住原生模块', () => {
 		assert.ok(call > prepare, 'PrepareToInstall 必须调用运行时进程清理');
 		assert.ok(gate < 0 || call < gate, '后台自动更新也要清理，不能只在非后台分支执行');
 		assert.match(files, /Source:\s*"\*".*restartreplace/, 'restartreplace 兜底不能丢');
+
+		// ★ 2026-11-24（真机 DeleteFile 错误代码 5）：koffi.node 走的是 dsh-runtime 独立行，
+		//   主行的 restartreplace 因 Excludes 兜不到它 ⇒ 必须单独给 *.node 一条带 restartreplace 的行。
+		assert.match(iss, /Source:\s*"resources\\app\\dsh-runtime\\\*\.node"[^\r\n]*restartreplace/,
+			'*.node 必须单独带 restartreplace（被 detached Host 占用时的唯一兜底）');
+		assert.match(iss, /Source:\s*"resources\\app\\dsh-runtime\\\*"[^\r\n]*Excludes:\s*"\*\.node"/,
+			'批量行必须排除 *.node，否则同一文件被两条行重复安装');
 	});
 
 	test('后台更新只清理 dsh Host，保留主客户端以显示重启提示', () => {

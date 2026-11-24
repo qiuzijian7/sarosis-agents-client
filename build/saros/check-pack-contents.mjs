@@ -429,10 +429,19 @@ if (APP_SUB === WIN_APP_SUB) {
 if (APP_SUB === WIN_APP_SUB) {
 	const iss = readFileSync(join(ROOT, 'build/win32/code.iss'), 'utf8');
 	const sourceLines = iss.split(/\r?\n/).filter(line => /^\s*Source:\s*"/.test(line));
-	const runtimeCopy = sourceLines.find(line => line.includes('resources\\app\\dsh-runtime\\*'));
+	// ★ 2026-11-24：dsh-runtime 拆成两行 —— *.node 单独带 restartreplace（koffi.node 被占用时兜底），
+	//   批量行（含超长 profile-seed）不带。判据要精确匹配批量行，别被 *.node 行抢到。
+	const nodeCopy = sourceLines.find(line => /Source:\s*"resources\\app\\dsh-runtime\\\*\.node"/.test(line));
+	const runtimeCopy = sourceLines.find(line => /Source:\s*"resources\\app\\dsh-runtime\\\*"/.test(line));
 	const mainCopy = sourceLines.find(line => line.includes('Source: "*"'));
 	if (!runtimeCopy || runtimeCopy.includes('restartreplace')) {
-		problems.push('code.iss：dsh-runtime 必须单独复制且不带 restartreplace（否则长路径升级会报 MoveFile 错误 3）');
+		problems.push('code.iss：dsh-runtime 批量行必须单独复制且不带 restartreplace（否则长路径升级会报 MoveFile 错误 3）');
+	}
+	if (!runtimeCopy || !runtimeCopy.includes('Excludes: "*.node"')) {
+		problems.push('code.iss：dsh-runtime 批量行必须 Excludes *.node（否则 *.node 会被两条行重复安装）');
+	}
+	if (!nodeCopy || !nodeCopy.includes('restartreplace')) {
+		problems.push('code.iss：*.node 必须单独带 restartreplace（否则被占用时 DeleteFile 错误代码 5 会中断安装）');
 	}
 	if (!mainCopy || !mainCopy.includes('\\resources\\app\\dsh-runtime,\\resources\\app\\dsh-runtime\\**')) {
 		problems.push('code.iss：主 [Files] 行必须排除 resources\\app\\dsh-runtime 与它的子树');

@@ -32,6 +32,15 @@ function Get-VsSarosRuntimeProcesses {
 	$names = @('node.exe', 'VsSaros.exe', 'VsSarosis.exe')
 	$all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
 		Where-Object { $names -contains $_.Name })
+	if ($all.Count -eq 0) {
+		# ★ 2026-11-24：CIM 被禁用 / 权限不足时上面会**静默**返回空 ⇒ 一个占用者都杀不到
+		#   ⇒ 直接撞 DeleteFile 错误代码 5。换 WMI provider 再试，并把失败如实写进日志。
+		$all = @(Get-WmiObject Win32_Process -ErrorAction SilentlyContinue |
+			Where-Object { $names -contains $_.Name })
+	}
+	if ($all.Count -eq 0) {
+		Write-Output 'warn: 进程枚举不可用（CIM/WMI 都拿不到），只能依赖 *.node 行的 restartreplace 兜底'
+	}
 	foreach ($p in $all) {
 		$cmd = [string]$p.CommandLine
 		$path = [string]$p.ExecutablePath
@@ -45,6 +54,7 @@ function Get-VsSarosRuntimeProcesses {
 		$isApp = ($p.Name -eq 'VsSaros.exe') -or ($p.Name -eq 'VsSarosis.exe')
 		$isHost = $p.Name -eq 'node.exe' -and (
 			$cmd -match '\\resources\\app\\dsh-runtime\\' -or
+			$path -match '\\resources\\app\\dsh-runtime\\' -or
 			$cmd -match '\\\.vssaros\\dsh-(home|run|runtime)\\' -or
 			$path -match '\\\.vssaros\\dsh-runtime\\node\\node\.exe$'
 		)
