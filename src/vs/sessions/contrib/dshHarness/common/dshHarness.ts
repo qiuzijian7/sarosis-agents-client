@@ -1295,6 +1295,17 @@ export const enum DshHarnessChannelCommand {
 	 */
 	DesktopMenuAction = 'desktopMenuAction',
 	/**
+	 * **desktop-only 壳（B 方案）caption 菜单的宿主命令**（2026-11-24）。
+	 *
+	 * A 方案的 aux 窗口由 IDE 渲染进程里的 `DshFullWindowContribution._runDesktopMenuCommand`
+	 * 直接调 `IDshHarnessService` / `INativeHostService`；B 方案**不创建 IDE 主窗口**，没有那套服务，
+	 * 重启 / 全屏 / 关于 / 退出等动作只能落在主进程 ⇒ 单独一条通道命令。
+	 *
+	 * 入参 `{ windowId, command }`；`command` 必须过 `isDshDesktopMenuCommand` 白名单
+	 * （与 `DesktopMenuAction` 同安全口径），主进程按封闭集分发，不接受任意命令名。
+	 */
+	DesktopMenuCommand = 'desktopMenuCommand',
+	/**
 	 * **P1（方案 B：一套 git 源，以 dsh 侧为准）**：向 dsh Host 的 `/x/worktree/api/snapshot` 拉一份
 	 * revision 化的 worktree 只读快照。renderer 定时轮询，revision 变化才重推给页面。
 	 * 入参 `{ root }`（IDE 仓库根，绝对路径）；返回 {@link IDshWorktreeHostSnapshot} 或 undefined。
@@ -1312,6 +1323,17 @@ export const enum DshHarnessChannelCommand {
 	 */
 	OpenIdeWindow = 'openIdeWindow',
 }
+
+/**
+ * **desktop-only 壳自绘 caption 的最小高度**（CSS/DIP px，2026-11-24）。
+ *
+ * 真机截图里「最小化按钮左侧有个台阶」：Electron 的 WCO 窗控带（右侧 138px）由原生层按
+ * Windows 标准 caption 高度绘制（32DIP + 1px 窗框 = 33），而壳的 DOM 标题条原来硬编码 29px
+ * ⇒ 原生带比 DOM 低约 4px，白色 `WebContentsView` 从 29px 起就把那段差露了出来。
+ * ⇒ 主进程用它设 `titleBarOverlay.height`，壳页面又以 WCO 的 `getTitlebarAreaRect()` 为运行时真源、
+ *   本常量为下限（DOM 标题条 ≥ 原生窗控带 ⇒ 两者同色连成一条，台阶消失）。
+ */
+export const DSH_DESKTOP_CAPTION_H = 33;
 
 /** dsh Host 侧 `@vssaros/dsh-worktree` 返回的只读快照（IDE 侧只把它当镜像，不在这层执行 git）。 */
 export interface IDshWorktreeHostSnapshot {

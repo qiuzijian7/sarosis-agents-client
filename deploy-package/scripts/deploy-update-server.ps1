@@ -2,7 +2,7 @@
 # 在目标服务器上部署 VsSarosis 更新服务器
 
 param(
-    [string]$ServerIP = "zijianqiu-any1.devcloud.woa.com",
+    [string]$ServerIP = "21.139.192.124",
     [string]$DeployPath = "C:\vssaros-update",
     [int]$Port = 3030
 )
@@ -37,6 +37,32 @@ if (Test-Path -LiteralPath $componentsSource) {
     Write-Host "[OK] 已同步可选组件包到 $componentsDest" -ForegroundColor Green
 } else {
     Write-Host "[WARN] 未找到 $componentsSource；服务器沿用现有组件包" -ForegroundColor Yellow
+}
+
+# 2.6 dsh 插件补丁包（插件级升级 P0）：同步到 DOWNLOADS_DIR/plugins，服务端 /api/dsh-plugins 读取。
+# 由 node build/saros/package-dsh-plugins.mjs 生成。私钥/公钥绝不复制到公开下载目录
+# （/downloads/** 是匿名可读的静态路由）。
+$pluginsSource = Join-Path (Split-Path (Split-Path $PSScriptRoot)) 'build\saros\update-server\downloads\plugins'
+if (Test-Path -LiteralPath $pluginsSource) {
+    $downloadsDest = Join-Path $DeployPath 'downloads'
+    $pluginsDest = Join-Path $downloadsDest 'plugins'
+    New-Item -ItemType Directory -Force -Path $pluginsDest | Out-Null
+    $copied = 0
+    foreach ($f in Get-ChildItem -LiteralPath $pluginsSource -File) {
+        if ($f.Extension -eq '.pem' -or $f.Name -eq 'plugin-signing-key.pem') {
+            Write-Host "[WARN] 跳过密钥文件（不得公开）：$($f.Name)" -ForegroundColor Yellow
+            continue
+        }
+        Copy-Item -LiteralPath $f.FullName -Destination $pluginsDest -Force
+        $copied++
+    }
+    if (Test-Path -LiteralPath (Join-Path $pluginsSource 'plugins-manifest.json')) {
+        Write-Host "[OK] 已同步 $copied 个插件补丁文件到 $pluginsDest" -ForegroundColor Green
+    } else {
+        Write-Host "[WARN] 缺 plugins-manifest.json；/api/dsh-plugins 会返回 404" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[WARN] 未找到 $pluginsSource；服务器沿用现有插件补丁包" -ForegroundColor Yellow
 }
 
 # 3. 创建 package.json (如果需要)

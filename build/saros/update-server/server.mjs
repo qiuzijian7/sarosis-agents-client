@@ -65,6 +65,11 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
 const MAX_UPLOAD_SIZE = Number(process.env.MAX_UPLOAD_SIZE) || 2 * 1024 * 1024 * 1024;
 // 可选组件清单（媒体 / Office / Whisper）；由 build/saros/package-components.mjs 生成
 const COMPONENTS_MANIFEST_PATH = process.env.COMPONENTS_MANIFEST_PATH || path.join(DOWNLOADS_DIR, 'components', 'manifest.json');
+// dsh 插件补丁清单；由 build/saros/package-dsh-plugins.mjs 生成。
+// 与 /api/components 刻意分开：那边是二进制资源（zip 解压到 userData），这边是可执行插件包
+// （带版本清单 + 签名 + 兼容门槛，客户端 dshPluginPatchManager 消费），幂等与校验语义都不同。
+// tgz 落在 DOWNLOADS_DIR/plugins/，由已有的 /downloads/** 静态路由（含 Range 与穿越防护）提供。
+const PLUGINS_MANIFEST_PATH = process.env.PLUGINS_MANIFEST_PATH || path.join(DOWNLOADS_DIR, 'plugins', 'plugins-manifest.json');
 
 // ---- 历史版本归档（供官网「历史版本下载」）----------------------------------
 // 归档形状：DOWNLOADS_DIR/archive/<版本标识>/<安装包文件名>
@@ -590,7 +595,28 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
-	// 静态下载 /downloads/**
+	// dsh 插件补丁清单：客户端启动期的插件补丁管理器读取。
+	// 兼容门槛（requires.minClient / requires.bundled）由客户端校验，服务端只忠实返回清单；
+	// 旧客户端不请求此端点，新客户端遇到 404（旧服务器）静默跳过。
+	if (url.pathname === '/api/dsh-plugins' || url.pathname === '/api/dsh-plugins/plugins-manifest.json') {
+		if (req.method !== 'GET' && req.method !== 'HEAD') {
+			res.writeHead(405, { Allow: 'GET, HEAD, OPTIONS' }); res.end(); return;
+		}
+		res.setHeader('Cache-Control', 'no-store');
+		try {
+			const body = fs.readFileSync(PLUGINS_MANIFEST_PATH);
+			console.log(`[plugins] manifest requested client=${url.searchParams.get('client') ?? '-'} bundled=${url.searchParams.get('bundled') ?? '-'}`);
+			res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+			if (req.method === 'HEAD') { res.end(); } else { res.end(body); }
+		} catch (e) {
+			console.error('[plugins] 清单读取失败:', e);
+			res.writeHead(404, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'dsh plugins manifest not found', path: PLUGINS_MANIFEST_PATH }));
+		}
+		return;
+	}
+
+	// 静态下载 /downloads/**（含 /downloads/plugins/*.tgz）
 	if (url.pathname.startsWith('/downloads/')) {
 		serveDownload(req, res, url.pathname);
 		return;

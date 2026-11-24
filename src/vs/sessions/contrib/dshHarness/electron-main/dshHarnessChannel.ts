@@ -14,6 +14,7 @@
  */
 
 import { app, BaseWindow, dialog, nativeTheme, net, type BrowserWindow } from 'electron';
+import product from '../../../../platform/product/common/product.js';
 import { existsSync, promises as fsp, readFileSync } from 'fs';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -36,6 +37,8 @@ import { localPluginDir, toFileSpec } from '../common/dshCli.js';
 import { downloadAndVerify, removeDownloaded } from './dshMarketplaceInstaller.js';
 // ★ 2026-11-09 单版本模型：`dshCompat.js` 的版本发现/当前版本解析/安装目标选择整套下线。
 import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, IDshBootstrapArgs, IDshBundledPluginRow, IDshCreateViewArgs, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshViewBounds, sameStartOptions, surfaceTakesRoute } from '../common/dshHarness.js';
+import { isDshDesktopMenuCommand } from '../common/dshDesktopMenu.js';
+import { safeModeDisablePlan, validateSafeModeBackup } from '../common/dshSafeMode.js';
 import { colorSchemeForPreference, parseThemePreference } from '../common/dshThemePreference.js';
 import { IdeRequestClaims } from '../common/dshIdeClaims.js';
 import { IIdeTargetPick, pickIdeTargetWindow } from '../common/dshIdeTargeting.js';
@@ -48,6 +51,9 @@ import { ideWindowGuardAction, validateSetIdeWindowHiddenArgs } from '../common/
 // ★ 2026-10-24（用户口径：app 开关三条规则）—— 关窗收场的判据只在这一处，主进程两个关窗路径都调它
 import { decideDesktopWindowClose, decideIdeWindowClose } from '../common/dshAppLifecycle.js';
 import { listBundledPlugins, mergeBundledWithInstalled } from './dshBundledPlugins.js';
+// 插件级升级（P1/P2）：启动期应用 dsh 插件补丁，并用版本覆盖防止随包旧版本把补丁降级重装。
+import { DshPluginPatchManager } from './dshPluginPatchManager.js';
+import { effectivePackages, overriddenDirNames, readOverrides, startupPackages, type IDshPluginOverride } from './dshPluginOverrides.js';
 
 /**
  * 请求退出之后，等多久没走完就**强退**（2026-10-27）。
@@ -101,6 +107,12 @@ export interface IDshHarnessChannelOptions {
 	 * 「点关闭按钮 ⇒ 应用不退」正是因为那条路径只会干等一个永不发生的 `closed`。
 	 */
 	readonly requestQuit?: (willRestart: boolean) => Promise<boolean>;
+	/**
+	 * 「检查更新」（2026-11-24）：desktop-only 壳不加载 workbench ⇒ caption 菜单没有
+	 * `IDshHarnessService.getUpgradeState`，只能让主进程代为触发应用更新检查。
+	 * 由 `app.ts` 注入 `IUpdateService.checkForUpdates(true)`；未注入时该菜单项静默跳过。
+	 */
+	readonly checkForUpdates?: () => Promise<void>;
 }
 
 // ★ 2026-11-09：`readBridgeInfo()`（读伴生插件 peer 范围做「运行时升级预检」）随版本发现下线。
@@ -111,6 +123,10 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private readonly _supervisor: DshHostSupervisor;
 	private readonly _views: DshViewHost;
 	private readonly _components: DshComponentManager;
+	private readonly _pluginPatches: DshPluginPatchManager;
+	/** 已应用的插件补丁（版本覆盖真源）；构造时读一次，启动清单与界面清单都用它。 */
+	private readonly _pluginOverrides: readonly IDshPluginOverride[];
+	private _pluginPatchStarted = false;
 	private readonly _pluginActivation: DshPluginActivationStore;
 	private readonly _fetch: FetchLike;
 	private readonly _onDidChangeStatus = this._register(new Emitter<IDshHostStatus>());
@@ -175,6 +191,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private _appQuitting = false;
 	/** 注入的"请求应用退出"（`ILifecycleMainService.quit`；见 `IDshHarnessChannelOptions.requestQuit`）。 */
 	private readonly _requestQuit: ((willRestart: boolean) => Promise<boolean>) | undefined;
+	/** desktop-only caption 菜单的「检查更新」（见 `IDshHarnessChannelOptions.checkForUpdates`）。 */
+	private readonly _checkForUpdates: (() => Promise<void>) | undefined;
 	/** 「最后一个界面 ⇒ 退出」这件事**只武装一次**（见 `_requestAppQuit`）。 */
 	private _quitRequested = false;
 	/** 强退兜底定时器（退出流程没往下走时的最后手段）。 */
@@ -209,6 +227,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		super();
 		this._windowsMainService = windowsMainService;
 		this._requestQuit = options.requestQuit;
+		this._checkForUpdates = options.checkForUpdates;
 		// 真退出时放行 IDE 主窗口的 close（否则"只隐藏"会把退出流程卡死 ✗）。
 		// `before-quit` 在关闭窗口之前触发 ⇒ 这里置位就够；用 `on`（不是 `once`）因为 quit 可能被取消后重来。
 		app.on('before-quit', () => { this._appQuitting = true; });
@@ -216,6 +235,11 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		app.on('will-quit', () => { this._cancelForceQuit(); });
 		const log = (line: string) => this._logService.info(`[dshHarness] ${line}`);
 		this._fetch = options.fetch ?? ((url: string) => net.fetch(url));
+		// 插件补丁覆盖表：读不动/不存在 ⇒ 空数组，老客户端行为完全不变。
+		this._pluginOverrides = readOverrides(options.userDataPath);
+		if (this._pluginOverrides.length) {
+			log(`plugin patch overrides: ${this._pluginOverrides.map(o => `${o.name}@${o.version}`).join(', ')}`);
+		}
 		// bundled 版本 pin：与**打包侧 / strip 自愈 / verify-staging 同源**（dsh-compat.json 的 bundled）。
 		// ★ 2026-11-09 单版本模型：它是运行期**唯一**的版本来源，构建期由 check-dsh-release.mjs 校验。
 		const bundledPin = (() => {
@@ -304,7 +328,15 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		// `vssaros.module` 清单（`listBundledPlugins`，与插件中心「随包」段、容器聚合表同一真源）
 		// ⇒ 将来新增模块只需把包放进 `dsh-plugins/`，不必再改宿主三处（硬编码清单的漂移不报错 ✗）。
 		const bundled = listBundledPlugins(this._bundledPluginsRoot);
-		const modulePluginDirs = bundled.packages.map(p => [p.name, p.dir] as const);
+		// 插件补丁（P2）：已被补丁覆盖的包**不能**进启动清单。`_ensurePlugin` 在
+		// `installed !== bundled` 时会按随包目录的旧版本重装（dshHostSupervisor.ts:3133-3163），
+		// 那会把刚装进 profile 的新版本冲掉。传 `dir: undefined` 走同函数 `:3120-3126` 的
+		// 「随包没这个包 ⇒ 保留已装版本」分支，正是我们要的语义。
+		const patchedNames = new Set(this._pluginOverrides.map(o => o.name));
+		const patchedDirs = overriddenDirNames(this._pluginOverrides);
+		const bundledDir = (dirName: string, dir: string): string | undefined =>
+			patchedDirs.has(dirName) ? undefined : (existsSync(join(dir, 'package.json')) ? dir : undefined);
+		const modulePluginDirs = startupPackages(bundled.packages, this._pluginOverrides).map(p => [p.name, p.dir] as const);
 		log(`bundled module plugins: ${modulePluginDirs.map(([n]) => n).join(', ') || '(none)'}`);
 		// 「非模块插件」是 bridge / chat-surface 被跳过的正常情况，不刷日志；其余（坏 package.json 等）留痕。
 		for (const problem of bundled.problems.filter(p => !p.includes('非模块插件'))) {
@@ -313,30 +345,31 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		this._supervisor = this._register(new DshHostSupervisor({
 			runtime: this._runtime,
 			runDir: join(options.userDataPath, 'dsh-run'),
-			bridgePluginDir: existsSync(join(bundledBridge, 'package.json')) ? bundledBridge : undefined,
-			foundationPluginDir: existsSync(join(bundledFoundation, 'package.json')) ? bundledFoundation : undefined,
-			pluginResourcesPluginDir: existsSync(join(bundledPluginResources, 'package.json')) ? bundledPluginResources : undefined,
-			workbenchesPluginDir: existsSync(join(bundledWorkbenches, 'package.json')) ? bundledWorkbenches : undefined,
-			chatSurfacePluginDir: existsSync(join(bundledChatSurface, 'package.json')) ? bundledChatSurface : undefined,
-			kbRefsPluginDir: existsSync(join(bundledKbRefs, 'package.json')) ? bundledKbRefs : undefined,
-			browserPluginDir: existsSync(join(bundledBrowser, 'package.json')) ? bundledBrowser : undefined,
+			// 全部经 `bundledDir()`：被插件补丁覆盖的目录返回 undefined，避免 `_ensurePlugin` 降级重装。
+			bridgePluginDir: bundledDir('vssaros-bridge', bundledBridge),
+			foundationPluginDir: bundledDir('vssaros-foundation', bundledFoundation),
+			pluginResourcesPluginDir: bundledDir('vssaros-plugin-resources', bundledPluginResources),
+			workbenchesPluginDir: bundledDir('vssaros-workbenches', bundledWorkbenches),
+			chatSurfacePluginDir: bundledDir('vssaros-chat-surface', bundledChatSurface),
+			kbRefsPluginDir: bundledDir('vssaros-kb-refs', bundledKbRefs),
+			browserPluginDir: bundledDir('vssaros-browser', bundledBrowser),
 			// Office 模板（用户自带 docx）：纯 host 工具插件 ⇒ 必须显式给目录（模块自发现看不到它）。
 			// 目录不存在（旧构建 / 干净检出）⇒ 不装；overlay 里那行也会因为 `office` 配置缺席而不渲染，
 			// 两侧都不会出现"插入了不存在的包"这种启动失败。
-			officeTemplatePluginDir: existsSync(join(this._bundledPluginsRoot, 'vssaros-office-template', 'package.json'))
-				? join(this._bundledPluginsRoot, 'vssaros-office-template') : undefined,
-			unrealPluginDir: existsSync(join(bundledUnreal, 'package.json')) ? bundledUnreal : undefined,
-			archifyPluginDir: existsSync(join(bundledArchify, 'package.json')) ? bundledArchify : undefined,
-			egoBrowserPluginDir: existsSync(join(bundledEgoBrowser, 'package.json')) ? bundledEgoBrowser : undefined,
-			visionRouterPluginDir: existsSync(join(bundledVisionRouter, 'package.json')) ? bundledVisionRouter : undefined,
-			betterSidebarPluginDir: existsSync(join(bundledBetterSidebar, 'package.json')) ? bundledBetterSidebar : undefined,
-			deepPtcModePluginDir: existsSync(join(bundledDeepPtcMode, 'package.json')) ? bundledDeepPtcMode : undefined,
-			workItemPluginDir: existsSync(join(bundledWorkItem, 'package.json')) ? bundledWorkItem : undefined,
-			loopPluginDir: existsSync(join(bundledLoop, 'package.json')) ? bundledLoop : undefined,
+			officeTemplatePluginDir: bundledDir('vssaros-office-template', join(this._bundledPluginsRoot, 'vssaros-office-template')),
+			unrealPluginDir: bundledDir('vssaros-unreal', bundledUnreal),
+			archifyPluginDir: bundledDir('vssaros-archify', bundledArchify),
+			egoBrowserPluginDir: bundledDir('dsh-ego-browser', bundledEgoBrowser),
+			visionRouterPluginDir: bundledDir('dsh-vision-router', bundledVisionRouter),
+			betterSidebarPluginDir: bundledDir('dsh-better-sidebar', bundledBetterSidebar),
+			deepPtcModePluginDir: bundledDir('dsh-deep-ptc-mode', bundledDeepPtcMode),
+			workItemPluginDir: bundledDir('vssaros-workitem', bundledWorkItem),
+			loopPluginDir: bundledDir('vssaros-loop', bundledLoop),
 			modulePluginDirs,
 			// 静态真源对账（2026-10-28）：扫目录丢掉的模块要让 supervisor **点名报错**，
 			// 而不是静静地从安装清单里消失（`planned` 的预留位不算缺失）。
-			expectedModulePlugins: DSH_BUILTIN_MODULES.filter(m => m.planned !== true).map(m => m.pluginName),
+			// 被补丁覆盖的模块已从启动清单摘掉 ⇒ 静态真源对账同步排除，否则 supervisor 会误报「缺模块插件」。
+		expectedModulePlugins: DSH_BUILTIN_MODULES.filter(m => m.planned !== true && !patchedNames.has(m.pluginName)).map(m => m.pluginName),
 			// ★★ 2026-10-28（最终形态：**userData 按形态分开**，DSH_HOME 统一规则）。
 			//
 			// 演进过程（三个方案都试过，别改回去）：
@@ -398,11 +431,32 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			return { handled: false };
 		});
 		void this._components.startAutoInstall();
+		// 插件补丁（P1）：与 update feed 的整包 EXE 升级并行、互不干扰的独立通道。
+		// 公钥由部署注入（VSSAROS_DSH_PLUGIN_PATCH_PUBLIC_KEY）或构建期内置；未签名清单仅内网开发开关放行。
+		this._pluginPatches = new DshPluginPatchManager({
+			userDataPath: options.userDataPath,
+			updateUrl: options.updateUrl ?? '',
+			bundledPluginsRoot: this._bundledPluginsRoot,
+			clientVersion: app.getVersion(),
+			bundledPin,
+			platform: `${process.platform}-${process.arch}`,
+			fetch: this._fetch,
+			log,
+			install: (name, spec) => this._supervisor.installPluginSpec(spec, name),
+			publicKeyPem: process.env.VSSAROS_DSH_PLUGIN_PATCH_PUBLIC_KEY,
+			allowUnsigned: process.env.VSSAROS_ALLOW_UNSIGNED_PLUGIN_PATCH === '1',
+		});
 		this._workspaces = this._register(new DshWorkspaceSync(log));
 		this._register(windowsMainService.onDidDestroyWindow(w => this._workspaces.removeWindow(w.id)));
 		this._register(this._supervisor.onDidChangeStatus(status => {
 			void this._applyConnection();
 			this._onDidChangeStatus.fire(status);
+			// 等 Host 首次 running 再应用补丁：`installPluginSpec` 依赖 profile 已初始化，
+			// 且此时不会与启动阶段的伴生插件安装互相踩依赖树。
+			if (!this._pluginPatchStarted && status.state === 'running') {
+				this._pluginPatchStarted = true;
+				void this._pluginPatches.start();
+			}
 		}));
 		// ★ 2026-10-20：mux 路由可用 ⇒ 让页面跳过 dsh 连接剩余的退避（见 DshViewHost.notifyMuxReady）。
 		this._register(this._supervisor.onMuxReady(e => this._views.notifyMuxReady(e.afterReadyMs)));
@@ -1198,6 +1252,47 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		});
 	}
 
+	/**
+	 * 「以安全模式重启 / 恢复插件并重启」在 desktop-only 壳里的落地（2026-11-24）。
+	 *
+	 * A 方案由 IDE 渲染进程的 `DshHarnessService` 把停用清单记进 IStorageService；B 方案没有
+	 * IDE 窗口 ⇒ 备份落在主进程 `<userData>/dsh-run/desktop-safe-mode.json`，读回时同样过
+	 * `validateSafeModeBackup` 白名单。两条路径不会同时活跃，不会互相覆盖。
+	 */
+	private async _applyDesktopSafeMode(restore: boolean): Promise<void> {
+		const file = join(this._userDataPath, 'dsh-run', 'desktop-safe-mode.json');
+		const readBackup = async (): Promise<string[]> => {
+			try {
+				return validateSafeModeBackup(JSON.parse(await fsp.readFile(file, 'utf8')));
+			} catch {
+				return [];
+			}
+		};
+		if (restore) {
+			for (const name of await readBackup()) {
+				try {
+					await this._pluginActivation.setEnabled(name, true);
+				} catch (e) {
+					this._logService.warn(`[dshHarness] desktop safe mode: 恢复 ${name} 失败：${String((e as Error)?.message ?? e)}`);
+				}
+			}
+			await fsp.rm(file, { force: true }).catch(() => undefined);
+			return;
+		}
+		const plugins = await this._listPluginsWithActivation().catch(() => [] as IDshPluginInfo[]);
+		const names = safeModeDisablePlan(plugins);
+		const backup = [...new Set([...(await readBackup()), ...names])];
+		for (const name of names) {
+			try {
+				await this._pluginActivation.setEnabled(name, false);
+			} catch (e) {
+				this._logService.warn(`[dshHarness] desktop safe mode: 停用 ${name} 失败：${String((e as Error)?.message ?? e)}`);
+			}
+		}
+		await fsp.mkdir(join(this._userDataPath, 'dsh-run'), { recursive: true }).catch(() => undefined);
+		await fsp.writeFile(file, JSON.stringify(backup)).catch(e => this._logService.warn(`[dshHarness] desktop safe mode: 备份写盘失败：${String((e as Error)?.message ?? e)}`));
+	}
+
 	private _readPluginPackageJson(name: string): unknown {
 		try {
 			return JSON.parse(readFileSync(join(this._supervisor.profileDirectory(), 'node_modules', ...name.split('/'), 'package.json'), 'utf8'));
@@ -1237,7 +1332,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		if (problems.length) {
 			this._logService.info(`[dshHarness] 随包插件目录 ${this._bundledPluginsRoot}：${problems.join('；')}`);
 		}
-		return mergeBundledWithInstalled(packages, await this._listPluginsWithActivation());
+		// 插件补丁（P2）：界面清单用提升后的版本，否则 profile 里的新版本会被判成 downgradable（「改回」）。
+		return mergeBundledWithInstalled(effectivePackages(packages, this._pluginOverrides), await this._listPluginsWithActivation());
 	}
 
 	/**
@@ -2084,6 +2180,53 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				const a = arg as { viewId?: unknown; action?: unknown };
 				if (typeof a?.viewId !== 'string' || !a.viewId) { return undefined; }
 				return this._views.runDesktopMenuAction(a.viewId, a.action);
+			}
+			// ★ 2026-11-24：B 方案 desktop-only 壳 caption 菜单的**宿主命令**。
+			//   A 方案在 IDE 渲染进程里直接调 IDshHarnessService / INativeHostService；
+			//   B 方案不创建 IDE 主窗口，没有那些服务 ⇒ 全部在这里落地（不允许点了没反应）。
+			case DshHarnessChannelCommand.DesktopMenuCommand: {
+				const a = (arg ?? {}) as { windowId?: unknown; command?: unknown };
+				// 信任边界：命令名必须命中封闭集，页面不许自造（与 DesktopMenuAction 同口径）。
+				if (!isDshDesktopMenuCommand(a.command)) {
+					return undefined;
+				}
+				switch (a.command) {
+					case 'restart':
+					case 'restartSafeMode':
+					case 'restorePlugins':
+						if (a.command !== 'restart') {
+							await this._applyDesktopSafeMode(a.command === 'restorePlugins');
+						}
+						// 复用 Bootstrap 的启动选项真源：传空选项会把 keepAlive 降成 false，
+						// 应用退出即杀 Host，下次启动永远冷启动 ✗（见 `_bootstrap` 注释）。
+						return this._supervisor.restart(this._bootstrapStartOptions({}));
+					case 'toggleFullscreen': {
+						const win = getActiveDshDesktopWindow();
+						if (win && !win.isDestroyed()) {
+							win.setFullScreen(!win.isFullScreen());
+						}
+						return undefined;
+					}
+					case 'checkForUpdates':
+						await this._checkForUpdates?.();
+						return undefined;
+					case 'about': {
+						const options = {
+							type: 'info' as const,
+							title: 'VsSaros',
+							message: 'VsSaros',
+							detail: `版本 ${product.version}`,
+							buttons: ['确定'],
+							noLink: true,
+						};
+						const win = getActiveDshDesktopWindow();
+						await (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
+						return undefined;
+					}
+					case 'quit':
+						await this._requestQuit?.(false);
+						return undefined;
+				}
 			}
 			case DshHarnessChannelCommand.PushTheme: {
 				const a = arg as { viewId: string; tokens: unknown; colorScheme?: unknown; backgrounds?: unknown };

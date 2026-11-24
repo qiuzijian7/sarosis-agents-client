@@ -45,10 +45,19 @@ const IS_WIN = process.platform === 'win32';
 /** macOS 架构：优先 SAROS_MAC_ARCH（流水线显式给），否则按当前进程推断。 */
 const MAC_ARCH = process.env.SAROS_MAC_ARCH || (process.arch === 'arm64' ? 'arm64' : 'x64');
 /**
- * curl 可执行名：Windows 是 `curl.exe`，macOS/Linux 是 `curl`。
- * ⚠ 原来写死 `curl.exe` ⇒ macOS 上直接 ENOENT ⇒ 整个发布步骤起不来。
+ * Windows 优先用 System32 的原生 curl，而不是 PATH 里可能排在最前的 Cygwin curl。
+ * 2026-11-23 CI 实测：Cygwin curl 把带 `&` 的 GitLab URL 拆坏（`Couldn't resolve host 'tag_name'`），
+ * 还出现 `bad range` / `%http_cod` 等怪象；原生 curl 没有这类参数兼容问题。
+ * 可用 SAROS_CURL_BIN 显式指定；macOS/Linux 仍用系统 curl。
  */
-const CURL_BIN = IS_WIN ? 'curl.exe' : 'curl';
+function resolveCurlBin() {
+	const override = String(process.env.SAROS_CURL_BIN || '').trim();
+	if (override) { return override; }
+	if (!IS_WIN) { return 'curl'; }
+	const native = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'curl.exe');
+	return fs.existsSync(native) ? native : 'curl.exe';
+}
+const CURL_BIN = resolveCurlBin();
 
 /**
  * 发布资产：Windows 出两个 Inno 安装包；macOS 出 dmg（对外分发）+ zip（**自动更新用**）。
@@ -80,13 +89,27 @@ function git(gitArgs, opts = {}) {
 }
 
 /**
- * HTTP via curl.exe. Returns { status, data }.
+ * 解析「响应体 + 最后一行 HTTP 状态」。不能用 `lastIndexOf('\n')`：没有换行时
+ * 旧实现会把响应最后一个字符也切掉（日志里的 `%http_cod` 就是这么来的）。
+ */
+function parseCurlResponse(out) {
+	const text = String(out ?? '');
+	const match = /(?:^|\r?\n)(\d{3})\s*$/.exec(text);
+	const status = match ? Number(match[1]) : 0;
+	const rawBody = match ? text.slice(0, match.index).replace(/\r?\n$/, '') : text;
+	let data;
+	try { data = JSON.parse(rawBody); } catch { data = rawBody; }
+	return { status, data };
+}
+
+/**
+ * HTTP via curl. Returns { status, data }.
  * Exactly one of json / formFile / uploadFile may be set.
  */
 function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSec = 600, fallbackBearer = false } = {}) {
 	/** 构造 curl 参数（★ 把"参数拼装"抽出来，重试时才能用**不同的头**重建一份）。 */
 	const buildArgs = (hdrs) => {
-		const a = ['-sS', '-X', method,
+		const a = ['-sS', '-X', method, '--globoff',
 			'--connect-timeout', '30', '--max-time', String(timeoutSec),
 			'-H', 'Expect:', '-w', '\n%{http_code}'];
 		for (const [k, v] of Object.entries(hdrs)) { a.push('-H', `${k}: ${v}`); }
@@ -121,15 +144,18 @@ function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSe
 	}
 
 	const run = (args) => {
-		const out = execFileSync(CURL_BIN, args, {
-			encoding: 'utf8', timeout: (timeoutSec + 60) * 1000, maxBuffer: 32 * 1024 * 1024,
-		});
-		const idx = out.lastIndexOf('\n');
-		const status = Number(out.slice(idx + 1).trim()) || 0;
-		const body = out.slice(0, idx);
-		let data;
-		try { data = JSON.parse(body); } catch { data = body; }
-		return { status, data };
+		let out;
+		try {
+			out = execFileSync(CURL_BIN, args, {
+				encoding: 'utf8', timeout: (timeoutSec + 60) * 1000, maxBuffer: 32 * 1024 * 1024,
+			});
+		} catch (e) {
+			const detail = [e?.stderr, e?.stdout, e?.message]
+				.map(value => typeof value === 'string' ? value.trim() : '')
+				.filter(Boolean).join('\n');
+			throw new Error(`curl ${method} ${url} failed: ${detail}`);
+		}
+		return parseCurlResponse(out);
 	};
 
 	try {
@@ -243,15 +269,42 @@ function gitlabToken() {
 	if (process.env.WOA_GITLAB_TOKEN && process.env.WOA_GITLAB_TOKEN.trim()) {
 		return process.env.WOA_GITLAB_TOKEN.trim();
 	}
-	try {
-		const out = execFileSync('git', ['credential', 'fill'], {
-			input: `protocol=https\nhost=git.woa.com\npath=${GITLAB_PROJECT_PATH}.git\n`,
-			encoding: 'utf8', timeout: 15000,
-		});
-		const m = /^password=(.+)$/m.exec(out);
-		if (m) { return m[1].trim(); }
-	} catch { /* fall through */ }
+	// 本机兜底要同时尝试发布仓与代码仓：凭据可能只登记了其中一个 path。
+	for (const repoPath of [GITLAB_PROJECT_PATH, GITLAB_MAIN_PROJECT_PATH, '']) {
+		try {
+			const out = execFileSync('git', ['credential', 'fill'], {
+				input: `protocol=https\nhost=git.woa.com\n${repoPath ? `path=${repoPath}.git\n` : ''}`,
+				encoding: 'utf8', timeout: 15000,
+			});
+			const m = /^password=(.+)$/m.exec(out);
+			if (m && m[1].trim()) { return m[1].trim(); }
+		} catch { /* 尝试下一个凭据作用域 */ }
+	}
 	return null;
+}
+
+/** 在任何 tag / Release 写入前验证 token 与两个项目的权限，避免“先推 tag、后发现不能发布”。 */
+function gitlabPreflight() {
+	const token = gitlabToken();
+	if (!token) {
+		throw new Error('缺少 git.woa.com token：请在 CI 变量配置 WOA_GITLAB_TOKEN（有效 PAT，PRIVATE-TOKEN 头）');
+	}
+	const headers = { 'PRIVATE-TOKEN': token };
+	for (const [projectId, projectPath] of [
+		[GITLAB_PROJECT, GITLAB_PROJECT_PATH],
+		[GITLAB_MAIN_PROJECT, GITLAB_MAIN_PROJECT_PATH],
+	]) {
+		const r = curl('GET', `${GITLAB_API}/projects/${projectId}`, { headers, fallbackBearer: true, timeoutSec: 60 });
+		if (r.status === 200) { continue; }
+		if (r.status === 401) {
+			throw new Error(`git.woa.com 认证失败（HTTP 401）：WOA_GITLAB_TOKEN 无效、过期或不是可用 PAT；请更新凭据后重跑 Release 步骤`);
+		}
+		if (r.status === 403 || r.status === 404) {
+			throw new Error(`git.woa.com 无权访问 ${projectPath}（HTTP ${r.status}）：请给该 token 开项目 Reporter 以上权限（创建 tag/Release 需 Developer）`);
+		}
+		throw new Error(`git.woa.com 项目预检失败 ${projectPath} -> HTTP ${r.status}: ${brief(r.data)}`);
+	}
+	log('git.woa.com 认证与两个项目的权限预检通过');
 }
 
 // ---------- version / changelog ----------
@@ -401,8 +454,8 @@ async function gitlabCreateRelease(tag, changelog, dryRun, archivedDownloads = [
 		'|------|------|------|',
 		dlRows || '| Windows x64 | - | 见下方 GitHub 镜像 |',
 		'',
-		`GitHub 镜像：[releases/tag/${tag}](https://github.com/${GITHUB_REPO}/releases/tag/${tag})`,
-		'',
+		// 没启用 GitHub 发布就不要留一个必然 404 的镜像链接。
+		...(process.env.GITHUB_TOKEN?.trim() ? [`GitHub 镜像：[releases/tag/${tag}](https://github.com/${GITHUB_REPO}/releases/tag/${tag})`, ''] : []),
 		'### 校验信息',
 		'```',
 		sha,
@@ -553,11 +606,12 @@ async function githubCreateRelease(tag, changelog, dryRun) {
 }
 
 // ---------- main ----------
-(async () => {
+async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	const version = resolveVersion(args);
 	const tag = `v${version}`;
 	log(`version=${version} tag=${tag}${args.dryRun ? ' (dry-run)' : ''}`);
+	log(`curl=${CURL_BIN}`);
 	let archivedDownloads = [];
 	if (IS_WIN && !args.dryRun) {
 		assertReleaseVersion(version, JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'product.json'), 'utf8')).version);
@@ -574,6 +628,7 @@ async function githubCreateRelease(tag, changelog, dryRun) {
 		git(['fetch', '--tags', 'origin']);
 	} catch { warn('git fetch --tags failed, changelog range may be inaccurate'); }
 	const changelog = buildChangelog(tag);
+	if (!args.dryRun) { gitlabPreflight(); }
 	ensureGitTag(tag, args.dryRun);
 
 	try {
@@ -589,4 +644,11 @@ async function githubCreateRelease(tag, changelog, dryRun) {
 		warn(`GitHub: ${e.message}`);
 	}
 	log('done');
-})().catch((e) => { console.error(e); process.exit(1); });
+}
+
+if (require.main === module) {
+	main().catch((e) => { console.error(e); process.exit(1); });
+}
+
+// 仅供回归测试复用；直接 `node create-release.cjs` 时仍只执行 main。
+module.exports = { curl, gitlabPreflight, gitlabToken, parseCurlResponse, resolveCurlBin };

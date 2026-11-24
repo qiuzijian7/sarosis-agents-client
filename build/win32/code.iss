@@ -111,6 +111,9 @@ Name: "runcode"; Description: "{cm:RunAfter,{#NameShort}}"; GroupDescription: "{
 Name: "{app}"; AfterInstall: DisableAppDirInheritance
 
 [Files]
+; 2026-11-24：升级前先结束 detached dsh Host，否则它加载的 *.node 会让 DeleteFile 报错误代码 5。
+; 该脚本只编译进安装包，由 PrepareToInstall 提取到 {tmp}，不会安装到目标目录。
+Source: "{#RepoDir}\build\saros\stop-vssaros-runtime.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 ; 2026-11-23：dsh-runtime 的 profile-seed/.pnpm 接近 Win32 MAX_PATH；主行的 restartreplace
 ; 在升级时会先给旧文件加 old_* 临时名 ⇒ 目标路径超过 260 后 MoveFile 报错误代码 3。
 ; 单独复制 dsh-runtime，且不带 restartreplace；其余文件继续保留原有升级语义。
@@ -1442,6 +1445,39 @@ var
 	AppWasRunning: Boolean;
 #endif
 
+// 文件替换前结束 detached dsh Host；后台更新额外保留主客户端，以便安装完弹「重启」提示。
+// 后台自动更新带 /nocloseapplications，CloseApplications=force 与 AppMutex 都会被绕过，
+// 而 dsh-runtime 的原生模块又没有 restartreplace ⇒ 必须在这里主动清一次。
+// 失败不阻断安装：主 Files 行的 restartreplace 仍是兜底。
+function StopVsSarosRuntimeProcesses(): Boolean;
+var
+	ScriptPath: String;
+	Params: String;
+	ResultCode: Integer;
+begin
+	Result := True;
+	try
+		ExtractTemporaryFile('stop-vssaros-runtime.ps1');
+		ScriptPath := ExpandConstant('{tmp}\stop-vssaros-runtime.ps1');
+		Params := '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + AddQuotes(ScriptPath);
+		// 后台更新必须保留主客户端进程：安装完还要由它显示「重启」提示。
+		// 只让脚本结束 detached dsh Host / node 子进程；主程序交给用户点击重启时退出。
+		if IsBackgroundUpdate() then
+		begin
+			Params := Params + ' -BackgroundUpdate';
+		end;
+		if ShellExec('', 'powershell.exe', Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+		begin
+			if ResultCode <> 0 then
+				Log('StopVsSarosRuntimeProcesses: powershell exited with code ' + IntToStr(ResultCode) + '; restartreplace remains the fallback');
+		end
+		else
+			Log('StopVsSarosRuntimeProcesses: failed to start PowerShell; restartreplace remains the fallback');
+	except
+		Log('StopVsSarosRuntimeProcesses: ' + GetExceptionMessage);
+	end;
+end;
+
 function StopTunnelOtherProcesses(): Boolean;
 var
 	WaitCounter: Integer;
@@ -1498,6 +1534,10 @@ end;
 // called before the wizard checks for running application
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  // 文件替换前清理占用者：后台更新只结束 detached dsh Host，手动安装才结束残留主程序。
+  // 后台更新保留主客户端，否则安装完无法由客户端弹出「重启」提示。
+  StopVsSarosRuntimeProcesses();
+
   if IsNotBackgroundUpdate() then
     StopTunnelServiceIfNeeded();
 

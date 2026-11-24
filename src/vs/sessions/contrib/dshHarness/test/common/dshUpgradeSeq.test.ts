@@ -52,7 +52,7 @@ suite('dshHarness / 升级快照 seq 与 job 的信任边界', () => {
 		assert.strictEqual(s?.job?.id, 3);
 		assert.strictEqual(s?.job?.failed, 1);
 		assert.strictEqual(s?.job?.items[0].error, 'profile 锁被占用');
-		assert.strictEqual((s?.job as Record<string, unknown> | undefined)?.injected, undefined);
+		assert.strictEqual((s?.job as unknown as Record<string, unknown> | undefined)?.injected, undefined);
 	});
 
 	test('畸形 job 不许进快照（但快照本身仍可用）', () => {

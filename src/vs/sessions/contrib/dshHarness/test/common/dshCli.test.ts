@@ -9,7 +9,7 @@ import path from 'node:path';
 import { LineDecoder, isBridgeHello } from '../../common/dshBridgeProtocol.js';
 import {
 	bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, compareSemver, isSameOrigin,
-	isSupportedNodeVersion, localPluginDir, parseAuthUrl, renderBridgeOverlay, renderCodebaseOverlay, renderKanbanOverlay, renderSandboxOverlay, resolveSiblingPackage, toFileSpec,
+	isSupportedNodeVersion, localPluginDir, parseAuthUrl, parseWelcomeNoticeVersion, renderBridgeOverlay, renderCodebaseOverlay, renderKanbanOverlay, renderSandboxOverlay, resolveSiblingPackage, toFileSpec,
 } from '../../common/dshCli.js';
 
 suite('dshHarness / CLI contract', () => {
@@ -112,6 +112,19 @@ suite('dshHarness / CLI contract', () => {
 		]) {
 			assert.strictEqual(localPluginDir(spec), undefined, `应判为非本地路径：${JSON.stringify(spec)}`);
 		}
+	});
+
+	test('parseWelcomeNoticeVersion reads every quote style shipped by the official runtime (首启预览版说明)', () => {
+		// 官方 0.2.2-rc.2 的同一个常量散在三个文件里，引号各不相同：
+		//   lib/client.js（minified）反引号 / src/onboarding-copy.ts 单引号 /
+		//   lib/types/onboarding-copy.d.ts 双引号。旧解析只认双引号且只读 client.js
+		//   ⇒ 恒读不到 ⇒ ui-settings-general 覆盖层不生成 ⇒ 首启弹窗回来（2026-11-23 修复）。
+		assert.strictEqual(parseWelcomeNoticeVersion('const WELCOME_NOTICE_VERSION=`2026-09-28.1`;'), '2026-09-28.1');
+		assert.strictEqual(parseWelcomeNoticeVersion("export const WELCOME_NOTICE_VERSION = '2026-09-28.1'"), '2026-09-28.1');
+		assert.strictEqual(parseWelcomeNoticeVersion('export declare const WELCOME_NOTICE_VERSION = "2026-09-28.1";'), '2026-09-28.1');
+		// 别把相邻的 ACK 字段名 / 空内容误当版本。
+		assert.strictEqual(parseWelcomeNoticeVersion('const WELCOME_NOTICE_ACK_FIELD=`welcomeNoticeVersion`;'), undefined);
+		assert.strictEqual(parseWelcomeNoticeVersion(''), undefined);
 	});
 
 	test('bridge overlay pre-acknowledges the official preview notice when a version is known', () => {

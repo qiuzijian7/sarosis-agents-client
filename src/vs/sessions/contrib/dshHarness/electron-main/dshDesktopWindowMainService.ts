@@ -20,6 +20,8 @@ import { IEnvironmentMainService } from '../../../../platform/environment/electr
 import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-main/lifecycleMainService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
+import product from '../../../../platform/product/common/product.js';
+import { DSH_DESKTOP_CAPTION_H } from '../common/dshHarness.js';
 
 let activeDesktopWindow: BrowserWindow | undefined;
 
@@ -87,7 +89,9 @@ export class DshDesktopWindowMainService extends Disposable {
 			backgroundColor: '#1f1f1f',
 			...(isWindows ? {
 				titleBarStyle: 'hidden' as const,
-				titleBarOverlay: { color: '#1f1f1f', symbolColor: '#cccccc', height: 29 },
+				// 高度与壳页面自绘 caption 共用同一个常量：原生窗控带比 DOM 标题条高时，
+				// 最小化按钮左侧会出现一条 3px 的台阶（2026-11-24 真机截图）。
+				titleBarOverlay: { color: '#1f1f1f', symbolColor: '#cccccc', height: DSH_DESKTOP_CAPTION_H },
 			} : {}),
 			webPreferences: {
 				preload,
@@ -128,7 +132,14 @@ export class DshDesktopWindowMainService extends Disposable {
 		});
 
 		const html = FileAccess.asBrowserUri('vs/sessions/electron-browser/dshDesktop.html').toString(true);
-		await win.loadURL(`${html}?windowId=${encodeURIComponent(String(windowId))}`);
+		// 轻量壳不加载 workbench ⇒ 没有 IProductService。品牌名 / 版本号由主进程随 URL 下发，
+		// caption 才能显示与 IDE 窗口一致的 logo 名称与版本（2026-11-24）。
+		const query = [
+			`windowId=${encodeURIComponent(String(windowId))}`,
+			`version=${encodeURIComponent(String(product.version ?? ''))}`,
+			`brand=${encodeURIComponent(String(product.nameShort || 'VsSaros'))}`,
+		].join('&');
+		await win.loadURL(`${html}?${query}`);
 		return win;
 	}
 

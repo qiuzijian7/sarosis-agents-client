@@ -1,0 +1,96 @@
+version: v3.0
+name: VsSaros-Win-EXE-QuickPatch
+
+# 插件级快包流水线：只改了 dsh-plugins/ 的几个插件时，复用上一次全量构建的暂存目录，
+# 跳过 npm ci / 全量 tsc / 逐扩展编译，只做「资源替换 + profile 种子 + 回执 + Inno Setup」。
+#
+# ⚠ 前置条件（不满足时 .ci/scripts/pack-dsh-only.ps1 会直接失败，不会出坏包）：
+#   1) 必须在**上次全量构建的那台构建机**上跑（../VSCode-win32-x64/ 与 .build/pack-reports/
+#      都在仓库外的构建机工作区里，不是 CI 缓存）；若蓝盾调度到别的机器 ⇒ 基线校验失败。
+#   2) 那次全量构建之后，跑过一次 `powershell -File .ci/scripts/pack-dsh-only.ps1 -InitBaseline`
+#      生成 .build/pack-reports/quick-baseline.json（可由主流水线末尾加一步完成）。
+#   3) 相对基线的 git 差异**只允许** dsh-plugins/**；product.json 版本、SAROS_PACK_MODE、
+#      媒体/Office 开关、内核哨兵 sha256 任一变化都拒绝快包，必须回退主流水线。
+#
+# ⚠ 本流水线**不**调用 bk-set-version.ps1 / install-deps.ps1 / create-release.ps1：
+#   版本号不变 ⇒ 产物只用于内部验证，不做 update feed / Release 发布；对外发版走
+#   .ci/package-win-exe.yml。想要「新版本号 + 快包」需要先解决 ISCC 从 staging 的
+#   product.json 读版本的问题（同步 product.json 到产物），再单独评审。
+
+on:
+  manual: enabled
+
+variables:
+  NODE_OPTIONS:
+    value: --max-old-space-size=8192
+  SAROS_PACK_MODE:
+    value: standard
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 必须与基线一致；baseline 快照里的 packMode 不同即拒绝快包
+      required: true
+  SAROS_SETUP_TARGETS:
+    value: user
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 安装包目标：user / system；默认只出 user 包（ISCC 压缩是快包剩下的主要耗时）
+      required: true
+  SAROS_MAX_EXE_MB:
+    value: '850'
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 单个 EXE 的 MiB 上限；超过即禁止上传
+      required: true
+  SAROS_MEDIA_MODE:
+    value: external
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 必须与基线一致（external 不随包 ffmpeg/ffprobe/yt-dlp）
+      required: true
+  VSSAROS_SKIP_OFFICE_RUNTIME:
+    value: '0'
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 必须与基线一致
+      required: true
+
+stages:
+- name: 插件级快包
+  label:
+  - Build
+  jobs:
+    quick-patch:
+      name: Quick patch (dsh plugins only)
+      runs-on:
+        pool-name: windows
+      steps:
+      - checkout:
+          repo-id: yWNpX
+        name: Checkout source
+        with:
+          refName: main
+      # 不跑 install-deps：复用构建机已有的 node_modules / dsh-runtime / .build/office-runtime。
+      # 缺任何一个由 pack-dsh-only.ps1 硬拦并提示回退主流水线。
+      - name: Quick pack (plugins only, no compile)
+        with:
+          charsetType: UTF_8
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/pack-dsh-only.ps1'
+        shell: powershell
+      - name: Archive installers
+        uses: UploadArtifactory@8.*
+        with:
+          filePath: .build/win32-x64/**/*.exe
+          downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
+      - name: Archive quick-pack reports
+        uses: UploadArtifactory@8.*
+        with:
+          filePath: .build/pack-reports/*.json
+          downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
+
+concurrency: {}
+syntax-dialect: INHERIT

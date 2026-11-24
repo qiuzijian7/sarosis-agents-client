@@ -42,6 +42,14 @@
 				}
 			},
 
+			// 原生菜单（`base/parts/contextmenu` 的 `popup()`）用 once 等点击/关闭回执：
+			// desktop-only 壳的 caption 菜单与 IDE 窗口同一套实现，缺了它菜单回调永远收不到。
+			once(channel: string, listener: (...args: unknown[]) => void): void {
+				if (validateIPC(channel)) {
+					ipcRenderer.once(channel, listener as Parameters<typeof ipcRenderer.once>[1]);
+				}
+			},
+
 			removeListener(channel: string, listener: (...args: unknown[]) => void): void {
 				if (validateIPC(channel)) {
 					ipcRenderer.removeListener(channel, listener as Parameters<typeof ipcRenderer.removeListener>[1]);

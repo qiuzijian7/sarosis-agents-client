@@ -6,11 +6,55 @@
 /**
  * B 方案的 desktop-only 壳：不加载 workbench、不创建 IDE 贡献图，只通过已有的
  * `DSH_HARNESS_CHANNEL` 启动 Host 并挂接一个 dsh `WebContentsView`。
+ *
+ * ★ 2026-11-24：壳自己画 caption（logo / 品牌名 / 版本号 / 「应用 · 编辑」菜单）。
+ *   IDE 渲染进程里 `DshFullWindowContribution._installTitleBar` 的那套标题条只在 A 方案
+ *   aux 窗口里执行；B 方案默认启动**没有 IDE 主窗口** ⇒ 必须在这里补齐，菜单动作经
+ *   `DesktopMenuAction` / `DesktopMenuCommand` 两条通道命令落到主进程。
  */
 
+import { popup } from '../../base/parts/contextmenu/electron-browser/contextmenu.js';
 import { ElectronIPCMainProcessService } from '../../platform/ipc/electron-browser/mainProcessService.js';
 import { webFrame } from '../../base/parts/sandbox/electron-browser/globals.js';
-import { DSH_HARNESS_CHANNEL, DshHarnessChannelCommand, IDshHostStatus, IDshViewBounds } from '../contrib/dshHarness/common/dshHarness.js';
+import { DSH_DESKTOP_CAPTION_H, DSH_HARNESS_CHANNEL, DshHarnessChannelCommand, IDshHostStatus, IDshViewBounds } from '../contrib/dshHarness/common/dshHarness.js';
+import { desktopMenuLabel, desktopMenuNames, dshDesktopMenuTemplate, type DshDesktopMenuAction, type DshDesktopMenuCommand, type DshDesktopMenuName } from '../contrib/dshHarness/common/dshDesktopMenu.js';
+
+/** `navigator.windowControlsOverlay` 的投影（与 dsh-better-sidebar 的 viewport-inset 同口径）。 */
+interface WindowControlsOverlayLike {
+	readonly visible: boolean;
+	getTitlebarAreaRect(): { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+	addEventListener(type: 'geometrychange', listener: () => void): void;
+}
+
+interface CaptionActions {
+	act(action: DshDesktopMenuAction): void;
+	run(command: DshDesktopMenuCommand): void;
+}
+
+function windowControlsOverlay(): WindowControlsOverlayLike | undefined {
+	return (navigator as Navigator & { windowControlsOverlay?: WindowControlsOverlayLike }).windowControlsOverlay;
+}
+
+/**
+ * caption 高度的**唯一运行时真源**是 WCO 的 `getTitlebarAreaRect()`，`DSH_DESKTOP_CAPTION_H`
+ * 只是下限。原生窗控带（右侧 138px）由 Electron 画在 DOM 之上，DOM 标题条只要不低于它，
+ * 两者同色就会连成一条 ⇒ 最小化按钮左侧不再出现台阶；`#root` 用同一个变量让位，
+ * 窗口最大化 / DPI / 缩放变化时 `geometrychange` + `resize` 都会重新校准。
+ */
+function syncCaptionHeight(): void {
+	let height = DSH_DESKTOP_CAPTION_H;
+	try {
+		const overlay = windowControlsOverlay();
+		if (overlay?.visible) {
+			const rect = overlay.getTitlebarAreaRect();
+			const bottom = Math.round(rect.y + rect.height);
+			if (Number.isFinite(bottom) && bottom > height) {
+				height = bottom;
+			}
+		}
+	} catch { /* 没有 WCO（macOS / Web）⇒ 用下限 */ }
+	document.documentElement.style.setProperty('--dsh-caption-h', `${height}px`);
+}
 
 function zoomFactor(): number {
 	try {
@@ -27,8 +71,92 @@ function showBooting(message: string): void {
 	}
 }
 
+/** 弹 caption 菜单：与 A 方案 `_openDesktopMenu` 同口径（同步打开 + 原生 popup + aria 兜底复位）。 */
+function openDesktopMenu(name: DshDesktopMenuName, button: HTMLButtonElement, actions: CaptionActions): void {
+	const now = Date.now();
+	if (now - Number(button.getAttribute('data-vssaros-menu-opened-at') || 0) < 250) {
+		return;
+	}
+	button.setAttribute('data-vssaros-menu-opened-at', String(now));
+	const zoom = zoomFactor();
+	const items = dshDesktopMenuTemplate(name, 'zh', zoom, {
+		act: action => actions.act(action),
+		run: command => actions.run(command),
+	});
+	const rect = button.getBoundingClientRect();
+	const reset = () => button.setAttribute('aria-expanded', 'false');
+	button.setAttribute('aria-expanded', 'true');
+	try {
+		// `popup()` 是 Electron 原生菜单，画在所有 WebContentsView 之上；DOM 菜单会被盖住 ✗。
+		popup(items, { x: Math.round(rect.left * zoom), y: Math.round(rect.bottom * zoom) }, reset);
+	} catch (error) {
+		reset();
+		console.warn('[dshDesktopOnly] caption menu: 原生菜单弹不出来', error);
+	}
+	// onHide 没回发时兜底复位，否则 aria 永久卡 true（A 方案真机踩过）。
+	window.setTimeout(() => {
+		if (button.getAttribute('aria-expanded') === 'true') {
+			reset();
+		}
+	}, 15_000);
+}
+
+function installCaption(version: string, brand: string, actions: CaptionActions): void {
+	const brandEl = document.getElementById('dsh-brand');
+	if (brandEl) {
+		brandEl.textContent = brand;
+	}
+	const versionEl = document.getElementById('dsh-version');
+	if (versionEl) {
+		versionEl.textContent = version ? `v${version}` : '';
+	}
+
+	syncCaptionHeight();
+	windowControlsOverlay()?.addEventListener('geometrychange', syncCaptionHeight);
+	window.addEventListener('resize', syncCaptionHeight);
+
+	const menubar = document.getElementById('dsh-menubar');
+	if (!menubar) {
+		return;
+	}
+	const buttons: HTMLButtonElement[] = [];
+	for (let i = 0; i < desktopMenuNames.length; i++) {
+		const name: DshDesktopMenuName = desktopMenuNames[i];
+		const btn = document.createElement('button');
+		btn.className = 'menu-btn';
+		btn.type = 'button';
+		btn.setAttribute('role', 'menuitem');
+		btn.setAttribute('aria-haspopup', 'menu');
+		btn.setAttribute('aria-expanded', 'false');
+		btn.setAttribute('data-vssaros-desktop-menu', name);
+		btn.tabIndex = i === 0 ? 0 : -1;
+		btn.textContent = desktopMenuLabel(name, 'zh');
+		// 打开菜单不抢走 composer 焦点：编辑菜单的按键由主进程 `sendInputEvent` 送回聚焦视图。
+		btn.addEventListener('pointerdown', e => e.preventDefault());
+		btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
+		btn.addEventListener('click', () => openDesktopMenu(name, btn, actions));
+		btn.addEventListener('keydown', e => {
+			if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+				e.preventDefault();
+				const next = buttons[i === 0 ? 1 : 0];
+				if (next) {
+					btn.tabIndex = -1;
+					next.tabIndex = 0;
+					next.focus();
+				}
+			} else if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+				e.preventDefault();
+				openDesktopMenu(name, btn, actions);
+			}
+		});
+		buttons.push(btn);
+		menubar.appendChild(btn);
+	}
+}
+
 async function main(): Promise<void> {
-	const windowId = Number(new URLSearchParams(location.search).get('windowId'));
+	const params = new URLSearchParams(location.search);
+	const windowId = Number(params.get('windowId'));
 	if (!Number.isInteger(windowId) || windowId <= 0) {
 		showBooting('启动失败：缺少合法的 windowId');
 		return;
@@ -50,9 +178,19 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	const viewId = `dsh-desktop-${windowId}-${Date.now().toString(36)}`;
+	// 品牌名 / 版本号由主进程随 URL 下发（轻量页没有 IProductService）。
+	installCaption(params.get('version') ?? '', params.get('brand') || 'VsSaros', {
+		act: action => {
+			void channel.call(DshHarnessChannelCommand.DesktopMenuAction, { viewId, action }).catch(() => undefined);
+		},
+		run: command => {
+			void channel.call(DshHarnessChannelCommand.DesktopMenuCommand, { windowId, command }).catch(() => undefined);
+		},
+	});
+
 	// 先建视图槽：DshViewHost 在没有连接时会保留 slot，等 `_applyConnection()`
 	// 下发连接后立即加载 ⇒ 不必等 Bootstrap 返回才开始创建 WebContentsView ✓。
-	const viewId = `dsh-desktop-${windowId}-${Date.now().toString(36)}`;
 	showBooting('正在准备 dsh 桌面视图…');
 	await channel.call<void>(DshHarnessChannelCommand.CreateView, {
 		viewId,

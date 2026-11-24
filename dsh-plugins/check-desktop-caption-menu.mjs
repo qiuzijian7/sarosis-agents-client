@@ -173,6 +173,32 @@ check('新增 channel 命令 + 主进程白名单校验 + sendInputEvent', () =>
 	assert.ok(svc.includes('DshHarnessChannelCommand.DesktopMenuAction'), 'service 实现必须调该 channel');
 });
 
+// ─── ④ B 方案 desktop-only 壳的 caption 接线（2026-11-24）────────────────────
+// A 方案的标题条由 IDE 渲染进程画；默认启动走 B 方案 ⇒ logo / 版本 / menu 必须在轻量壳里
+// 也接上，否则用户看到的就是「只有 IDE 按钮 + 窗控按钮」的空标题条。
+const DESKTOP_HTML = path.join(ROOT, 'src/vs/sessions/electron-browser/dshDesktop.html');
+const DESKTOP_TS = path.join(ROOT, 'src/vs/sessions/electron-browser/dshDesktop.ts');
+const DESKTOP_MAIN = path.join(ROOT, 'src/vs/sessions/contrib/dshHarness/electron-main/dshDesktopWindowMainService.ts');
+const HARNESS_COMMON = path.join(ROOT, 'src/vs/sessions/contrib/dshHarness/common/dshHarness.ts');
+const PRELOAD_AUX = path.join(ROOT, 'src/vs/base/parts/sandbox/electron-browser/preload-aux.ts');
+
+check('B 方案壳：logo / 版本号 / menu + caption 高度单一真源', () => {
+	const html = read(DESKTOP_HTML);
+	for (const anchor of ['id="caption"', 'id="dsh-brand"', 'id="dsh-version"', 'id="dsh-menubar"', 'viewBox="0 0 512 512"', 'var(--dsh-caption-h)']) {
+		assert.ok(html.includes(anchor), `dshDesktop.html 缺 ${anchor}`);
+	}
+	const shell = read(DESKTOP_TS);
+	for (const anchor of ['installCaption(', 'desktopMenuNames', 'dshDesktopMenuTemplate(', 'popup(items,', 'getTitlebarAreaRect()', 'DshHarnessChannelCommand.DesktopMenuCommand', 'data-vssaros-desktop-menu']) {
+		assert.ok(shell.includes(anchor), `dshDesktop.ts 缺 ${anchor}`);
+	}
+	assert.ok(read(HARNESS_COMMON).includes("DesktopMenuCommand = 'desktopMenuCommand'"), 'channel 枚举缺 DesktopMenuCommand');
+	assert.ok(read(CHANNEL_MAIN).includes('case DshHarnessChannelCommand.DesktopMenuCommand:'), '主进程缺 caption 命令分发');
+	assert.ok(read(CHANNEL_MAIN).includes('isDshDesktopMenuCommand('), 'caption 命令必须过封闭集校验');
+	assert.ok(read(DESKTOP_MAIN).includes('DSH_DESKTOP_CAPTION_H'), 'WCO 高度必须与壳共用同一常量');
+	assert.ok(read(DESKTOP_MAIN).includes('version='), '品牌名 / 版本号必须由主进程随 URL 下发');
+	assert.ok(read(PRELOAD_AUX).includes('once(channel: string'), 'preload-aux 没有 once ⇒ 原生菜单回执永远收不到');
+});
+
 // ─── 执行 ──────────────────────────────────────────────────────────────────
 let failed = 0;
 for (const c of checks) {

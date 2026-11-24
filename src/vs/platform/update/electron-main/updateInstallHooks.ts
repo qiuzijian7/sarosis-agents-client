@@ -10,8 +10,8 @@
  *   win32 的**自动**安装走 `updateService.win32.ts` 的 `doApplyUpdate()`，它给安装包传的是
  *   `/verysilent … /nocloseapplications` —— 那个开关的含义是**不让安装器去关闭占用文件的进程**
  *   ⇒ 凡是还被占用的文件，Inno 只能排到"重启时替换"（`restartreplace`）⇒ 收尾时就弹这条中文提示。
- *   （手动那条 `doQuitAndInstall()` 用的是 `/silent`，**不带** `/nocloseapplications` ⇒ 安装器会自己
- *   尝试关进程，所以手动点"一键升级"很少出现这条提示。）
+ *   （兜底那条 `doQuitAndInstall()` 现在也用 `/verysilent`，且**不带** `/nocloseapplications` ⇒
+ *   安装器会自己尝试关进程，所以不会显示安装向导。）
  *
  * ⇒ 要消掉它，只有一条路：**在 spawn 安装包之前，我们自己把占用者收掉**。
  *

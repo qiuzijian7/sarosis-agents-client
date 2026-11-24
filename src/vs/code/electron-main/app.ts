@@ -2004,6 +2004,15 @@ export class CodeApplication extends Disposable {
 				// 可选组件（媒体 / Office / Whisper）的下载源与更新检查同源。
 				updateUrl: this.productService.updateUrl,
 				requestQuit: (willRestart: boolean) => lifecycleMainService.quit(willRestart),
+				// desktop-only 壳（B 方案）没有 IDE 渲染进程 ⇒ caption 菜单的「检查更新」
+				// 只能由主进程代触发；服务不可用时记日志，不让菜单动作抛到页面。
+				checkForUpdates: async () => {
+					try {
+						await accessor.get(IUpdateService).checkForUpdates(true);
+					} catch (error) {
+						this.logService.warn(`[dshDesktopOnly] checkForUpdates failed: ${String((error as Error)?.message ?? error)}`);
+					}
+				},
 			},
 			accessor.get(IWindowsMainService),
 			accessor.get(IAuxiliaryWindowsMainService),

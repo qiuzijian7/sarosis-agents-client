@@ -104,7 +104,7 @@ suite('dshHarness / 升级策略（灰度 / 强制版本 / 更新内容）', () 
 		});
 		const clean = validateUpgradePolicyState(JSON.parse(JSON.stringify({ ...p, injected: 'evil' })));
 		assert.deepStrictEqual(clean, p);
-		assert.strictEqual((clean as Record<string, unknown> | undefined)?.injected, undefined);
+		assert.strictEqual((clean as unknown as Record<string, unknown> | undefined)?.injected, undefined);
 		assert.strictEqual(clean?.notes, '<img src=x>', '纯文本原样保留，由渲染层转义');
 		assert.strictEqual(validateUpgradePolicyState({ ...p, urgency: 'hacked' }), undefined);
 		assert.strictEqual(validateUpgradePolicyState(null), undefined);

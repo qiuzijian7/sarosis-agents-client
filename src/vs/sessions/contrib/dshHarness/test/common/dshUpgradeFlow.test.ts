@@ -17,7 +17,7 @@
  */
 
 import assert from 'assert';
-import { State, StateType, UpdateType } from '../../../../../platform/update/common/update.js';
+import { State, UpdateType } from '../../../../../platform/update/common/update.js';
 import { acceptResumeResponse, decideResume } from '../../../../../platform/update/common/updateResume.js';
 import { initialAppUpdateStatus, reduceAppUpdateStatus } from '../../common/appUpdateState.js';
 import { mapUpdateServiceState } from '../../common/appUpdateStateMapping.js';
@@ -141,7 +141,7 @@ suite('dshHarness / 升级链路端到端数据契约', () => {
 		assert.strictEqual(s!.app.phase, 'available');
 		assert.strictEqual(s!.app.percent, 62.4);
 		assert.strictEqual(s!.assets[0].via, 'ide');
-		assert.strictEqual((s as Record<string, unknown>).injected, undefined, '外部字段不许穿过桥');
+		assert.strictEqual((s as unknown as Record<string, unknown>).injected, undefined, '外部字段不许穿过桥');
 	});
 
 	test('⑤ 续传判据与整条链路不冲突：同一版本可续，换版本必须全量', () => {

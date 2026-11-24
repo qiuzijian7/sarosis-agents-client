@@ -323,6 +323,11 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		this.setState(State.Downloading(update, explicit, this._overwrite, 0, undefined, startTime));
 
 		try {
+			// IUpdate.url 是可选字段：缺失时不能把空 URL 交给 requestService，统一走下方 catch 回到 Idle。
+			const url = update.url;
+			if (!url) {
+				throw new Error('update#download: update manifest 未提供下载直链');
+			}
 			await this.cleanup(update.version);
 			const updatePackagePath = await this.getUpdatePackagePath(update.version);
 
@@ -337,7 +342,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 				} catch { /* 没有半成品 / 边车损坏 ⇒ 全量下载 */ }
 
 				const requestOptions: { url: string; callSite: string; headers?: Record<string, string> } = {
-					url: update.url, callSite: 'updateService.win32.downloadUpdate',
+					url, callSite: 'updateService.win32.downloadUpdate',
 				};
 				if (resume.mode === 'resume' && resume.rangeHeader) {
 					requestOptions.headers = { Range: resume.rangeHeader };
@@ -355,7 +360,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 				}
 				// 边车记录「这份半成品属于哪个包」：换版本 / 换地址 / 换哈希时 decideResume 会拒绝续传。
 				await this.fileService.writeFile(URI.file(metaPath), VSBuffer.fromString(JSON.stringify({
-					url: update.url, version: update.version,
+					url, version: update.version,
 					...(update.sha256hash ? { sha256hash: update.sha256hash } : {}),
 				})));
 
@@ -421,9 +426,11 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 			this.saveUpdateMetadata(update);
 			this.setState(State.Downloaded(update, explicit, this._overwrite));
 
-			const fastUpdatesEnabled = this.configurationService.getValue('update.enableWindowsBackgroundUpdates');
-			if (fastUpdatesEnabled && this.productService.target === 'user') {
-				this.doApplyUpdate();
+			// 用户点击「更新」后必须进入后台静默安装；不再让 enableWindowsBackgroundUpdates
+			// 这个开关把已确认的安装退回成「重启时才运行可见安装器」。
+			// 该设置仍用于其它后台更新维护逻辑，但不参与用户已确认的安装路径。
+			if (this.productService.target === 'user') {
+				await this.doApplyUpdate();
 			} else {
 				this.setState(State.Ready(update, explicit, this._overwrite));
 			}
@@ -628,7 +635,15 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 				// ignore
 			}
 		} else {
-			spawn(this.availableUpdate.packagePath, ['/silent', '/log', '/mergetasks=runcode,!desktopicon,!quicklaunchicon'], {
+			// 异常兜底也不能退回到可见安装向导：/silent 仍会显示进度窗口，统一用完全静默参数。
+			spawn(this.availableUpdate.packagePath, [
+				'/verysilent',
+				'/suppressmsgboxes',
+				'/norestart',
+				'/sp-',
+				'/log',
+				'/mergetasks=runcode,!desktopicon,!quicklaunchicon'
+			], {
 				detached: true,
 				stdio: ['ignore', 'ignore', 'ignore'],
 				env: { ...process.env, __COMPAT_LAYER: 'RunAsInvoker' }
@@ -669,15 +684,15 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 			return;
 		}
 
-		const fastUpdatesEnabled = this.configurationService.getValue('update.enableWindowsBackgroundUpdates');
 		const update: IUpdate = await this.loadUpdateMetadata() ?? { version: commit ?? 'unknown', productVersion: 'unknown' };
 
 		this.setState(State.Downloading(update, true, false));
 		this.availableUpdate = { packagePath };
 		this.setState(State.Downloaded(update, true, false));
 
-		if (fastUpdatesEnabled && this.productService.target === 'user') {
-			this.doApplyUpdate();
+		// 与 startBackgroundDownload 一致：已拿到具体更新包就静默安装，完成后由客户端提示重启。
+		if (this.productService.target === 'user') {
+			await this.doApplyUpdate();
 		} else {
 			this.setState(State.Ready(update, true, false));
 		}

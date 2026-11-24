@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VsSaros 后台自动升级 · 三种方案 Mockup</title>
+<!--
+  设计上下文与假设
+  ------------------------------------------------------------------
+  目标：比较「无需点击安装向导 / 下一步」的自动升级交互，而不是比较安装器技术参数。
+  受众：VsSaros 产品/研发评审；用户是桌面端使用者或企业管理员。
+  已有视觉语言：仓库 design/ 下的 mockup 多为深色桌面端控制台、浅色说明卡片、紧凑状态标签。
+  本稿沿用「浅灰设计画布 + 白色方案卡 + 深色应用窗口」的对照结构。
+
+  设计方向：发布控制室 / release control room。
+  World：构建流水线、维护窗口、设备状态、版本号。
+  Materials：蓝图网格、终端窗口、状态灯、分段发布轨道。
+  Palette：墨蓝 #101B24、纸灰 #E9EDF0、青绿 #117C7D、湖蓝 #2F6BFF、琥珀 #D9822B、朱红 #B84A45。
+  Signature：贯穿每个方案的「发布轨道」——方形节点 + 刻度线，把自动升级画成一条可观测的流水线，而不是一个弹窗。
+  Typography：Space Grotesk 负责标题与数字，IBM Plex Sans 负责正文，等宽字体负责版本/命令/状态。
+
+  三个方案：
+  A 安静值守：后台下载安装，用户正常退出时完成，无确认弹窗。
+  B 空闲自动：检测到无未保存工作且空闲后自动重启，真正零点击；带可取消倒计时。
+  C 托管发布：管理员配置维护窗口与灰度批次，终端用户完全无感。
+-->
+<link rel="stylesheet" href="https://miaoda.feishu.cn/fonts/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ink:#101B24;
+  --ink-2:#1D2B35;
+  --paper:#E9EDF0;
+  --card:#F8FAFB;
+  --line:#D5DEE4;
+  --muted:#5A6B76;
+  --soft:#EEF3F5;
+  --teal:#117C7D;
+  --teal-soft:#DDF1EF;
+  --blue:#2F6BFF;
+  --blue-soft:#E7EEFF;
+  --amber:#D9822B;
+  --amber-soft:#FFF0DE;
+  --green:#277A58;
+  --green-soft:#DEF2E7;
+  --red:#B84A45;
+  --red-soft:#FBE8E6;
+  --mono:"IBM Plex Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace;
+  --display:"Space Grotesk","Noto Sans SC","Microsoft YaHei",sans-serif;
+  --body:"IBM Plex Sans","Noto Sans SC","Microsoft YaHei",sans-serif;
+  --shadow:0 18px 55px rgba(16,27,36,.10);
+}
+*{box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font:15px/1.65 var(--body);
+  -webkit-font-smoothing:antialiased;
+}
+svg{display:block;}
+.icon{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+.sprite{position:absolute;width:0;height:0;overflow:hidden;}
+
+/* 顶部：发布控制室 */
+.masthead{
+  position:relative;
+  overflow:hidden;
+  background-color:var(--ink);
+  background-image:
+    linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
+  background-size:32px 32px;
+  color:#F4F8FA;
+  padding:42px clamp(22px,5vw,72px) 38px;
+}
+.masthead::after{
+  content:"";
+  position:absolute;
+  right:-80px;
+  top:-120px;
+  width:420px;
+  height:420px;
+  border:1px solid rgba(130,210,205,.22);
+  border-radius:50%;
+  box-shadow:0 0 0 44px rgba(130,210,205,.035),0 0 0 88px rgba(130,210,205,.025);
+}
+.mast-inner{position:relative;z-index:1;max-width:1400px;margin:0 auto;}
+.eyebrow{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  font:600 12px/1.2 var(--mono);
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  color:#8FD4CF;
+  margin-bottom:18px;
+}
+.eyebrow::before{content:"";width:34px;height:2px;background:#8FD4CF;}
+h1{
+  margin:0;
+  font:700 clamp(30px,4.4vw,58px)/1.06 var(--display);
+  letter-spacing:-.035em;
+  max-width:900px;
+  text-wrap:pretty;
+}
+.lead{
+  max-width:760px;
+  margin:18px 0 0;
+  color:#B9C8D0;
+  font-size:16px;
+  line-height:1.75;
+  text-wrap:pretty;
+}
+.mast-meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin-top:28px;
+}
+.mast-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:7px 12px;
+  border:1px solid rgba(255,255,255,.16);
+  border-radius:999px;
+  color:#D6E2E7;
+  background:rgba(255,255,255,.035);
+  font:500 12px/1.2 var(--mono);
+}
+.mast-chip .dot{width:7px;height:7px;border-radius:2px;background:#8FD4CF;}
+.mast-chip.blue .dot{background:#7FA2FF;}
+.mast-chip.amber .dot{background:#E8A656;}
+
+/* 画布 */
+.canvas{max-width:1460px;margin:0 auto;padding:38px clamp(18px,4vw,58px) 72px;}
+.section-head{
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:24px;
+  margin-bottom:24px;
+  padding-bottom:14px;
+  border-bottom:1px solid #C9D3DA;
+}
+.section-head h2{
+  margin:0;
+  font:700 22px/1.2 var(--display);
+  letter-spacing:-.02em;
+}
+.section-head p{margin:6px 0 0;color:var(--muted);font-size:13px;}
+.section-index{font:600 12px/1 var(--mono);letter-spacing:.12em;color:var(--muted);white-space:nowrap;}
+
+.artboards{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:18px;
+  align-items:stretch;
+}
+@media(max-width:1120px){.artboards{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media(max-width:760px){.artboards{grid-template-columns:1fr;}.section-head{align-items:flex-start;flex-direction:column;gap:8px;}}
+
+.board{
+  display:flex;
+  flex-direction:column;
+  min-width:0;
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:18px;
+  box-shadow:var(--shadow);
+  overflow:hidden;
+}
+.board-head{
+  padding:18px 18px 14px;
+  border-bottom:1px solid var(--line);
+}
+.board-kicker{
+  display:flex;
+  align-items:center;
+  gap:9px;
+  font:600 11px/1 var(--mono);
+  letter-spacing:.13em;
+  text-transform:uppercase;
+  color:var(--muted);
+  margin-bottom:10px;
+}
+.board-kicker .num{
+  display:grid;
+  place-items:center;
+  width:24px;
+  height:24px;
+  border-radius:7px;
+  background:var(--ink);
+  color:#fff;
+  font-size:11px;
+}
+.board-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.board h3{margin:0;font:700 21px/1.25 var(--display);letter-spacing:-.02em;}
+.badge{
+  flex:none;
+  border-radius:999px;
+  padding:4px 9px;
+  font:600 10.5px/1.2 var(--mono);
+  letter-spacing:.04em;
+  white-space:nowrap;
+}
+.badge.safe{background:var(--green-soft);color:var(--green);border:1px solid #B7DFC9;}
+.badge.recommended{background:var(--blue-soft);color:#244DBD;border:1px solid #BACFFF;}
+.badge.enterprise{background:var(--amber-soft);color:#8A5317;border:1px solid #EBCB9F;}
+.board-desc{margin:9px 0 0;color:var(--muted);font-size:13px;line-height:1.6;text-wrap:pretty;}
+
+/* 深色应用窗口 */
+.window{
+  position:relative;
+  margin:16px 16px 0;
+  border-radius:12px;
+  overflow:hidden;
+  background:#0C151D;
+  border:1px solid #22323D;
+  box-shadow:0 14px 34px rgba(8,17,23,.26);
+}
+.win-bar{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  height:34px;
+  padding:0 11px;
+  background:#16232D;
+  border-bottom:1px solid #24343F;
+  color:#AFC0C9;
+  font:500 10.5px/1 var(--mono);
+}
+.traffic{display:flex;gap:5px;}
+.traffic i{width:7px;height:7px;border-radius:50%;background:#43535D;}
+.traffic i:first-child{background:#C86B63;}
+.traffic i:nth-child(2){background:#C9A34E;}
+.traffic i:last-child{background:#4E9A70;}
+.win-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.win-right{margin-left:auto;display:flex;align-items:center;gap:7px;color:#8FD4CF;white-space:nowrap;}
+.win-right .led{width:7px;height:7px;border-radius:2px;background:#55C6A5;box-shadow:0 0 0 3px rgba(85,198,165,.13);}
+.win-right.amber{color:#E8B06A;}
+.win-right.amber .led{background:#E8A656;box-shadow:0 0 0 3px rgba(232,166,86,.13);}
+
+.app-body{
+  display:grid;
+  grid-template-columns:36px 112px minmax(0,1fr);
+  min-height:168px;
+  background:
+    linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),
+    #0C151D;
+  background-size:100% 22px;
+}
+.app-rail{border-right:1px solid #1D2C36;display:flex;flex-direction:column;align-items:center;gap:12px;padding:12px 0;color:#5D7380;}
+.app-rail .sq{width:13px;height:13px;border:1px solid currentColor;border-radius:3px;}
+.app-rail .sq.active{border-color:#73C9C3;color:#73C9C3;background:rgba(115,201,195,.12);}
+.tree{border-right:1px solid #1D2C36;padding:12px 9px;color:#7C909B;font:400 9.5px/1.9 var(--mono);}
+.tree .folder{color:#B9CCD4;}
+.tree .sel{color:#8FD4CF;background:rgba(143,212,207,.10);border-radius:3px;padding:0 4px;margin-left:-4px;display:block;}
+.editor{position:relative;padding:13px 12px;color:#96AAB4;font:400 9.5px/1.85 var(--mono);overflow:hidden;}
+.editor .ln{display:flex;gap:10px;white-space:nowrap;}
+.editor .ln b{color:#4F6774;font-weight:400;width:14px;text-align:right;flex:none;}
+.editor .kw{color:#6FA8FF;}
+.editor .str{color:#8FD4A8;}
+.editor .cm{color:#5D737E;}
+.editor .cursor{display:inline-block;width:6px;height:11px;background:#8FD4CF;vertical-align:-2px;}
+.status-bar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:7px 10px;
+  background:#13212A;
+  border-top:1px solid #24343F;
+  color:#AFC0C9;
+  font:500 9.5px/1.3 var(--mono);
+}
+.status-bar .sep{width:1px;height:12px;background:#31434E;}
+.status-bar .ok{color:#69CFA9;}
+.status-bar .quiet{margin-left:auto;color:#6D8390;}
+
+/* 方案 A 的静默状态 */
+.quiet-state{
+  position:absolute;
+  right:10px;
+  top:10px;
+  display:flex;
+  align-items:center;
+  gap:7px;
+  padding:6px 8px;
+  border:1px solid rgba(105,207,169,.35);
+  background:rgba(18,48,42,.88);
+  color:#BDE9D8;
+  border-radius:7px;
+  font:500 9px/1 var(--mono);
+  box-shadow:0 8px 20px rgba(0,0,0,.24);
+}
+.quiet-state .tick{width:12px;height:12px;color:#69CFA9;}
+.no-dialog{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin:10px 16px 0;
+  padding:8px 10px;
+  border:1px dashed #B9C8CF;
+  border-radius:8px;
+  color:var(--muted);
+  background:#F2F6F7;
+  font-size:11.5px;
+}
+.no-dialog .icon{width:14px;height:14px;color:var(--teal);}
+
+/* 方案 B 的倒计时浮层 */
+.dim-window .app-body,.dim-window .status-bar{filter:saturate(.7) brightness(.62);}
+.countdown{
+  position:absolute;
+  right:12px;
+  bottom:14px;
+  width:min(260px,78%);
+  padding:12px;
+  border-radius:10px;
+  background:#F7FAFB;
+  border:1px solid #C8D6DD;
+  box-shadow:0 18px 42px rgba(0,0,0,.36);
+  color:var(--ink);
+}
+.countdown .cd-head{display:flex;align-items:flex-start;gap:8px;}
+.countdown .cd-icon{width:18px;height:18px;color:var(--amber);flex:none;}
+.countdown strong{display:block;font:700 12px/1.35 var(--body);}
+.countdown p{margin:3px 0 0;color:var(--muted);font-size:10.5px;line-height:1.5;}
+.countdown .clock{
+  display:flex;
+  align-items:baseline;
+  gap:6px;
+  margin:9px 0;
+  font:700 24px/1 var(--display);
+  letter-spacing:-.03em;
+  color:var(--amber);
+}
+.countdown .clock small{font:500 9.5px/1 var(--mono);letter-spacing:.08em;color:var(--muted);}
+.countdown .actions{display:flex;gap:6px;}
+.countdown .act{
+  flex:1;
+  padding:6px 7px;
+  border-radius:6px;
+  border:1px solid #C8D6DD;
+  background:#fff;
+  font:600 9.5px/1.2 var(--body);
+  text-align:center;
+  color:#334651;
+}
+.countdown .act.primary{background:var(--ink);border-color:var(--ink);color:#fff;}
+.conditions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:5px;
+  margin:10px 16px 0;
+}
+.cond{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  padding:4px 7px;
+  border-radius:6px;
+  background:var(--green-soft);
+  border:1px solid #BEDFCC;
+  color:var(--green);
+  font:500 10px/1.2 var(--mono);
+}
+.cond .icon{width:11px;height:11px;}
+
+/* 方案 C 的管理控制台 */
+.console .app-body{grid-template-columns:38px minmax(0,1fr);min-height:190px;}
+.console-side{border-right:1px solid #1D2C36;display:flex;flex-direction:column;align-items:center;gap:12px;padding:12px 0;color:#5D7380;}
+.console-side .sq{width:13px;height:13px;border:1px solid currentColor;border-radius:3px;}
+.console-side .sq.active{border-color:#E8A656;color:#E8A656;background:rgba(232,166,86,.12);}
+.console-main{padding:12px;color:#C4D2D9;font-size:10px;}
+.console-main h4{margin:0 0 3px;font:700 12px/1.3 var(--display);color:#F1F6F8;}
+.console-main .sub{color:#6F8792;font:400 9px/1.4 var(--mono);margin-bottom:10px;}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;}
+.kpi{padding:7px;background:#12212A;border:1px solid #23343E;border-radius:6px;}
+.kpi b{display:block;font:700 14px/1.2 var(--display);color:#8FD4CF;}
+.kpi span{font:400 8.5px/1.3 var(--mono);color:#728A95;}
+.kpi.warn b{color:#E8B06A;}
+.kpi.bad b{color:#E58B84;}
+.waves{border:1px solid #23343E;border-radius:6px;overflow:hidden;}
+.wave-row{display:grid;grid-template-columns:54px 1fr 58px;gap:6px;align-items:center;padding:6px 7px;border-bottom:1px solid #20303A;font:400 9px/1.3 var(--mono);}
+.wave-row:last-child{border-bottom:0;}
+.wave-row .bar{height:5px;background:#22343E;border-radius:99px;overflow:hidden;}
+.wave-row .bar i{display:block;height:100%;background:#6BBFB8;}
+.wave-row:nth-child(2) .bar i{background:#E8A656;}
+.wave-row:nth-child(3) .bar i{background:#758DA0;}
+.wave-row .state{text-align:right;color:#8FD4CF;}
+.wave-row:nth-child(2) .state{color:#E8B06A;}
+.wave-row:nth-child(3) .state{color:#8096A2;}
+.console-foot{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;}
+.console-foot span{padding:4px 6px;background:#12212A;border:1px solid #23343E;border-radius:5px;color:#91A6B0;font:400 8.5px/1.2 var(--mono);}
+
+/* 发布轨道：签名元素 */
+.release-rail{margin:16px 16px 0;padding:12px 12px 10px;border:1px solid var(--line);border-radius:9px;background:#F1F5F6;}
+.rail-label{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;font:600 10px/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}
+.rail-label b{color:var(--ink);font-weight:700;}
+.rail-track{position:relative;display:grid;grid-template-columns:repeat(5,1fr);gap:0;}
+.rail-track::before{
+  content:"";
+  position:absolute;
+  left:9%;right:9%;top:7px;height:2px;
+  background:repeating-linear-gradient(90deg,#A9B9C2 0 5px,transparent 5px 9px);
+}
+.rail-step{position:relative;display:flex;flex-direction:column;align-items:center;gap:7px;text-align:center;z-index:1;}
+.rail-step .node{
+  width:16px;height:16px;
+  border:2px solid #A9B9C2;
+  background:var(--card);
+  border-radius:3px;
+}
+.rail-step.done .node{background:var(--teal);border-color:var(--teal);}
+.rail-step.active .node{background:var(--amber);border-color:var(--amber);box-shadow:0 0 0 4px rgba(217,130,43,.14);}
+.rail-step span{font:500 9.5px/1.25 var(--mono);color:#63767F;white-space:nowrap;}
+.rail-step.done span{color:var(--teal);}
+.rail-step.active span{color:#8A5317;font-weight:700;}
+.board.c .rail-step.done .node{background:var(--amber);border-color:var(--amber);}
+.board.c .rail-step.active .node{background:var(--blue);border-color:var(--blue);box-shadow:0 0 0 4px rgba(47,107,255,.14);}
+.board.c .rail-step.active span{color:#244DBD;}
+
+/* 设置摘要 */
+.settings{margin:14px 16px 0;border-top:1px solid var(--line);padding-top:12px;}
+.settings h4{margin:0 0 8px;font:700 11px/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}
+.setting-grid{display:grid;gap:7px;}
+.setting-row{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11.5px;}
+.setting-row .name{color:#31434D;}
+.setting-row .val{font:600 10.5px/1.2 var(--mono);color:var(--ink);background:#EAF0F2;border:1px solid #D3DEE3;border-radius:5px;padding:3px 6px;white-space:nowrap;}
+.setting-row .val.on{color:var(--green);background:var(--green-soft);border-color:#BEDFCC;}
+.setting-row .val.amber{color:#8A5317;background:var(--amber-soft);border-color:#EBCB9F;}
+.setting-row .val.blue{color:#244DBD;background:var(--blue-soft);border-color:#BACFFF;}
+
+.board-foot{margin-top:auto;padding:14px 16px 16px;}
+.impact{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.impact div{border:1px solid var(--line);border-radius:8px;padding:8px 9px;background:#fff;}
+.impact dt{margin:0 0 3px;font:600 9.5px/1.2 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);}
+.impact dd{margin:0;font-size:11.5px;line-height:1.45;color:#2D3F48;}
+.risk-line{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:11px;color:var(--muted);}
+.risk-line .meter{display:flex;gap:3px;}
+.risk-line .meter i{width:18px;height:5px;border-radius:2px;background:#D8E1E5;}
+.risk-line.low .meter i:nth-child(1){background:var(--green);}
+.risk-line.medium .meter i:nth-child(-n+2){background:var(--amber);}
+.risk-line.high .meter i:nth-child(-n+3){background:var(--red);}
+
+/* 对照矩阵 */
+.compare{margin-top:36px;background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 12px 40px rgba(16,27,36,.07);}
+.compare-head{padding:18px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:baseline;}
+.compare-head h2{margin:0;font:700 20px/1.2 var(--display);letter-spacing:-.02em;}
+.compare-head span{font:500 11px/1.2 var(--mono);color:var(--muted);}
+.compare-scroll{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;min-width:760px;}
+th,td{padding:12px 16px;text-align:left;border-bottom:1px solid #E3EAEE;vertical-align:top;font-size:12.5px;}
+th{font:600 10.5px/1.3 var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);background:#F2F6F7;}
+td:first-child{font-weight:700;color:var(--ink);white-space:nowrap;}
+tbody tr:last-child td{border-bottom:0;}
+tbody tr.recommended{background:#F4F7FF;}
+.tag-cell{display:inline-flex;align-items:center;gap:6px;}
+.tag-cell .square{width:9px;height:9px;border-radius:2px;background:var(--teal);}
+.tag-cell.b .square{background:var(--blue);}
+.tag-cell.c .square{background:var(--amber);}
+.good{color:var(--green);font-weight:600;}
+.warn{color:#8A5317;font-weight:600;}
+
+/* 实现映射 */
+.mapping{margin-top:28px;display:grid;grid-template-columns:1.15fr .85fr;gap:18px;}
+@media(max-width:860px){.mapping{grid-template-columns:1fr;}}
+.map-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px 20px;}
+.map-card h2{margin:0 0 12px;font:700 18px/1.25 var(--display);letter-spacing:-.02em;}
+.map-list{display:grid;gap:9px;}
+.map-item{display:grid;grid-template-columns:104px 1fr;gap:12px;padding:9px 0;border-bottom:1px dashed #DDE5E9;}
+.map-item:last-child{border-bottom:0;}
+.map-item b{font:600 10.5px/1.4 var(--mono);color:var(--teal);}
+.map-item span{font-size:12.5px;color:#33454E;}
+.map-item code{font:500 11px/1.5 var(--mono);background:#EEF3F5;border:1px solid #D7E1E5;border-radius:4px;padding:1px 5px;}
+.guard-card{background:var(--ink);color:#E9F1F4;border-color:var(--ink);}
+.guard-card h2{color:#fff;}
+.guard-card p{margin:0 0 14px;color:#AFC1CA;font-size:12.5px;line-height:1.7;}
+.guard-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.guard-grid div{border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:9px 10px;background:rgba(255,255,255,.035);}
+.guard-grid b{display:block;font:600 10px/1.3 var(--mono);color:#8FD4CF;margin-bottom:4px;}
+.guard-grid span{font-size:11px;color:#C7D5DC;line-height:1.45;}
+
+.foot{margin-top:34px;padding-top:14px;border-top:1px solid #C9D3DA;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;color:var(--muted);font:500 11px/1.5 var(--mono);}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important;}}
+</style>
+</head>
+<body>
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"></path></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10Z"></path><path d="m9 12 2 2 4-4"></path></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="m7 9 3 3-3 3M13 15h4"></path></symbol>
+</svg>
+
+<header class="masthead">
+  <div class="mast-inner">
+    <div class="eyebrow">VsSaros / Release UX / 2026-11-24</div>
+    <h1>后台自动升级<br>三种「不再点下一步」的界面方案</h1>
+    <p class="lead">共同目标：检查、下载、校验、安装都在后台完成，Inno Setup 以 <span style="font-family:var(--mono);color:#8FD4CF">/VERYSILENT</span> 运行。差异只在「何时重启」以及「用户还能不能控制这个时刻」。</p>
+    <div class="mast-meta" aria-label="方案概览">
+      <span class="mast-chip"><i class="dot"></i>A · 安静值守</span>
+      <span class="mast-chip blue"><i class="dot"></i>B · 空闲自动重启</span>
+      <span class="mast-chip amber"><i class="dot"></i>C · 托管发布</span>
+    </div>
+  </div>
+</header>
+
+<main class="canvas">
+  <section class="section-head" aria-labelledby="explore-title">
+    <div>
+      <h2 id="explore-title">方案画布</h2>
+      <p>每张卡片包含：终端用户可见界面、发布状态轨道、关键策略与实施风险。</p>
+    </div>
+    <div class="section-index">EXPLORATION 01 — 03 / STATIC MOCKUP</div>
+  </section>
+
+  <section class="artboards" aria-label="三种自动升级方案">
+
+    <!-- A -->
+    <article class="board a" data-screen-label="A · 安静值守">
+      <header class="board-head">
+        <div class="board-kicker"><span class="num">A</span>Quiet sentinel</div>
+        <div class="board-title-row">
+          <h3>安静值守</h3>
+          <span class="badge safe">最低风险</span>
+        </div>
+        <p class="board-desc">后台完成全部安装准备；用户正常关闭窗口时自动收尾并重启。不弹确认框，不打断当前会话。</p>
+      </header>
+
+      <div class="window" aria-label="安静值守方案下的 VsSaros 主界面">
+        <div class="win-bar">
+          <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="win-name">VsSaros — 工作区 / release-notes.md</span>
+          <span class="win-right"><i class="led"></i>更新已就绪</span>
+        </div>
+        <div class="app-body">
+          <div class="app-rail" aria-hidden="true"><i class="sq active"></i><i class="sq"></i><i class="sq"></i><i class="sq"></i></div>
+          <div class="tree" aria-hidden="true">
+            <div class="folder">▾ src</div>
+            <div>&nbsp;&nbsp;├─ main</div>
+            <div class="sel">&nbsp;&nbsp;└─ notes</div>
+            <div class="folder">▾ build</div>
+            <div>&nbsp;&nbsp;└─ win32</div>
+          </div>
+          <div class="editor" aria-hidden="true">
+            <div class="ln"><b>1</b><span><span class="kw">#</span> VsSaros v2.2.26256</span></div>
+            <div class="ln"><b>2</b><span></span></div>
+            <div class="ln"><b>3</b><span><span class="cm">// 更新包已通过 SHA-256 校验</span></span></div>
+            <div class="ln"><b>4</b><span><span class="kw">const</span> restart = <span class="str">'onQuit'</span>;</span></div>
+            <div class="ln"><b>5</b><span><span class="kw">const</span> prompt = <span class="str">false</span>;<span class="cursor"></span></span></div>
+            <div class="quiet-state"><svg class="tick"><use href="#i-check"></use></svg><span>关闭时自动完成</span></div>
+          </div>
+        </div>
+        <div class="status-bar"><span class="ok">● 已下载</span><span>v2.2.26256</span><i class="sep"></i><span>SHA256 OK</span><span class="quiet">无需操作</span></div>
+      </div>
+
+      <div class="no-dialog"><svg class="icon"><use href="#i-shield"></use></svg>无「更新 / 暂不」弹窗，也无「立即重启 / 稍后」弹窗。</div>
+
+      <div class="release-rail" aria-label="发布状态轨道">
+        <div class="rail-label"><span>Release rail</span><b>等待自然退出</b></div>
+        <div class="rail-track">
+          <div class="rail-step done"><i class="node"></i><span>检查</span></div>
+          <div class="rail-step done"><i class="node"></i><span>下载</span></div>
+          <div class="rail-step done"><i class="node"></i><span>校验</span></div>
+          <div class="rail-step active"><i class="node"></i><span>待退出</span></div>
+          <div class="rail-step"><i class="node"></i><span>完成</span></div>
+        </div>
+      </div>
+
+      <div class="settings">
+        <h4>关键策略</h4>
+        <div class="setting-grid">
+          <div class="setting-row"><span class="name">自动检查 / 下载</span><span class="val on">enabled</span></div>
+          <div class="setting-row"><span class="name">重启时机</span><span class="val">onQuit</span></div>
+          <div class="setting-row"><span class="name">安装器参数</span><span class="val">/VERYSILENT</span></div>
+        </div>
+      </div>
+
+      <footer class="board-foot">
+        <dl class="impact">
+          <div><dt>用户感知</dt><dd>状态栏一枚小灯；几乎无感</dd></div>
+          <div><dt>代价</dt><dd>需要等到用户自然关闭应用</dd></div>
+        </dl>
+        <div class="risk-line low"><span>中断风险</span><span class="meter" aria-label="低"><i></i><i></i><i></i></span><span>低 · 不强制重启</span></div>
+      </footer>
+    </article>
+
+    <!-- B -->
+    <article class="board b" data-screen-label="B · 空闲自动重启">
+      <header class="board-head">
+        <div class="board-kicker"><span class="num">B</span>Idle window</div>
+        <div class="board-title-row">
+          <h3>空闲自动重启</h3>
+          <span class="badge recommended">平衡推荐</span>
+        </div>
+        <p class="board-desc">真正零点击：只有「无未保存内容、无活跃会话、已空闲」三个条件同时满足，才进入可取消的倒计时。</p>
+      </header>
+
+      <div class="window dim-window" aria-label="空闲自动重启方案下的 VsSaros 主界面">
+        <div class="win-bar">
+          <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="win-name">VsSaros — 工作区 / session.md</span>
+          <span class="win-right amber"><i class="led"></i>安全窗口已满足</span>
+        </div>
+        <div class="app-body">
+          <div class="app-rail" aria-hidden="true"><i class="sq active"></i><i class="sq"></i><i class="sq"></i><i class="sq"></i></div>
+          <div class="tree" aria-hidden="true">
+            <div class="folder">▾ notes</div>
+            <div class="sel">&nbsp;&nbsp;└─ session</div>
+            <div class="folder">▾ logs</div>
+            <div>&nbsp;&nbsp;└─ harness</div>
+          </div>
+          <div class="editor" aria-hidden="true">
+            <div class="ln"><b>1</b><span><span class="kw">#</span> 自动升级安全窗口</span></div>
+            <div class="ln"><b>2</b><span></span></div>
+            <div class="ln"><b>3</b><span>dirtyEditors = <span class="str">0</span></span></div>
+            <div class="ln"><b>4</b><span>activeSessions = <span class="str">0</span></span></div>
+            <div class="ln"><b>5</b><span>idleMinutes = <span class="str">10</span></span></div>
+          </div>
+        </div>
+        <div class="status-bar"><span class="ok">● 空闲 10 分钟</span><span>v2.2.26256</span><i class="sep"></i><span>准备重启</span><span class="quiet">可推迟</span></div>
+        <div class="countdown" aria-label="自动重启倒计时">
+          <div class="cd-head">
+            <svg class="cd-icon"><use href="#i-clock"></use></svg>
+            <div><strong>更新完成后将自动重启</strong><p>当前没有未保存内容或活跃会话。</p></div>
+          </div>
+          <div class="clock">09:42 <small>RESTART IN</small></div>
+          <div class="actions"><span class="act primary">立即重启</span><span class="act">推迟 1 小时</span></div>
+        </div>
+      </div>
+
+      <div class="conditions" aria-label="自动重启前置条件">
+        <span class="cond"><svg class="icon"><use href="#i-check"></use></svg>无未保存文件</span>
+        <span class="cond"><svg class="icon"><use href="#i-check"></use></svg>无活跃会话</span>
+        <span class="cond"><svg class="icon"><use href="#i-check"></use></svg>空闲 ≥ 10 分钟</span>
+      </div>
+
+      <div class="release-rail" aria-label="发布状态轨道">
+        <div class="rail-label"><span>Release rail</span><b>安全窗口倒计时</b></div>
+        <div class="rail-track">
+          <div class="rail-step done"><i class="node"></i><span>下载</span></div>
+          <div class="rail-step done"><i class="node"></i><span>校验</span></div>
+          <div class="rail-step done"><i class="node"></i><span>安全窗口</span></div>
+          <div class="rail-step active"><i class="node"></i><span>倒计时</span></div>
+          <div class="rail-step"><i class="node"></i><span>重启</span></div>
+        </div>
+      </div>
+
+      <div class="settings">
+        <h4>关键策略</h4>
+        <div class="setting-grid">
+          <div class="setting-row"><span class="name">自动重启</span><span class="val blue">idle</span></div>
+          <div class="setting-row"><span class="name">空闲阈值</span><span class="val">10 min</span></div>
+          <div class="setting-row"><span class="name">推迟次数</span><span class="val amber">最多 3 次</span></div>
+        </div>
+      </div>
+
+      <footer class="board-foot">
+        <dl class="impact">
+          <div><dt>用户感知</dt><dd>一条可取消的倒计时提示</dd></div>
+          <div><dt>代价</dt><dd>需接入脏数据与会话状态判断</dd></div>
+        </dl>
+        <div class="risk-line medium"><span>中断风险</span><span class="meter" aria-label="中"><i></i><i></i><i></i></span><span>中 · 有安全窗口兜底</span></div>
+      </footer>
+    </article>
+
+    <!-- C -->
+    <article class="board c" data-screen-label="C · 托管发布">
+      <header class="board-head">
+        <div class="board-kicker"><span class="num">C</span>Managed rollout</div>
+        <div class="board-title-row">
+          <h3>托管发布</h3>
+          <span class="badge enterprise">企业部署</span>
+        </div>
+        <p class="board-desc">由管理员在维护窗口内分批下发；终端侧无提示、无向导、无用户决策，失败自动回滚。</p>
+      </header>
+
+      <div class="window console" aria-label="托管发布管理控制台">
+        <div class="win-bar">
+          <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="win-name">Release Console — win32-x64-user</span>
+          <span class="win-right"><i class="led"></i>策略已下发</span>
+        </div>
+        <div class="app-body">
+          <div class="console-side" aria-hidden="true"><i class="sq active"></i><i class="sq"></i><i class="sq"></i><i class="sq"></i></div>
+          <div class="console-main">
+            <h4>维护窗口 · 02:00—04:00</h4>
+            <div class="sub">POLICY / force-silent / allow-rollback</div>
+            <div class="kpis">
+              <div class="kpi"><b>1,248</b><span>ONLINE</span></div>
+              <div class="kpi"><b>96%</b><span>STAGED</span></div>
+              <div class="kpi warn"><b>42</b><span>PENDING</span></div>
+              <div class="kpi bad"><b>3</b><span>FAILED</span></div>
+            </div>
+            <div class="waves">
+              <div class="wave-row"><span>WAVE 01</span><span class="bar"><i style="width:100%"></i></span><span class="state">DONE</span></div>
+              <div class="wave-row"><span>WAVE 02</span><span class="bar"><i style="width:68%"></i></span><span class="state">RUNNING</span></div>
+              <div class="wave-row"><span>WAVE 03</span><span class="bar"><i style="width:16%"></i></span><span class="state">QUEUED</span></div>
+            </div>
+            <div class="console-foot"><span>/VERYSILENT</span><span>/NORESTART</span><span>SHA256</span><span>ROLLBACK</span></div>
+          </div>
+        </div>
+        <div class="status-bar"><span class="ok">● 服务运行中</span><span>system target</span><i class="sep"></i><span>无终端弹窗</span><span class="quiet">管理员可见</span></div>
+      </div>
+
+      <div class="no-dialog"><svg class="icon"><use href="#i-terminal"></use></svg>终端用户侧不显示任何安装 UI；状态只在管理控制台汇总。</div>
+
+      <div class="release-rail" aria-label="发布状态轨道">
+        <div class="rail-label"><span>Release rail</span><b>灰度批次 02 执行中</b></div>
+        <div class="rail-track">
+          <div class="rail-step done"><i class="node"></i><span>策略下发</span></div>
+          <div class="rail-step done"><i class="node"></i><span>维护窗口</span></div>
+          <div class="rail-step active"><i class="node"></i><span>静默安装</span></div>
+          <div class="rail-step"><i class="node"></i><span>健康检查</span></div>
+          <div class="rail-step"><i class="node"></i><span>完成</span></div>
+        </div>
+      </div>
+
+      <div class="settings">
+        <h4>关键策略</h4>
+        <div class="setting-grid">
+          <div class="setting-row"><span class="name">执行身份</span><span class="val">管理员服务</span></div>
+          <div class="setting-row"><span class="name">发布批次</span><span class="val amber">15 / 35 / 50%</span></div>
+          <div class="setting-row"><span class="name">失败处理</span><span class="val blue">自动回滚</span></div>
+        </div>
+      </div>
+
+      <footer class="board-foot">
+        <dl class="impact">
+          <div><dt>用户感知</dt><dd>完全无感，按维护窗口执行</dd></div>
+          <div><dt>代价</dt><dd>需要服务、权限与灰度平台</dd></div>
+        </dl>
+        <div class="risk-line high"><span>实施复杂度</span><span class="meter" aria-label="高"><i></i><i></i><i></i></span><span>高 · 适合企业统一分发</span></div>
+      </footer>
+    </article>
+  </section>
+
+  <section class="compare" aria-labelledby="compare-title">
+    <div class="compare-head"><h2 id="compare-title">决策对照</h2><span>CLICKS / INTERRUPTION / CONTROL</span></div>
+    <div class="compare-scroll">
+      <table>
+        <thead>
+          <tr><th>方案</th><th>需要点击</th><th>重启时机</th><th>会话中断风险</th><th>适用场景</th><th>实现量</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="tag-cell"><i class="square"></i>A 安静值守</span></td>
+            <td class="good">0 次；正常关闭即可</td>
+            <td>用户主动退出时</td>
+            <td class="good">低</td>
+            <td>个人版默认、正在写代码或对话</td>
+            <td>小：跳过两个弹窗 + onQuit 钩子</td>
+          </tr>
+          <tr class="recommended">
+            <td><span class="tag-cell b"><i class="square"></i>B 空闲自动重启</span></td>
+            <td class="good">0 次</td>
+            <td>空闲且无脏数据后</td>
+            <td class="warn">中，可取消</td>
+            <td>希望真正全自动，同时保留安全边界</td>
+            <td>中：空闲检测 + 会话/脏数据判断</td>
+          </tr>
+          <tr>
+            <td><span class="tag-cell c"><i class="square"></i>C 托管发布</span></td>
+            <td class="good">0 次</td>
+            <td>维护窗口</td>
+            <td>由策略控制</td>
+            <td>企业批量设备、system setup</td>
+            <td>大：管理员服务与灰度回滚</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="mapping" aria-label="代码映射与共同底座">
+    <div class="map-card">
+      <h2>与现有代码的映射</h2>
+      <div class="map-list">
+        <div class="map-item"><b>检查更新</b><span><code>update.mode</code> 从 <code>manual</code> 改为 <code>default</code> / <code>start</code>；自动模式下直接调用 <code>startBackgroundDownload()</code>。</span></div>
+        <div class="map-item"><b>去掉弹窗</b><span>自动模式跳过 <code>promptForUpdate()</code> 与 <code>promptForRestart()</code>；手动入口仍保留。</span></div>
+        <div class="map-item"><b>安装器</b><span><code>doApplyUpdate()</code> 已使用 <code>/verysilent</code>；<code>doQuitAndInstall()</code> 可统一为 <code>/verysilent</code>。</span></div>
+        <div class="map-item"><b>重启策略</b><span>新增 <code>update.autoRestart</code>：<code>onQuit</code> / <code>idle</code> / <code>managed</code>。</span></div>
+        <div class="map-item"><b>企业方案</b><span>由外部服务或计划任务运行系统级安装包，应用内只读取策略状态。</span></div>
+      </div>
+    </div>
+    <div class="map-card guard-card">
+      <h2>三套方案共用的安全底座</h2>
+      <p>静默不等于无保护。以下能力不能随弹窗一起删掉：</p>
+      <div class="guard-grid">
+        <div><b>PRE-INSTALL HOOK</b><span>spawn 前释放 dsh Host，避免 <code>koffi.node</code> 错误代码 5。</span></div>
+        <div><b>PREPARE TO INSTALL</b><span>安装包内再次清理生产运行时进程，覆盖手动安装。</span></div>
+        <div><b>INTEGRITY</b><span>SHA-256、断点续传、取消标记、进度文件与日志。</span></div>
+        <div><b>FALLBACK</b><span>保留 <code>restartreplace</code>；失败进入下次重试，不弹死胡同。</span></div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span>STATIC DESIGN EXPLORATION · 3 OPTIONS · NO RUNTIME DEPENDENCY</span>
+    <span>VsSaros Auto Update UX / Release control room</span>
+  </footer>
+</main>
+</body>
+</html>

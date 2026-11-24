@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark light">
+<title>打包流程与升级流程全景 · VsSaros</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --card2: #1c2128; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e;
+    --blue: #58a6ff; --purple: #bc8cff; --green: #3fb950; --amber: #d29922;
+    --red: #f85149; --orange: #ffa657; --cyan: #39c5cf;
+    --shadow: 0 8px 28px rgba(0,0,0,.28);
+  }
+  html[data-theme="light"] {
+    --bg: #f8fafc; --card: #ffffff; --card2: #f1f5f9; --border: #d8dee6;
+    --text: #0f172a; --muted: #475569;
+    --blue: #1d4ed8; --purple: #7c3aed; --green: #15803d; --amber: #b45309;
+    --red: #dc2626; --orange: #c2410c; --cyan: #0e7490;
+    --shadow: 0 8px 28px rgba(15,23,42,.10);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    font-size: 15px; line-height: 1.7; -webkit-font-smoothing: antialiased;
+  }
+  code, .mono, pre { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; }
+  code { font-size: 12.5px; background: var(--card2); border: 1px solid var(--border); padding: 1px 6px; border-radius: 5px; color: var(--blue); }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 4px; }
+  button { font: inherit; cursor: pointer; }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    position: sticky; top: 12px; z-index: 30;
+    margin: 12px 16px 0; padding: 12px 20px;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: var(--shadow);
+  }
+  .topbar h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+  .topbar .sub { color: var(--muted); font-size: 12.5px; margin: 0; }
+  .topbar .spacer { flex: 1; }
+  .ghost-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: transparent; color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 11px; font-size: 12.5px;
+    transition: background-color .2s ease, border-color .2s ease, color .2s ease;
+  }
+  .ghost-btn:hover { background: var(--card2); border-color: var(--blue); color: var(--blue); }
+  .ghost-btn svg { width: 15px; height: 15px; flex: none; }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600; line-height: 1.5;
+    padding: 1px 8px; border-radius: 20px; border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+  .b-blue { color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, transparent); }
+  .b-green { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+  .b-amber { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+  .b-red { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+  .b-purple { color: var(--purple); background: color-mix(in srgb, var(--purple) 12%, transparent); }
+  .b-muted { color: var(--muted); background: var(--card2); }
+
+  /* ---------- layout ---------- */
+  .layout { max-width: 1500px; margin: 22px auto 0; padding: 0 20px 90px; display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 26px; }
+  .sidenav { position: sticky; top: 92px; align-self: start; }
+  .sidenav .label { font-size: 11px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); margin: 0 0 10px 10px; }
+  .sidenav a {
+    display: block; padding: 7px 11px; margin: 2px 0; border-radius: 7px;
+    color: var(--muted); font-size: 13px; border-left: 2px solid transparent;
+    transition: background-color .2s ease, color .2s ease, border-color .2s ease;
+  }
+  .sidenav a:hover { background: var(--card); color: var(--text); text-decoration: none; }
+  .sidenav a.active { color: var(--blue); border-left-color: var(--blue); background: var(--card); }
+  main { min-width: 0; }
+  section { scroll-margin-top: 96px; margin-bottom: 54px; }
+  h2 { font-size: 21px; margin: 0 0 6px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  h2 .num { color: var(--muted); font-size: 14px; font-weight: 500; margin-right: 8px; }
+  h3 { font-size: 15px; margin: 26px 0 10px; }
+  .lead { color: var(--muted); font-size: 13.5px; margin: 0 0 18px; }
+  p { margin: 8px 0 12px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin: 14px 0; }
+  .note { border-left: 3px solid var(--amber); background: color-mix(in srgb, var(--amber) 8%, var(--card)); }
+  .warn { border-left: 3px solid var(--red); background: color-mix(in srgb, var(--red) 7%, var(--card)); }
+  .ok { border-left: 3px solid var(--green); background: color-mix(in srgb, var(--green) 7%, var(--card)); }
+  .info { border-left: 3px solid var(--blue); background: color-mix(in srgb, var(--blue) 7%, var(--card)); }
+
+  /* ---------- tables ---------- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; margin: 12px 0 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 620px; }
+  th, td { padding: 9px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+  th { background: var(--card2); color: var(--text); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--card2); }
+  td code { white-space: nowrap; }
+
+  /* ---------- decision bar ---------- */
+  .decision {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 20px; margin-bottom: 16px;
+  }
+  .decision-title { font-weight: 600; font-size: 14px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .decision-title svg { width: 17px; height: 17px; color: var(--blue); }
+  .decision-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .decision-item {
+    background: var(--card2); border: 1px solid var(--border); border-radius: 9px;
+    padding: 10px 12px; font-size: 12.5px;
+  }
+  .decision-item .cond { display: block; color: var(--muted); margin-bottom: 5px; }
+  .decision-item .target { font-weight: 600; }
+  .decision-item .lane-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+
+  /* ---------- flow lanes ---------- */
+  .lanes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .lanes.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .lane {
+    --lane: var(--blue);
+    background: var(--card); border: 1px solid var(--border);
+    border-top: 3px solid var(--lane); border-radius: 11px; padding: 14px 13px;
+    min-width: 0;
+  }
+  .lane.full { --lane: var(--red); }
+  .lane.quick { --lane: var(--amber); }
+  .lane.patch { --lane: var(--green); }
+  .lane.feed { --lane: var(--red); }
+  .lane.comp { --lane: var(--cyan); }
+  .lane.plug { --lane: var(--green); }
+  .lane.manual { --lane: var(--purple); }
+  .lane-head { margin-bottom: 12px; }
+  .lane-head .name { font-size: 13.5px; font-weight: 700; color: var(--lane); line-height: 1.4; }
+  .lane-head .meta { font-size: 11.5px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+  .step {
+    position: relative; background: var(--card2); border: 1px solid var(--border);
+    border-left: 3px solid var(--lane); border-radius: 8px;
+    padding: 9px 11px; font-size: 12.3px; line-height: 1.55;
+  }
+  .step b { display: block; font-size: 12.5px; font-weight: 600; margin-bottom: 2px; }
+  .step .hint { color: var(--muted); font-size: 11.5px; }
+  .step .file { color: var(--orange); word-break: break-word; }
+  .step.hot { box-shadow: inset 0 0 0 1px var(--lane); }
+  .arrow { height: 15px; margin-left: 20px; border-left: 2px solid var(--border); position: relative; }
+  .arrow::before {
+    content: ""; position: absolute; bottom: -1px; left: -5px;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-top: 6px solid var(--border);
+  }
+  .lane-out {
+    margin-top: 12px; padding: 9px 11px; border-radius: 8px;
+    background: color-mix(in srgb, var(--lane) 10%, transparent);
+    border: 1px dashed var(--lane); font-size: 12px; font-weight: 600; color: var(--lane);
+  }
+  .lane-out .small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; margin-top: 2px; }
+  .cross-link {
+    margin: 14px 0 0; font-size: 12px; color: var(--muted);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .cross-link svg { width: 15px; height: 15px; color: var(--amber); }
+
+  /* ---------- sequence ---------- */
+  .actors { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .actor {
+    text-align: center; font-size: 11.5px; font-weight: 600;
+    padding: 8px 4px; border-radius: 8px;
+    background: var(--card2); border: 1px solid var(--border); color: var(--blue);
+  }
+  .seq-row {
+    display: grid; grid-template-columns: 118px minmax(0, 1fr);
+    gap: 12px; align-items: start; padding: 7px 10px;
+    border-bottom: 1px dashed var(--border); font-size: 12.5px;
+  }
+  .seq-row:last-child { border-bottom: none; }
+  .seq-row .hop { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .seq-row .hop .to { color: var(--muted); }
+  .seq-row .desc { color: var(--text); }
+  .seq-row .desc .dim { color: var(--muted); }
+  .seq-note { background: color-mix(in srgb, var(--green) 8%, var(--card)); border-left: 3px solid var(--green); padding: 10px 14px; border-radius: 8px; font-size: 12.5px; margin-top: 12px; }
+
+  /* ---------- details / mermaid ---------- */
+  details { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin: 10px 0; }
+  summary { cursor: pointer; padding: 11px 16px; font-size: 13px; font-weight: 600; }
+  summary:hover { color: var(--blue); }
+  details[open] summary { border-bottom: 1px solid var(--border); }
+  .details-body { padding: 12px 16px 16px; }
+  pre {
+    margin: 0; padding: 14px; overflow-x: auto; font-size: 12px; line-height: 1.6;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+  }
+  .copy-btn { margin-bottom: 10px; }
+
+  ul.clean { margin: 8px 0 12px; padding-left: 20px; }
+  ul.clean li { margin: 5px 0; }
+  .kv { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 6px 14px; font-size: 13px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+
+  .to-top {
+    position: fixed; right: 20px; bottom: 20px; z-index: 40;
+    width: 40px; height: 40px; border-radius: 50%;
+    background: var(--card); border: 1px solid var(--border); color: var(--text);
+    display: none; align-items: center; justify-content: center; box-shadow: var(--shadow);
+  }
+  .to-top:hover { border-color: var(--blue); color: var(--blue); }
+  .to-top svg { width: 18px; height: 18px; }
+
+  @media (max-width: 1180px) {
+    .lanes.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .lanes { grid-template-columns: 1fr; }
+    .decision-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; gap: 14px; }
+    .sidenav { position: static; display: flex; flex-wrap: wrap; gap: 5px; }
+    .sidenav .label { display: none; }
+    .sidenav a { border-left: none; border: 1px solid var(--border); padding: 5px 10px; font-size: 12px; }
+    .sidenav a.active { border-color: var(--blue); }
+    .lanes.four { grid-template-columns: 1fr; }
+    .actors { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .seq-row { grid-template-columns: 1fr; gap: 3px; }
+    .kv { grid-template-columns: 1fr; }
+    body { font-size: 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+  }
+  @media print {
+    .topbar, .sidenav, .to-top, .copy-btn { display: none !important; }
+    .layout { display: block; max-width: none; padding: 0; }
+    section { break-inside: avoid; }
+    body { background: #fff; color: #000; }
+    .card, .lane, .step { border-color: #bbb; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div>
+    <h1>打包流程与升级流程全景</h1>
+    <p class="sub">VsSaros · 基于当前工作区代码，含插件级升级 P0/P1/P2 · 2026-11-23</p>
+  </div>
+  <div class="spacer"></div>
+  <span class="badge b-green">产物层 已打通</span>
+  <span class="badge b-amber">升级层 待装机实测</span>
+  <button class="ghost-btn" id="themeToggle" type="button" aria-label="切换深浅色主题">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    <span id="themeLabel">浅色</span>
+  </button>
+  <button class="ghost-btn" type="button" onclick="window.print()" aria-label="打印或导出为 PDF">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+    打印
+  </button>
+</header>
+
+<div class="layout">
+  <nav class="sidenav" aria-label="页面目录">
+    <p class="label">目录</p>
+    <a href="#overview">总览与判定</a>
+    <a href="#packaging">1 打包流程</a>
+    <a href="#updates">2 升级流程</a>
+    <a href="#sequence">3 补丁端到端</a>
+    <a href="#artifacts">4 产物与门禁</a>
+    <a href="#status">5 当前状态</a>
+    <a href="#mermaid">附录 Mermaid</a>
+  </nav>
+
+  <main>
+
+    <!-- ===================== 总览 ===================== -->
+    <section id="overview">
+      <h2><span class="num">00</span>总览与判定</h2>
+      <p class="lead">一句话：打包侧有<strong>三条链路</strong>，升级侧有<strong>四条通道</strong>；只有新增的「插件补丁」链路同时满足「产物只含 dsh 插件」和「客户端只更新插件」。</p>
+      <div class="card info">
+        <strong>读图约定</strong>：每条泳道自上而下是执行顺序，箭头表示串行；彩色边框区分链路；虚线表示复用或异步触发。所有流程图均以结构化 HTML 绘制，<strong>完全离线可用</strong>，不依赖 Mermaid CDN。可复制的 Mermaid 源码见<a href="#mermaid">附录</a>。
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">层</th><th scope="col">诉求</th><th scope="col">现状</th><th scope="col">判定</th></tr></thead>
+          <tbody>
+            <tr><td>编译层</td><td>仅 dsh 改动时不重新编译 vscode 侧</td><td>主流水线无条件全量；EXE 快包复用上次 staging，跳过 npm ci / 全量 tsc / 逐扩展编译</td><td><span class="badge b-amber">部分满足</span></td></tr>
+            <tr><td>产物层</td><td>产物只含 dsh 插件</td><td>新增补丁包链路只出 tgz + manifest；EXE 快包仍走 ISCC 出完整包</td><td><span class="badge b-green">满足</span></td></tr>
+            <tr><td>升级层</td><td>只更新插件、不整装 EXE</td><td>新增 PatchManager 独立通道；原生 update feed 仍是整包 EXE</td><td><span class="badge b-green">代码完成</span> <span class="badge b-amber">待装机实测</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===================== 打包 ===================== -->
+    <section id="packaging">
+      <h2><span class="num">01</span>打包流程</h2>
+      <p class="lead">入口由「差异范围 + 用途」决定。主流水线无条件串行，是唯一对外发版链路；EXE 快包只服务内部验证；插件补丁包是新增的产物层链路。</p>
+      <div class="card info">
+        <strong>统一入口（方案 A）</strong>：<code>.ci/scripts/pack.ps1</code> 把上面的判定自动化——<code>git diff</code> 只含 <code>dsh-plugins/**</code> 时走补丁包；出现 <code>src/</code>、<code>extensions/</code>、<code>build/</code>、<code>product.json</code> 等内核改动时走全量构建；显式 <code>-Mode exe</code> 才走 EXE 快包。<code>-DryRun</code> 只打印 <code>route=...</code> 与将执行的命令。分流规则由 <code>pack-diff.ps1</code> 单一维护，<code>pack-dsh-plugins.ps1</code> 复用同一份守门口径，避免两处规则漂移。
+      </div>
+
+      <div class="decision">
+        <div class="decision-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M6 12h12M10 18h4"/></svg>
+          代码变更 → 差异范围判定
+        </div>
+        <div class="decision-grid">
+          <div class="decision-item">
+            <span class="cond">src/ · extensions/ · product.json · 版本变更</span>
+            <span class="target"><span class="lane-dot" style="background:var(--red)"></span>主流水线 <code>package-win-exe.yml</code></span>
+          </div>
+          <div class="decision-item">
+            <span class="cond">仅 dsh-plugins/ 且需要完整 EXE 做内部验证</span>
+            <span class="target"><span class="lane-dot" style="background:var(--amber)"></span>EXE 快包 <code>package-dsh-patch.yml</code></span>
+          </div>
+          <div class="decision-item">
+            <span class="cond">仅 dsh-plugins/ 且要下发给已装机用户</span>
+            <span class="target"><span class="lane-dot" style="background:var(--green)"></span>插件补丁 <code>package-dsh-plugins.yml</code></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="lanes">
+        <!-- 全量 -->
+        <div class="lane full">
+          <div class="lane-head">
+            <div class="name">主流水线 · 全量 EXE</div>
+            <div class="meta"><code>.ci/package-win-exe.yml</code><br>无条件串行，每次全跑</div>
+          </div>
+          <div class="step"><b>1 checkout + set-version</b><span class="hint">checkout main，<span class="file">bk-set-version.ps1</span></span></div><div class="arrow"></div>
+          <div class="step"><b>2 install-deps</b><span class="hint">删 <span class="file">node_modules</span> 重装 + native rebuild</span></div><div class="arrow"></div>
+          <div class="step"><b>3 kbblocks</b><span class="hint">esbuild 构建 webview bundle 并拷进 <span class="file">out-build</span></span></div><div class="arrow"></div>
+          <div class="step hot"><b>4 compile-build · 全量编译 ①</b><span class="hint">删 <span class="file">out/</span> 与所有 tsbuildinfo → <code>gulp compile-build-with-mangling</code></span></div><div class="arrow"></div>
+          <div class="step"><b>5 扩展编译</b><span class="hint">transpile-plugins + 逐扩展 tsc / vsce → <span class="file">.build/extensions</span></span></div><div class="arrow"></div>
+          <div class="step hot"><b>6 package-vscode · 全量编译 ②</b><span class="hint">prepack 200MB runtime + profile-seed、Office 150MB；<code>gulp vscode-win32-x64</code> 再编一次并组装 <span class="file">../VSCode-win32-x64</span></span></div><div class="arrow"></div>
+          <div class="step"><b>7 strip-before-pack</b><span class="hint">裁剪 sourcemap / locale；<strong>dsh-plugins 与 dsh-runtime 整目录 refresh</strong> + 逐文件完整性门禁；<code>--record-staging</code></span></div><div class="arrow"></div>
+          <div class="step"><b>8 资源与暂存校验</b><span class="hint">bundle ffmpeg / whisper → <span class="file">verify-staging.ps1</span> 写回执</span></div><div class="arrow"></div>
+          <div class="step"><b>9 generate-exe</b><span class="hint">回归测试、<code>--audit --clean</code>、<code>check-pack-contents</code>、Inno Setup ISCC</span></div><div class="arrow"></div>
+          <div class="step"><b>10 发布</b><span class="hint">上传更新服务器 + <span class="file">create-release.ps1</span> 打 tag / changelog / 双端 Release</span></div>
+          <div class="lane-out">完整 EXE ≈ 800 MB<span class="small">.build/win32-x64/{user,system}-setup/*.exe</span></div>
+        </div>
+
+        <!-- 快包 -->
+        <div class="lane quick">
+          <div class="lane-head">
+            <div class="name">EXE 快包 · 复用 staging</div>
+            <div class="meta"><code>pack-dsh-only.ps1</code><br>不重编内核，但仍出完整 EXE</div>
+          </div>
+          <div class="step hot"><b>0 前置基线</b><span class="hint"><code>-InitBaseline</code> 登记 <span class="file">quick-baseline.json</span>；需有上次全量的 <span class="file">../VSCode-win32-x64</span></span></div><div class="arrow"></div>
+          <div class="step"><b>1 差异守门</b><span class="hint">只允许 <span class="file">dsh-plugins/**</span>；改运行时内容必须 bump 版本</span></div><div class="arrow"></div>
+          <div class="step"><b>2 内核身份校验</b><span class="hint">product 版本 / pack mode / 媒体与 Office 开关 / 7 个 staging 哨兵 sha256</span></div><div class="arrow"></div>
+          <div class="step"><b>3 增量 seed</b><span class="hint"><code>prepack --incremental-seed</code> 只重装变更插件，失败自动回退全量；<code>--check-seed</code></span></div><div class="arrow"></div>
+          <div class="step"><b>4 同步插件资源</b><span class="hint"><code>sync-dsh-plugins.mjs</code> 按 sha256 只写差异文件 + 逐文件复核；bump 时 <code>--sync-seed</code></span></div><div class="arrow"></div>
+          <div class="step"><b>5 刷新回执</b><span class="hint"><code>--record-staging</code> → <span class="file">verify-staging.ps1</span></span></div><div class="arrow"></div>
+          <div class="step"><b>6 仅 ISCC</b><span class="hint"><span class="file">generate-exe.ps1</span>，不触发任何 gulp compile</span></div>
+          <div class="lane-out">完整 EXE ≈ 800 MB<span class="small">不推 update feed / 不发 Release，仅内部验证</span></div>
+        </div>
+
+        <!-- 补丁 -->
+        <div class="lane patch">
+          <div class="lane-head">
+            <div class="name">插件补丁 · 产物层新链路</div>
+            <div class="meta"><code>pack-dsh-plugins.ps1</code><br>不编译内核、不出 EXE</div>
+          </div>
+          <div class="step"><b>1 双守门</b><span class="hint">相对基线只允许 <span class="file">dsh-plugins/**</span>；改内容未 bump 直接拒绝</span></div><div class="arrow"></div>
+          <div class="step"><b>2 静态校验 + 打 tgz</b><span class="hint"><code>package-dsh-plugins.mjs</code>：禁止 <code>file:</code> 依赖与安装脚本；排除 node_modules / dev / test；逐包 sha256</span></div><div class="arrow"></div>
+          <div class="step"><b>3 生成清单</b><span class="hint"><span class="file">plugins-manifest.json</span> 带 <code>requires.bundled</code>、<code>minClient</code>、platform、Ed25519 签名</span></div><div class="arrow"></div>
+          <div class="step"><b>4 归档与部署</b><span class="hint">UploadArtifactory；<span class="file">deploy-update-server.ps1</span> 同步到 <code>DOWNLOADS_DIR/plugins/</code> 并过滤 .pem</span></div>
+          <div class="lane-out">tgz 补丁包 几十至几百 KB<span class="small">密钥只落 .build/plugin-signing/，绝不进下载目录</span></div>
+        </div>
+      </div>
+
+      <div class="cross-link">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
+        主流水线第 7 步产出的 <code>../VSCode-win32-x64</code> 暂存目录被 EXE 快包复用；<code>build-baseline.ps1</code> 是本地一键生成该基线并计时的脚本。
+      </div>
+
+      <h3>产物落地映射</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">源</th><th scope="col">中间产物</th><th scope="col">安装目录</th></tr></thead>
+          <tbody>
+            <tr><td><code>src/</code></td><td><code>out-build</code> → <code>out-vscode</code></td><td><code>resources/app/out/**</code></td></tr>
+            <tr><td><code>extensions/</code></td><td><code>.build/extensions</code></td><td><code>resources/app/extensions/**</code></td></tr>
+            <tr><td><code>dsh-plugins/</code></td><td>原样拷贝，不进 asar</td><td><code>resources/app/dsh-plugins/**</code></td></tr>
+            <tr><td><code>dsh-runtime/&lt;bundled&gt;</code></td><td>prepack 生成，含 profile-seed</td><td><code>resources/app/dsh-runtime/**</code></td></tr>
+            <tr><td><code>.build/office-runtime</code></td><td>约 150 MB Python 负载</td><td><code>resources/app/office-runtime/**</code></td></tr>
+            <tr><td><code>build/saros/{bin,models}</code></td><td>ffmpeg / whisper</td><td><code>resources/saros/**</code></td></tr>
+            <tr><td>Inno Setup</td><td>—</td><td><code>.build/win32-x64/&lt;target&gt;-setup/*.exe</code></td></tr>
+            <tr><td>插件补丁</td><td>—</td><td>更新服务器 <code>DOWNLOADS_DIR/plugins/**</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card note"><strong>两个已知浪费点</strong>：主流水线里 <code>compile-build.ps1</code> 与 <code>gulp vscode-win32-x64</code> 会各跑一次全量 tsc（后者还 <code>rimraf('out-build')</code> 覆盖前者结果）；且 <code>on.push</code> 没有 paths 过滤，仅插件变更也会全量跑一遍。</div>
+    </section>
+
+    <!-- ===================== 升级 ===================== -->
+    <section id="updates">
+      <h2><span class="num">02</span>升级流程</h2>
+      <p class="lead">四条通道彼此独立：通道一是 VS Code 原生 update feed（唯一"自动升级主链"），通道二/三是首启后台行为，通道四需要用户手动操作。只有通道三满足「不整装 EXE、仅更新插件」。</p>
+
+      <div class="lanes four">
+        <div class="lane feed">
+          <div class="lane-head">
+            <div class="name">通道一 · update feed</div>
+            <div class="meta">整包 EXE · 唯一自动升级主链<br><span class="badge b-red">全量安装</span></div>
+          </div>
+          <div class="step"><b>1 检查</b><span class="hint"><code>GET /api/update/{platform}/{quality}/{commit}</code></span></div><div class="arrow"></div>
+          <div class="step"><b>2 响应</b><span class="hint">返回 <code>version/productVersion/url/sha256hash</code> 或 <code>204</code></span></div><div class="arrow"></div>
+          <div class="step"><b>3 下载</b><span class="hint"><code>AvailableForDownload</code> → 用户确认 → 下载 <span class="file">CodeSetup-*.exe</span> 并校验 sha256</span></div><div class="arrow"></div>
+          <div class="step"><b>4 应用</b><span class="hint">spawn <code>/verysilent /update=…</code> 静默运行安装器</span></div><div class="arrow"></div>
+          <div class="step"><b>5 全量替换</b><span class="hint"><code>code.iss</code> <code>Source: "*"</code> 铺整个 app 目录 + <code>inno_updater.exe --gc</code></span></div>
+          <div class="lane-out">约 800 MB 下载与整包安装<span class="small">manifest 无 files / plugin / delta 字段；无 bsdiff 差分</span></div>
+        </div>
+
+        <div class="lane comp">
+          <div class="lane-head">
+            <div class="name">通道二 · 可选组件</div>
+            <div class="meta">局部更新，但不是插件<br><span class="badge b-blue">首启 2s 自动</span></div>
+          </div>
+          <div class="step"><b>1 拉清单</b><span class="hint"><code>GET /api/components</code></span></div><div class="arrow"></div>
+          <div class="step"><b>2 只认三个 id</b><span class="hint"><code>media</code> / <code>office</code> / <code>whisper</code></span></div><div class="arrow"></div>
+          <div class="step"><b>3 落盘</b><span class="hint"><span class="file">&lt;userData&gt;/components/&lt;id&gt;/current</span></span></div><div class="arrow"></div>
+          <div class="step"><b>4 消费方式</b><span class="hint">只注入 PATH 或 Office 运行时目录，<strong>不进</strong> <code>dsh plugin add</code></span></div>
+          <div class="lane-out">二进制资源<span class="small">与插件补丁刻意分开：语义、幂等与校验都不同</span></div>
+        </div>
+
+        <div class="lane plug">
+          <div class="lane-head">
+            <div class="name">通道三 · 插件补丁</div>
+            <div class="meta">P1 / P2 新增 · 满足诉求<br><span class="badge b-green">仅更新插件</span></div>
+          </div>
+          <div class="step"><b>1 触发</b><span class="hint">Host 首次 <code>running</code> → <code>GET /api/dsh-plugins</code></span></div><div class="arrow"></div>
+          <div class="step hot"><b>2 安全校验</b><span class="hint">Ed25519 验签 + <code>bundled</code> pin + <code>minClient</code> + platform</span></div><div class="arrow"></div>
+          <div class="step"><b>3 下载落盘</b><span class="hint">逐包 tgz 到 <span class="file">&lt;userData&gt;/dsh-plugin-patches/</span> + sha256</span></div><div class="arrow"></div>
+          <div class="step"><b>4 安装</b><span class="hint"><code>installPluginSpec('file:&lt;tgz&gt;', name)</code> → <code>dsh plugin add</code> 进 profile</span></div><div class="arrow"></div>
+          <div class="step hot"><b>5 原子写覆盖表</b><span class="hint">全部成功才写 <span class="file">dsh-plugin-overrides.json</span>；失败保留旧版</span></div><div class="arrow"></div>
+          <div class="step"><b>6 下次启动</b><span class="hint"><code>startupPackages</code> 摘除覆盖包防降级重装；<code>effectivePackages</code> 提升界面版本消除 downgradable</span></div><div class="arrow"></div>
+          <div class="step"><b>7 回滚</b><span class="hint">删 overrides.json + 重启即回随包版本</span></div>
+          <div class="lane-out">几十至几百 KB，无 EXE<span class="small">落点必须是 userData：system setup 装在 Program Files 不可写</span></div>
+        </div>
+
+        <div class="lane manual">
+          <div class="lane-head">
+            <div class="name">通道四 · 插件中心</div>
+            <div class="meta">运行时手动安装<br><span class="badge b-purple">需用户点按钮</span></div>
+          </div>
+          <div class="step"><b>1 来源</b><span class="hint">商城 tgz / npm spec / GitHub tarball</span></div><div class="arrow"></div>
+          <div class="step"><b>2 装进 profile</b><span class="hint">经 <code>installPluginSpec</code> 或商城 installBundle</span></div><div class="arrow"></div>
+          <div class="step"><b>3 局限</b><span class="hint">不经过更新服务器；<span class="file">&lt;appPath&gt;/dsh-plugins/</span> 随包真源不变，启动时可能被判 downgradable</span></div>
+          <div class="lane-out">手动、非自动升级<span class="small">dsh 版本随应用发版，运行期不切换 runtime</span></div>
+        </div>
+      </div>
+
+      <div class="card ok"><strong>为什么通道三要改"版本真源"</strong>：<code>_ensurePlugin</code> 在 <code>installed !== bundled</code> 时会按随包目录的旧版本重装，把刚装进 profile 的新版本冲掉。补丁链路把被覆盖的包从启动清单里摘掉（<code>dir: undefined</code> 走"保留已装版本"分支），并让界面清单用提升后的版本，因此不需要改动 3000+ 行的 HostSupervisor。</div>
+    </section>
+
+    <!-- ===================== 时序 ===================== -->
+    <section id="sequence">
+      <h2><span class="num">03</span>插件补丁端到端时序</h2>
+      <p class="lead">从"改几个插件"到"客户端生效"的完整链路，按参与者列出消息顺序。下表本身即流程图的可访问文字替代。</p>
+
+      <div class="card">
+        <div class="actors" aria-label="参与者">
+          <div class="actor">补丁流水线</div>
+          <div class="actor">生成脚本</div>
+          <div class="actor">更新服务器</div>
+          <div class="actor">PatchManager</div>
+          <div class="actor">HostSupervisor</div>
+          <div class="actor">userData</div>
+        </div>
+        <div class="seq-row"><div class="hop"><span class="badge b-amber">CI</span><span class="to">→</span><span class="badge b-green">GEN</span></div><div class="desc">仅 <code>dsh-plugins/**</code> 变更且已 bump 版本</div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-green">GEN</span><span class="to">→ 自身</span></div><div class="desc">静态校验 → 打 tgz → 算 sha256 → 生成清单并签名 <span class="dim">（密钥不落下载目录）</span></div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-green">GEN</span><span class="to">→</span><span class="badge b-blue">SRV</span></div><div class="desc"><code>plugins-manifest.json</code> + tgz 落到 <code>DOWNLOADS_DIR/plugins/</code></div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-purple">CLI</span><span class="to">→</span><span class="badge b-blue">SRV</span></div><div class="desc"><code>GET /api/dsh-plugins?client=…&amp;platform=…</code></div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-blue">SRV</span><span class="to">→</span><span class="badge b-purple">CLI</span></div><div class="desc">返回 manifest 与 signature；旧服务器 404 时静默跳过</div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-purple">CLI</span><span class="to">→ 自身</span></div><div class="desc">Ed25519 验签 + <code>bundled</code> pin + <code>minClient</code> + platform 校验</div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-purple">CLI</span><span class="to">→</span><span class="badge b-blue">SRV</span></div><div class="desc"><code>GET /downloads/plugins/*.tgz</code> 逐包下载</div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-purple">CLI</span><span class="to">→</span><span class="badge b-muted">FS</span></div><div class="desc">sha256 校验通过后落到 <code>&lt;userData&gt;/dsh-plugin-patches/&lt;sha12&gt;/</code></div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-purple">CLI</span><span class="to">→</span><span class="badge b-amber">SUP</span></div><div class="desc"><code>installPluginSpec('file:&lt;tgz&gt;', name)</code></div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-amber">SUP</span><span class="to">→ 自身</span></div><div class="desc"><code>_ensureProfile</code> → <code>dsh plugin add</code> → 置 <code>_pluginsStale</code>（下次启动起新 Host）</div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-amber">SUP</span><span class="to">→</span><span class="badge b-purple">CLI</span></div><div class="desc">返回 ok / error</div></div>
+        <div class="seq-row"><div class="hop"><span class="badge b-purple">CLI</span><span class="to">→</span><span class="badge b-muted">FS</span></div><div class="desc"><strong>全部成功才</strong>原子写 <code>dsh-plugin-overrides.json</code>；任一失败不写、保留上一版</div></div>
+        <div class="seq-note"><strong>下次启动</strong>：<code>readOverrides</code> 读取覆盖表 → <code>startupPackages</code> 摘除被覆盖包（含伴生插件目录）→ <code>effectivePackages</code> 提升界面版本 → <code>expectedModulePlugins</code> 同步排除，避免误报缺模块。</div>
+      </div>
+    </section>
+
+    <!-- ===================== 门禁 ===================== -->
+    <section id="artifacts">
+      <h2><span class="num">04</span>门禁链条</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">阶段</th><th scope="col">门禁</th><th scope="col">拦截对象</th></tr></thead>
+          <tbody>
+            <tr><td>补丁生成</td><td>差异白名单、bump 规则、禁止 <code>file:</code> 依赖与安装脚本、归档必须含 <code>package/package.json</code></td><td>内核改动混入补丁包、改内容不 bump、坏归档</td></tr>
+            <tr><td>服务端</td><td><code>Cache-Control: no-store</code>、<code>/downloads/**</code> 路径穿越防护、部署时过滤 <code>.pem</code></td><td>陈旧清单、越权文件、私钥外泄</td></tr>
+            <tr><td>客户端</td><td>Ed25519 验签、runtime pin、minClient、platform、逐包 sha256、原子写 overrides</td><td>篡改、跨版本、半装状态</td></tr>
+            <tr><td>全量打包</td><td><code>checkBundledSeed</code>、<code>--check-staging</code> 哨兵 sha256、<code>staging-verified.json</code>、<code>check-pack-contents</code>、<code>--record-exes</code> 体积预算</td><td>缺件包、残留暂存、超体积</td></tr>
+            <tr><td>EXE 快包</td><td><code>quick-baseline.json</code> 内核哨兵比对、版本 / 模式 / 开关一致性</td><td>新版本号配旧内核</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card warn"><strong>安全前提</strong>：<code>product.json</code> 的 <code>updateUrl</code> 目前是<strong>明文 HTTP</strong>。插件包内含可执行 JS，生产启用前必须切 HTTPS，或依赖已实现的 Ed25519 验签并把生产公钥注入客户端；未签名清单仅在 <code>VSSAROS_ALLOW_UNSIGNED_PLUGIN_PATCH=1</code> 开发开关下放行。</div>
+    </section>
+
+    <!-- ===================== 状态 ===================== -->
+    <section id="status">
+      <h2><span class="num">05</span>当前状态与未闭环项</h2>
+      <div class="card">
+        <dl class="kv">
+          <dt>入口自动分流</dt><dd><span class="badge b-green">脚本层已做</span> 新增 <code>.ci/scripts/pack.ps1</code> 统一入口，按 <code>git diff</code> 自动路由到补丁包 / EXE 快包 / 全量构建，支持 <code>-DryRun</code> 预演；<span class="badge b-amber">CI 触发层未做</span> <code>on.push</code> 仍无 paths 过滤，push 不会自动调用该入口（方案 B 需先确认蓝盾 PAC 语法）。</dd>
+          <dt>重复编译</dt><dd><span class="badge b-amber">未修</span> <code>compile-build.ps1</code> 与 <code>gulp vscode-win32-x64</code> 各跑一次全量 tsc。</dd>
+          <dt>HTTPS / 生产密钥</dt><dd><span class="badge b-amber">未配置</span> 需生成生产密钥对、注入公钥与 <code>PATCH_SIGN_KEY</code>、切换 <code>updateUrl</code>。</dd>
+          <dt>装机实测</dt><dd><span class="badge b-amber">待验收</span> 已通过 <code>tsgo</code> 类型检查、生成端与服务端端到端、验签一致性验证，但启动期应用补丁尚未在真实 EXE 上跑过。</dd>
+          <dt>省时幅度</dt><dd><span class="badge b-red">数据作废</span> 全量基线在 <code>compile-src</code> 阶段被终止，留痕 <code>.build/pack-reports/baseline-cancelled.json</code>。</dd>
+        </dl>
+      </div>
+      <div class="card info"><strong>装机验收清单</strong>
+        <ul class="clean">
+          <li>装旧 EXE → 只改一个插件并 bump → 推补丁 → 重启后 profile 版本为新版本、页面 <code>?rev</code> 变化；</li>
+          <li><code>resources/app/dsh-plugins/</code> 与 <code>dsh-runtime/</code> 字节不变，进程里无 <code>CodeSetup-*.exe</code> / ISCC；</li>
+          <li>验签失败 / 坏包 / pin 不符 / <code>minClient</code> 不满足时保留旧版，日志点名原因；</li>
+          <li>system setup（Program Files 只读）与 user setup 均生效；删 overrides.json 后能回滚；</li>
+          <li><code>npm run check:dsh-plugins</code> 与 <code>check-dsh-release.mjs</code> 仍全绿。</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===================== 附录 ===================== -->
+    <section id="mermaid">
+      <h2><span class="num">06</span>附录 · Mermaid 源码</h2>
+      <p class="lead">页面主视图为离线 CSS 流程图。以下源码可复制到支持 Mermaid 的平台（GitHub、飞书文档、CodeBuddy Markdown）直接渲染。</p>
+
+      <details>
+        <summary>打包流程 flowchart</summary>
+        <div class="details-body">
+          <button class="ghost-btn copy-btn" type="button" aria-label="复制打包流程 Mermaid 源码">复制</button>
+          <pre><code>flowchart TD
+  A[代码变更] --&gt; B{差异范围与用途}
+  B --&gt;|内核或扩展变更 对外发版| C[主流水线 package-win-exe.yml]
+  B --&gt;|仅 dsh-plugins 且要完整 EXE 内部验证| D[EXE 快包 package-dsh-patch.yml]
+  B --&gt;|仅 dsh-plugins 且发给用户| E[插件补丁 package-dsh-plugins.yml]
+  subgraph FULL[全量链路]
+    C --&gt; C1[checkout + set-version + install-deps]
+    C1 --&gt; C2[kbblocks + compile-build 全量 tsc 1]
+    C2 --&gt; C3[transpile + compile-extensions]
+    C3 --&gt; C4[package-vscode prepack seed Office 全量 tsc 2 组装 staging]
+    C4 --&gt; C5[strip-before-pack 裁剪 与 dsh-plugins seed 刷新]
+    C5 --&gt; C6[ffmpeg whisper verify-staging record-staging]
+    C6 --&gt; C7[generate-exe 回归测试 check-pack-contents ISCC]
+    C7 --&gt; C8[上传更新服务器 + create-release]
+  end
+  subgraph QUICK[EXE 快包 复用 staging]
+    D --&gt; D0[InitBaseline 登记 quick-baseline.json]
+    D0 --&gt; D1[差异守门 bump 守门 内核哨兵校验]
+    D1 --&gt; D2[incremental-seed + check-seed]
+    D2 --&gt; D3[sync-dsh-plugins 差异复制 逐文件复核]
+    D3 --&gt; D4[record-staging + verify-staging]
+    D4 --&gt; D5[generate-exe 仅 ISCC]
+  end
+  subgraph PATCH[插件补丁 不编译内核不出 EXE]
+    E --&gt; E1[守门 只允许 dsh-plugins 且必须 bump]
+    E1 --&gt; E2[静态校验 打 tgz 算 sha256]
+    E2 --&gt; E3[plugins-manifest.json + Ed25519 签名]
+    E3 --&gt; E4[归档 + deploy-update-server 同步 downloads/plugins]
+  end
+  C8 --&gt; EXE[完整 EXE 约 800MB]
+  D5 --&gt; EXE
+  E4 --&gt; PKG[tgz 补丁包 几十至几百 KB]
+  C5 -.复用.-&gt; D0</code></pre>
+        </div>
+      </details>
+
+      <details>
+        <summary>升级流程 flowchart</summary>
+        <div class="details-body">
+          <button class="ghost-btn copy-btn" type="button" aria-label="复制升级流程 Mermaid 源码">复制</button>
+          <pre><code>flowchart TD
+  S[客户端启动] --&gt; F{更新通道}
+  subgraph FEED[通道一 update feed 整包 EXE]
+    F --&gt; U1[GET /api/update/platform/quality/commit]
+    U1 --&gt; U2[返回 version productVersion url sha256 或 204]
+    U2 --&gt; U3[下载 CodeSetup exe 并校验 sha256]
+    U3 --&gt; U4[spawn /verysilent /update 静默运行安装器]
+    U4 --&gt; U5[code.iss 全量铺文件 + inno_updater gc]
+    U5 --&gt; U6[整包替换 约 800MB]
+  end
+  subgraph COMP[通道二 可选组件 非插件]
+    F --&gt; M1[GET /api/components]
+    M1 --&gt; M2[只认 media office whisper]
+    M2 --&gt; M3[下载到 userData/components/current]
+    M3 --&gt; M4[只注入 PATH 或 Office 运行时]
+  end
+  subgraph PLUG[通道三 插件补丁 仅更新插件]
+    F --&gt; P1[Host running 后 GET /api/dsh-plugins]
+    P1 --&gt; P2[验签 + bundled pin + minClient + platform]
+    P2 --&gt; P3[逐包下载 tgz 到 userData 并校验 sha256]
+    P3 --&gt; P4[installPluginSpec file tgz 进 profile]
+    P4 --&gt; P5[全部成功才原子写 overrides.json]
+    P5 --&gt; P6[startupPackages 摘除覆盖包 防降级重装]
+    P6 --&gt; P7[effectivePackages 提升界面版本]
+    P7 --&gt; P8[删 overrides 重启即回滚]
+  end
+  subgraph MANUAL[通道四 插件中心 手动]
+    F --&gt; N1[商城 tgz npm spec GitHub tarball]
+    N1 --&gt; N2[装进 profile 但 appPath 真源不变]
+  end</code></pre>
+        </div>
+      </details>
+
+      <details>
+        <summary>插件补丁 sequenceDiagram</summary>
+        <div class="details-body">
+          <button class="ghost-btn copy-btn" type="button" aria-label="复制时序图 Mermaid 源码">复制</button>
+          <pre><code>sequenceDiagram
+  participant CI as 补丁流水线
+  participant GEN as package-dsh-plugins.mjs
+  participant SRV as update-server
+  participant CLI as PatchManager
+  participant SUP as HostSupervisor
+  participant FS as userData
+  CI-&gt;&gt;GEN: 仅 dsh-plugins 变更且已 bump
+  GEN-&gt;&gt;GEN: 静态校验 打 tgz 算 sha256 签名
+  GEN-&gt;&gt;SRV: plugins-manifest.json 与 tgz 落到 downloads/plugins
+  CLI-&gt;&gt;SRV: GET /api/dsh-plugins
+  SRV--&gt;&gt;CLI: manifest 与 signature
+  CLI-&gt;&gt;CLI: 验签 及 pin minClient platform 校验
+  CLI-&gt;&gt;SRV: GET /downloads/plugins/*.tgz
+  SRV--&gt;&gt;CLI: tgz
+  CLI-&gt;&gt;FS: sha256 校验后落盘
+  CLI-&gt;&gt;SUP: installPluginSpec file:tgz 加包名
+  SUP-&gt;&gt;SUP: ensureProfile + dsh plugin add + pluginsStale
+  SUP--&gt;&gt;CLI: ok
+  CLI-&gt;&gt;FS: 原子写 dsh-plugin-overrides.json
+  Note over CLI,FS: 下次启动 startupPackages 摘除覆盖包 且 effectivePackages 提升界面版本</code></pre>
+        </div>
+      </details>
+    </section>
+
+  </main>
+</div>
+
+<button class="to-top" id="toTop" type="button" aria-label="回到顶部">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+</button>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var toggle = document.getElementById('themeToggle');
+  var label = document.getElementById('themeLabel');
+  function apply(theme) {
+    root.setAttribute('data-theme', theme);
+    label.textContent = theme === 'dark' ? '浅色' : '深色';
+  }
+  try {
+    var saved = localStorage.getItem('vssaros-flow-theme');
+    if (saved) { apply(saved); }
+  } catch (e) { /* file:// 下 localStorage 可能不可用 */ }
+  toggle.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    apply(next);
+    try { localStorage.setItem('vssaros-flow-theme', next); } catch (e) { /* ignore */ }
+  });
+
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var code = btn.parentElement.querySelector('code');
+      var text = code ? code.textContent : '';
+      var done = function () {
+        var old = btn.textContent;
+        btn.textContent = '已复制';
+        setTimeout(function () { btn.textContent = old; }, 1600);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { fallback(text, done); });
+      } else {
+        fallback(text, done);
+      }
+    });
+  });
+  function fallback(text, done) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { /* ignore */ }
+    document.body.removeChild(ta);
+  }
+
+  var links = Array.prototype.slice.call(document.querySelectorAll('.sidenav a'));
+  var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); }).filter(Boolean);
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) { return; }
+        links.forEach(function (a) {
+          a.classList.toggle('active', a.getAttribute('href') === '#' + entry.target.id);
+        });
+      });
+    }, { rootMargin: '-100px 0px -65% 0px', threshold: 0 });
+    sections.forEach(function (s) { io.observe(s); });
+  }
+
+  var toTop = document.getElementById('toTop');
+  window.addEventListener('scroll', function () {
+    toTop.style.display = window.scrollY > 500 ? 'flex' : 'none';
+  }, { passive: true });
+  toTop.addEventListener('click', function () { window.scrollTo({ top: 0, behavior: 'smooth' }); });
+})();
+</script>
+</body>
+</html>

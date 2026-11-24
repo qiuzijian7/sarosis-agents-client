@@ -10,7 +10,7 @@
  *
  * 机制：win32 的自动安装走 `doApplyUpdate()`，给安装包传 **`/nocloseapplications`**
  * ⇒ Inno 不去关闭占用文件的进程 ⇒ 被锁的文件只能排到"重启时替换" ⇒ 收尾弹那条中文提示
- * （手动那条 `doQuitAndInstall()` 用 `/silent`，不带这个开关，所以很少出现）。
+ * （兜底那条 `doQuitAndInstall()` 现在用 `/verysilent`，不带这个开关，所以仍可关闭占用进程）。
  *
  * ⇒ 修法是：spawn 安装包**之前**跑一次"释放占用者"钩子，由主进程的 dsh 通道注入
  *   `releaseHost()`（dsh Host 是 detached 常驻的，锁着 `dsh-runtime/<ver>/koffi.node`）。

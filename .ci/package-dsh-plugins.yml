@@ -1,0 +1,88 @@
+version: v3.0
+name: VsSaros-Dsh-Plugin-Patch
+
+# 插件级升级 P0：只产出「变更的 dsh 插件补丁包」，不编译内核、不跑 Inno Setup、不产出 EXE、
+# 不改 update feed 的 exe 条目。产物由更新服务器以 /api/dsh-plugins + /downloads/plugins/** 提供，
+# 客户端 dshPluginPatchManager（P1）启动期消费。
+#
+# 与另外两条流水线的分工：
+#   .ci/package-win-exe.yml        内核 / 扩展 / 版本变更 ⇒ 全量 EXE（仍走 update feed 整包升级）
+#   .ci/package-dsh-patch.yml      复用 staging 快速出完整 EXE（内部验证用，不发布）
+#   本流水线                       仅插件变更 ⇒ 只出补丁包（产物层诉求）
+#
+# ⚠ 部署：本流水线只生成并归档补丁包；同步到更新服务器需执行
+#   powershell -File deploy-package/scripts/deploy-update-server.ps1
+# 或由运维把归档的 downloads/plugins/ 目录整体同步到服务器 DOWNLOADS_DIR/plugins/。
+# 不在这里自动部署，是为了避免流水线直接改写线上更新服务器。
+#
+# ⚠ 安全：插件包是可执行 JS。生产必须配置 PATCH_SIGN_KEY（Ed25519 私钥，蓝盾凭据），
+# 并把 product.json 的 updateUrl 切到 HTTPS；未签名时生成脚本会输出显式警告。
+
+on:
+  manual: enabled
+
+variables:
+  PATCH_ONLY:
+    value: ''
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 只打这些插件目录（逗号分隔，如 vssaros-chat-surface,vssaros-bridge）；留空则用 PATCH_BASE 的 git diff 自动判定
+      required: false
+  PATCH_BASE:
+    value: 'HEAD'
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 差异基线 commit；守门只允许 dsh-plugins/** 有改动
+      required: true
+  PATCH_SIGN_KEY:
+    value: ''
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: Ed25519 私钥文件路径（凭据管理）；留空产出未签名补丁包，仅限内网验证
+      required: false
+  SAROS_MIN_CLIENT:
+    value: ''
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 兼容的最低客户端版本（留空取 product.json 当前版本）
+      required: false
+
+stages:
+- name: 生成插件补丁包
+  label:
+  - Build
+  jobs:
+    plugin-patch:
+      name: Package changed dsh plugins only
+      runs-on:
+        pool-name: windows
+      steps:
+      - checkout:
+          repo-id: yWNpX
+        name: Checkout source
+        with:
+          refName: main
+      # 不跑 install-deps / compile-build / compile-extensions / package-vscode / generate-exe。
+      # 生成脚本只依赖 node 内置模块 + 仓库已有的 tar。
+      - name: Build plugin patch (no EXE)
+        with:
+          charsetType: UTF_8
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/pack-dsh-plugins.ps1'
+        shell: powershell
+      - name: Archive plugin patch
+        uses: UploadArtifactory@8.*
+        with:
+          filePath: build/saros/update-server/downloads/plugins/**
+          downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
+      - name: Archive patch report
+        uses: UploadArtifactory@8.*
+        with:
+          filePath: .build/pack-reports/dsh-plugin-patch.json
+          downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
+
+concurrency: {}
+syntax-dialect: INHERIT

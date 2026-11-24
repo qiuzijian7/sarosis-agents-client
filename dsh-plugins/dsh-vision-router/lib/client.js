@@ -185,6 +185,7 @@ openLogFolder,
       guidePromptLauncherBody: '点击侧边栏左下角被高亮的设置入口；Desktop 中这里可能显示为账号头像或「更多」。也可以直接点「下一步」继续。',
       guidePromptMenuBody: '在弹出的账号菜单中点击被高亮的「设置」（或点「下一步」自动打开设置面板）。',
       guidePromptNavBody: '在设置面板左侧点击被高亮的「Vision Router」入口（或点「下一步」自动进入）。我会直接定位到「识图模型」。',
+      guideBlockedBody: '请先关闭遮挡弹窗；若已打开设置，请手动进入「Vision Router」后重试。',
       guidePromptCancel: '结束引导',
       guideChainTitle: '第 3 步 · 设置备用模型',
       guideChainBody: '这里的识图模型会从上到下依次尝试。可以添加多个备用模型，也可以全部留空；内置 OVH 免费模型会在最后自动兜底。选好后点击页面底部「保存」。',
@@ -471,6 +472,7 @@ openLogFolder,
       guidePromptLauncherBody: 'Click the highlighted settings launcher at the bottom-left of the sidebar. In Desktop it may appear as your account avatar or the More menu. You can also press “Next”.',
       guidePromptMenuBody: 'In the account menu, click the highlighted “Settings” item (or press “Next” to open Settings automatically).',
       guidePromptNavBody: 'In Settings, click the highlighted “Vision Router” entry (or press “Next”). I will take you directly to “Vision model”.',
+      guideBlockedBody: 'Close any blocking dialog, or open Vision Router in Settings manually, then retry.',
       guidePromptCancel: 'End guide',
       guideChainTitle: 'Step 3 · Add fallback models',
       guideChainBody: 'Vision models are tried from top to bottom. You may add several fallbacks or leave them empty; the built-in OVH free model remains the final fallback. Save when done.',
@@ -1942,12 +1944,13 @@ openLogFolder,
       '[aria-label^="选择模型"], [aria-label^="Select model"]',
       '[data-composer-card] button[aria-haspopup="menu"]',
     ]
-    // Settings is a modal, not a URL route: detect it purely by DOM. Exclude
-    // our own onboarding dialog (also aria-modal) from the panel lookup.
+    // Details: docs/architecture/client-ui-lifecycle-notes.md (Host modal coexistence).
+    function guideModals() {
+      if (typeof document === 'undefined') return []
+      return Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]')).filter(d => !d.closest?.('.vr-onboarding-dialog'))
+    }
     function guideSettingsPanel() {
-      if (typeof document === 'undefined') return undefined
-      const dialogs = Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]'))
-      return dialogs.find((dialog) => !dialog.closest || !dialog.closest('.vr-onboarding-dialog'))
+      return guideModals().find(d => d.querySelector('nav button'))
     }
     // The settings modal can close by unmounting or by the host hiding it in
     // place; a panel that is gone or not visibly rendered counts as closed.
@@ -2085,12 +2088,14 @@ openLogFolder,
       if (guideSessionState === GUIDE_STATE.VISION_MODEL) return 'done'
       if (typeof document === 'undefined') return 'launcher'
       if (document.querySelector('[data-vr-guide-target="vision-backend"]')) return 'done'
+      if (guideModals().some(d => d !== guideSettingsPanel())) return 'blocked'
       if (guideHostUi.settingsPanel()) return 'nav'
       if (guideHostUi.settingsMenuItem()) return 'menu'
       return 'launcher'
     }
     function guideTarget(step, phase) {
       if (step === 'step1') return guideHostUi.chatModelTarget()
+      if (phase === 'blocked') return undefined
       if (phase === 'nav') return guideHostUi.visionRouterNav()
       if (phase === 'menu') return guideHostUi.settingsMenuItem()
       return guideHostUi.settingsLauncher()
@@ -2134,11 +2139,9 @@ openLogFolder,
       if (step === 'step1') return { title: t('guideStep1Title'), body: t('guideStep1Body') }
       return {
         title: t('guidePromptTitle'),
-        body: phase === 'nav'
-          ? t('guidePromptNavBody')
-          : phase === 'menu'
-            ? t('guidePromptMenuBody')
-            : t('guidePromptLauncherBody'),
+        body: t(phase === 'blocked' ? 'guideBlockedBody'
+          : phase === 'nav' ? 'guidePromptNavBody'
+            : phase === 'menu' ? 'guidePromptMenuBody' : 'guidePromptLauncherBody'),
       }
     }
     function buildGuidePrompt(t, step, phase) {
@@ -2178,9 +2181,13 @@ openLogFolder,
         } else {
           const currentPhase = guidePhase('step2')
           if (currentPhase === 'menu') keepSettingsMenuOpen(event)
-          if (currentPhase === 'launcher') guideHostUi.advanceSettingsLauncher()
-          else if (currentPhase === 'menu') guideHostUi.openSettingsFromMenu()
-          else if (currentPhase === 'nav') guideHostUi.openVisionRouter()
+          const advanced = currentPhase === 'launcher' ? guideHostUi.advanceSettingsLauncher()
+            : currentPhase === 'menu' ? guideHostUi.openSettingsFromMenu()
+              : currentPhase === 'nav' ? guideHostUi.openVisionRouter() : false
+          if (!advanced) {
+            body.textContent = t('guideBlockedBody')
+            return
+          }
         }
         clearGuidePromptUI()
         scheduleGuideSync(t)

@@ -167,3 +167,38 @@ test('legacy direct Settings launchers remain supported', async t => {
 	guide.next().click();
 	assert.equal(opened, 1);
 });
+
+test('a Host first-run notice is not mistaken for the Settings panel', async t => {
+	const guide = createGuide(t);
+	const notice = guide.document.createElement('div');
+	notice.setAttribute('role', 'dialog');
+	notice.setAttribute('aria-modal', 'true');
+	notice.innerHTML = '<h2>预览版说明</h2><button>继续</button>';
+	guide.document.body.append(notice);
+	await guide.startStep2();
+	assert.equal(guide.phase(), 'blocked');
+	guide.next().click();
+	await guide.settle();
+	assert.equal(guide.phase(), 'blocked');
+	assert.equal(guide.document.querySelector('.vr-guide-prompt-body')?.textContent, 'guideBlockedBody');
+	notice.remove();
+	await guide.settle();
+	assert.equal(guide.phase(), 'launcher');
+	assert.equal(guide.document.querySelector('.vr-guide-prompt-body')?.textContent, 'guidePromptLauncherBody');
+});
+
+test('Next reports a failure when the Settings nav has no Vision Router row', async t => {
+	const guide = createGuide(t);
+	await guide.startStep2();
+	const panel = guide.document.createElement('div');
+	panel.setAttribute('role', 'dialog');
+	panel.setAttribute('aria-modal', 'true');
+	panel.innerHTML = '<nav><button>General</button><button>Models</button></nav>';
+	guide.document.body.append(panel);
+	await guide.settle();
+	assert.equal(guide.phase(), 'nav');
+	guide.next().click();
+	await guide.settle();
+	assert.equal(guide.phase(), 'nav');
+	assert.equal(guide.document.querySelector('.vr-guide-prompt-body')?.textContent, 'guideBlockedBody');
+});

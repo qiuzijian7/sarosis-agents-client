@@ -154,6 +154,18 @@ export function resolveSiblingPackage(dshBin: string, pkgName: string): string |
 	return [...parts.slice(0, i + 1), m[1]].join(sep);
 }
 
+/**
+ * 从官方运行时包的文件内容里提取 `WELCOME_NOTICE_VERSION`（首启「预览版说明」的确认版本）。
+ *
+ * ⚠ 同一个常量在随包分发的三处**引号各不相同**：`src/onboarding-copy.ts` 单引号、
+ * `lib/client.js`（minified）反引号、`lib/types/onboarding-copy.d.ts` 双引号。旧实现只认
+ * 双引号且只读 `lib/client.js` ⇒ 恒读不到 ⇒ 覆盖层不写 `ui-settings-general` 行 ⇒ 首启
+ * 必然弹「预览版说明」（2026-11-23 修复）。纯函数，便于用真实 bundle 形态做守卫测试。
+ */
+export function parseWelcomeNoticeVersion(source: string): string | undefined {
+	return /\bWELCOME_NOTICE_VERSION\s*=\s*(['"`])([^'"`]+)\1/.exec(source)?.[2];
+}
+
 export function buildVersionArgs(bin: string): string[] {
 	return [bin, '--version'];
 }

@@ -11,7 +11,7 @@ import { verifyInstallers } from './pack-optimization.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const REPORT = '.build/pack-reports/uploads.json';
-const DEFAULT_SERVER = 'http://zijianqiu-any1.devcloud.woa.com:3030';
+const DEFAULT_SERVER = 'http://21.139.192.124:3030';
 
 export function trustedDownloadBase(server, env = process.env) {
 	const url = new URL(env.SAROS_RELEASE_DOWNLOAD_BASE_URL || server || env.SAROS_UPDATE_SERVER || DEFAULT_SERVER);

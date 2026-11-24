@@ -33,7 +33,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { basename, delimiter, dirname, join, resolve } from '../../../../base/common/path.js';
 import { DshBridgeMethod, IBridgeHello, IBridgePluginRow, IBridgeReverseRequest, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult } from '../common/dshBridgeProtocol.js';
-import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, DSH_SHARED_INSTANCE_PACKAGES, parseAuthUrl, resolveSiblingPackage, toFileSpec } from '../common/dshCli.js';
+import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, DSH_SHARED_INSTANCE_PACKAGES, parseAuthUrl, parseWelcomeNoticeVersion, resolveSiblingPackage, toFileSpec } from '../common/dshCli.js';
 import { isDshRowsBundleRegistered, isMcpRuntimeMountEnabled, parseMcpServers, renderMcpOverlay } from '../common/dshMcpConfig.js';
 import { auditBundledPluginVersions, isVersionNewer, renderBundledVersionAudit } from '../common/dshPluginVersionAudit.js';
 import { describeManualUpgrade, IThirdPartyPlugin, pickThirdPartyPlugins, upgradableSpecOf } from '../common/dshPluginUpgrade.js';
@@ -3701,6 +3701,11 @@ export class DshHostSupervisor extends Disposable {
 	 * `WELCOME_NOTICE_VERSION` 常量，dsh 升级换文案时自动跟随）。读不到返回 undefined ——
 	 * 覆盖层不写那一行，退回官方"弹一次、用户点 Continue"的行为（宁可弹窗也不写坏配置）。
 	 * 命中后按运行时目录缓存（同一进程内多次启动不重复读盘）。
+	 *
+	 * ★ 2026-11-23（用户报首启弹「预览版说明」）：旧实现只读 `lib/client.js` 且只认**双引号**，
+	 *   而官方把常量打包成**反引号**模板字符串（`src/onboarding-copy.ts` 是单引号、`*.d.ts`
+	 *   是双引号）⇒ 恒读不到 ⇒ `ui-settings-general` 覆盖层从未生成 ⇒ 每次首启都弹。
+	 *   现在按顺序扫三个随包文件，任一存在即可预置确认版本。
 	 */
 	private _welcomeNoticeVersion(dsh: IResolvedDsh): string | undefined {
 		if (this._welcomeNoticeCache?.key === dsh.bin) {
@@ -3709,14 +3714,26 @@ export class DshHostSupervisor extends Disposable {
 		let value: string | undefined;
 		try {
 			const pkgDir = resolveSiblingPackage(dsh.bin, '@deepseek-ai/dsh-client-ui-settings-models');
-			const file = pkgDir ? join(pkgDir, 'lib', 'client.js') : undefined;
-			if (file && existsSync(file)) {
-				value = /WELCOME_NOTICE_VERSION\s*=\s*"([^"]+)"/.exec(readFileSync(file, 'utf8'))?.[1];
+			const candidates = pkgDir ? [
+				join(pkgDir, 'lib', 'client.js'),
+				join(pkgDir, 'src', 'onboarding-copy.ts'),
+				join(pkgDir, 'lib', 'types', 'onboarding-copy.d.ts'),
+			] : [];
+			for (const file of candidates) {
+				if (!existsSync(file)) {
+					continue;
+				}
+				value = parseWelcomeNoticeVersion(readFileSync(file, 'utf8'));
+				if (value) {
+					break;
+				}
 			}
 		} catch {
 			value = undefined;
 		}
-		if (!value) {
+		if (value) {
+			this._appendLog(`welcome-notice pre-acknowledged at version ${value}`);
+		} else {
 			this._appendLog('welcome-notice version not found in the runtime; the official preview notice may show once');
 		}
 		this._welcomeNoticeCache = { key: dsh.bin, value };

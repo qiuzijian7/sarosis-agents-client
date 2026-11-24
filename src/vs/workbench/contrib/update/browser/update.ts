@@ -275,7 +275,7 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 				const nextVersion = tryParseVersion(productVersion);
 				this.majorMinorUpdateAvailableContextKey.set(Boolean(currentVersion && nextVersion && isMajorMinorUpdate(currentVersion, nextVersion)));
 			}
-			// vssaros: 下载完成后弹窗询问是否重启
+			// vssaros: 后台安装完成后弹窗询问是否重启
 			this.promptForRestart();
 			break;
 		}
@@ -313,7 +313,7 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 
 	/**
 	 * vssaros: 检测到新版本时弹窗，让用户手动选择"立即更新"或"暂不更新"。
-	 * 选"更新" → 后台下载并在下次重启时应用；选"暂不" → 保持 AvailableForDownload 状态，
+	 * 选"更新" → 后台下载并静默安装，安装完成后提示重启；选"暂不" → 保持 AvailableForDownload 状态，
 	 * 活动栏徽章持续提示，用户可随时从齿轮菜单选 "Download Update" 触发。
 	 */
 	private async promptForUpdate(update: IUpdate): Promise<void> {
@@ -325,10 +325,10 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 
 		const res = await this.dialogService.confirm({
 			type: 'info',
-			message: nls.localize('updateAvailableMsg', "A new version of {0} ({1}) is available. Update now?", this.productService.nameShort, update.productVersion || update.version),
-			detail: nls.localize('updateAvailableDetail', "The update will be downloaded in the background and applied on next restart."),
-			primaryButton: nls.localize({ key: 'updateNow', comment: ['&& denotes a mnemonic'] }, "&&Update"),
-			cancelButton: nls.localize('updateLater', "La&&ter")
+			message: nls.localize('updateAvailableMsg', "发现 {0} 新版本（{1}），是否更新？", this.productService.nameShort, update.productVersion || update.version),
+			detail: nls.localize('updateAvailableDetail', "更新包将在后台下载并静默安装，不会显示安装向导；完成后会提示是否重启。"),
+			primaryButton: nls.localize({ key: 'updateNow', comment: ['&& denotes a mnemonic'] }, "&&立即更新"),
+			cancelButton: nls.localize('updateLater', "暂不更新")
 		});
 
 		if (res.confirmed) {
@@ -338,8 +338,8 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 	}
 
 	/**
-	 * vssaros: 更新下载完成后弹窗，让用户选择"立即重启"或"稍后重启"。
-	 * 选"重启" → 立即退出并应用更新；选"稍后" → 保持 Ready 状态，
+	 * vssaros: 后台安装完成后弹窗，让用户选择"立即重启"或"稍后重启"。
+	 * 选"重启" → 立即退出并由安装器完成收尾；选"稍后" → 保持 Ready 状态，
 	 * 活动栏徽章持续提示，用户下次重启时自动应用。
 	 */
 	private async promptForRestart(): Promise<void> {
@@ -351,10 +351,10 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 
 		const res = await this.dialogService.confirm({
 			type: 'info',
-			message: nls.localize('updateReadyMsg', "Update downloaded. Restart now to apply the update?"),
-			detail: nls.localize('updateReadyDetail', "The update will be applied when {0} restarts.", this.productService.nameShort),
-			primaryButton: nls.localize({ key: 'restartNow', comment: ['&& denotes a mnemonic'] }, "&&Restart"),
-			cancelButton: nls.localize('restartLater', "La&&ter")
+			message: nls.localize('updateReadyMsg', "更新已安装完成，是否立即重启？"),
+			detail: nls.localize('updateReadyDetail', "重启 {0} 后新版本才会生效；也可以稍后再重启。", this.productService.nameShort),
+			primaryButton: nls.localize({ key: 'restartNow', comment: ['&& denotes a mnemonic'] }, "&&立即重启"),
+			cancelButton: nls.localize('restartLater', "稍后重启")
 		});
 
 		if (res.confirmed) {

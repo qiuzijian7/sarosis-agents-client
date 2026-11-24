@@ -26,6 +26,22 @@ These implementation notes are kept outside the self-contained browser module to
       // section — so the walkthrough can be driven entirely from the prompt
       // without touching the real controls.
 
+## Host modal coexistence
+
+      // Settings is a modal, not a URL route: the guide finds it by DOM. The
+      // Host also renders unrelated aria-modal dialogs during first run (the
+      // "preview notice", API Key setup, confirmations), and their backdrop
+      // can swallow clicks. Only a modal containing a section <nav> with a
+      // button is Settings; any other aria-modal dialog puts step 2 in the
+      // "blocked" phase, which parks the prompt in the corner, hides the
+      // spotlight and asks the user to close that dialog first.
+      //
+      // Step 2's Next performs the current phase's host action. If it cannot
+      // be performed (no launcher, no menu item, no Vision Router row), the
+      // prompt body is replaced with the same blocked/retry copy instead of
+      // being a silent no-op. The MutationObserver restores the normal copy
+      // as soon as the Host dialog closes or the target appears.
+
 ## Provider-model draft rows
 
         // Rows persist as { provider, model } objects while editing — an

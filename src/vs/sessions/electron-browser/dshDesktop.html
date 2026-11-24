@@ -5,14 +5,39 @@
 	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none';" />
 	<title>VsSaros — Desktop</title>
 	<style>
+		/* --dsh-caption-h 由 dshDesktop.ts 按 WCO 的 getTitlebarAreaRect() 动态校准；33px 是下限（32DIP + 1px 窗框）。 */
+		:root { --dsh-caption-h: 33px; }
 		html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #1f1f1f; color: #cccccc; font-family: "Segoe UI", system-ui, sans-serif; }
-		#root { position: absolute; inset: 29px 0 0 0; }
-		#booting { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 0 24px; font-size: 13px; color: #9d9d9d; text-align: center; }
-		#open-ide { position: absolute; right: 146px; top: 0; width: 46px; height: 29px; border: 0; background: transparent; color: #cccccc; font: inherit; font-size: 12px; cursor: default; z-index: 2; }
+		#root { position: absolute; inset: var(--dsh-caption-h) 0 0 0; }
+		#booting { position: absolute; inset: var(--dsh-caption-h) 0 0 0; display: flex; align-items: center; justify-content: center; padding: 0 24px; font-size: 13px; color: #9d9d9d; text-align: center; pointer-events: none; }
+		/* 自绘 caption：与 Electron WCO 窗控带同色同高（右侧 138px 由原生层画，DOM 不许比它矮，否则出现台阶）；整条可拖拽，交互元素单独 no-drag。 */
+		#caption { position: absolute; left: 0; top: 0; right: 0; height: var(--dsh-caption-h); box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding: 0 192px 0 10px; background: #1f1f1f; color: #cccccc; font-size: 12px; line-height: 1; white-space: nowrap; overflow: hidden; z-index: 2; -webkit-app-region: drag; user-select: none; }
+		#caption .logo { flex: none; width: 16px; height: 16px; }
+		#caption .brand { flex: none; font-weight: 600; }
+		#caption .version { flex: none; font-size: 11px; opacity: .62; letter-spacing: .02em; }
+		#caption .menubar { display: inline-flex; align-items: center; gap: 2px; flex: none; margin-left: 10px; pointer-events: auto; -webkit-app-region: no-drag; }
+		#caption .menu-btn { height: 22px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent; color: #cccccc; font: inherit; font-size: 12px; cursor: default; pointer-events: auto; -webkit-app-region: no-drag; }
+		#caption .menu-btn:hover, #caption .menu-btn[aria-expanded="true"] { background: rgba(128, 128, 128, .22); }
+		#open-ide { position: absolute; right: 146px; top: 0; width: 46px; height: var(--dsh-caption-h); border: 0; background: transparent; color: #cccccc; font: inherit; font-size: 12px; cursor: default; z-index: 3; pointer-events: auto; -webkit-app-region: no-drag; }
 		#open-ide:hover { background: rgba(255, 255, 255, 0.1); }
 	</style>
 </head>
 <body>
+	<div id="caption">
+		<!-- 与 src/vs/sessions/browser/media/sessions-logo-dark.svg 同一组路径（深色 caption 上不画白底） -->
+		<svg class="logo" viewBox="0 0 512 512" role="img" aria-label="VsSaros">
+			<g fill="none" stroke="#FF5A2E">
+				<g stroke-width="16">
+					<path d="M145.7 169.8 A140 140 0 0 1 366.3 169.8" />
+					<path d="M366.3 342.2 A140 140 0 0 1 145.7 342.2" />
+				</g>
+				<circle cx="256" cy="256" r="58" stroke-width="30" />
+			</g>
+		</svg>
+		<span class="brand" id="dsh-brand">VsSaros</span>
+		<span class="version" id="dsh-version"></span>
+		<span class="menubar" id="dsh-menubar" role="menubar" aria-label="应用菜单"></span>
+	</div>
 	<div id="root"></div>
 	<div id="booting">正在启动 dsh 桌面窗口…</div>
 	<button id="open-ide" type="button" title="打开 VsSaros IDE">IDE</button>
