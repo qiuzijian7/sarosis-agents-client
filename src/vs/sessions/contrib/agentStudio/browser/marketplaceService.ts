@@ -49,6 +49,13 @@ interface IInstalledEntry {
 	installedAt: string;
 	/** 来源：installed=从商城下载；published=本机上传。旧数据缺省按 installed 兼容 */
 	source?: 'installed' | 'published';
+	// ★ 2026-11-24：与 dsh 侧 installedLedger.js 形状对齐。IDE 侧与 dsh 侧写的是
+	//   **同一份** installed-packages.json；这三个字段以前没声明，覆盖条目时会被整条抹掉：
+	//   · packageName / format ⇒ 插件卸载与 envelope 识别的真判据（丢了就卸不掉）
+	//   · owner ⇒ 组合包组件归属（级联卸载靠它区分「自己的」）
+	packageName?: string;
+	format?: string;
+	owner?: string;
 }
 
 /**
@@ -883,12 +890,25 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		try {
 			if (await this.fileService.exists(installedFileUri)) {
 				const content = await this.fileService.readFile(installedFileUri);
-				entries = JSON.parse(content.value.toString());
+				const parsed = JSON.parse(content.value.toString());
+				if (Array.isArray(parsed)) { entries = parsed; }
 			}
 		} catch { /* ignore */ }
 		// 按 kind+storeId 去重更新
+		// ★ 2026-11-24：覆盖条目时**继承旧条目的扩展字段**（与 dsh 侧 installedLedger.js 同口径）。
+		//   以前直接 push(entry) 会把 packageName / format / owner 抹掉 ⇒ 插件卸不掉、级联卸载失灵。
+		//   owner 刻意不继承：组件重装成独立资源时，继承旧 owner 会让 Bot 级联卸载误删。
+		//   显式传入的新值优先；坏数据（非数组）按空台账处理，不因 .filter 抛错。
+		const prev = entries.find(e => e.kind === entry.kind && e.storeId === entry.storeId);
+		const packageName = entry.packageName || prev?.packageName;
+		const format = entry.format || prev?.format;
+		const merged: IInstalledEntry = {
+			...entry,
+			...(packageName ? { packageName: String(packageName) } : {}),
+			...(format ? { format: String(format) } : {}),
+		};
 		entries = entries.filter(e => !(e.kind === entry.kind && e.storeId === entry.storeId));
-		entries.push(entry);
+		entries.push(merged);
 		await this.fileService.createFolder(URI.joinPath(installedFileUri, '..'));
 		await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(entries, null, 2)));
 		this._onDidChangeInstalled.fire();
