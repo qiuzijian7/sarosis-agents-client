@@ -340,6 +340,18 @@ export interface IIdeCapabilityEnv {
 	 * （市场「安装」）没有回合 ⇒ 那条当场被拒。**可选**：没接 ⇒ 调用方必须 fail-closed（不装）。
 	 */
 	confirmUserAction?(request: { readonly title: string; readonly detail: string; readonly confirmLabel?: string }): Promise<boolean>;
+	/**
+	 * ★ 2026-11-24：把 dsh Host 侧 LLM 安装成功后的**结构化重启提醒**弹成 IDE 通知条。
+	 * 只服务 `marketplace` capability 的 `op:'notify'` 旁路：无副作用、不弹确认框、不读认证。
+	 * 结构化字段（nextStep / application / restartReason）原样跨进程，供 UI 侧后续扩展。
+	 */
+	showNotification?(request: {
+		readonly kind: 'info' | 'warn';
+		readonly text: string;
+		readonly nextStep?: string;
+		readonly application?: string;
+		readonly restartReason?: string;
+	}): void;
 	installWorkbenchPackage?(request: { readonly dir?: string; readonly spec?: string; readonly name: string }): Promise<{
 		readonly ok: boolean;
 		readonly changed: boolean;
@@ -1359,6 +1371,35 @@ export async function executeIdeCapability(request: { readonly capability: strin
 			//  · 读类 op（list / detail）**不问**（无副作用）✓。
 			const params = request.params ?? {};
 			const op = textParam(params, 'op') ?? 'list';
+			// ★ 2026-11-24：`op:'notify'` 是**纯 UI 通知旁路** —— dsh Host 侧 `market_install`
+			//   安装成功后把结构化 nextStep（重启 Host 提醒）送过来弹 IDE 通知条。
+			//   它不读写任何文件/认证 ⇒ 必须在 READ_OPS/WRITE_OPS 校验与 confirmUserAction 之前处理，
+			//   也不走 marketplaceAction（否则会被当成一次商城动作再去问用户）。
+			if (op === 'notify') {
+				const kind = textParam(params, 'kind') ?? 'info';
+				const text = textParam(params, 'text') ?? '';
+				if (kind !== 'info' && kind !== 'warn') {
+					throw new Error('marketplace notify 的 kind 不合法（只能是 info / warn）');
+				}
+				if (!text.trim()) {
+					throw new Error('marketplace notify 的 text 不能为空');
+				}
+				if (!env.showNotification) {
+					throw new Error('这台 IDE 没有接通知服务（env.showNotification 缺失）');
+				}
+				const nextStep = textParam(params, 'nextStep');
+				const application = textParam(params, 'application');
+				const restartReason = textParam(params, 'restartReason');
+				// 限长：与页面桥 notify 的 MAX_TEXT=500 同口径，避免超长文本灌进通知条
+				env.showNotification({
+					kind,
+					text: text.slice(0, 500),
+					...(nextStep ? { nextStep: nextStep.slice(0, 500) } : {}),
+					...(application ? { application: application.slice(0, 64) } : {}),
+					...(restartReason ? { restartReason: restartReason.slice(0, 64) } : {}),
+				});
+				return { op, ok: true, notified: true };
+			}
 			// ★ 2026-11-06：`reloadSkills` op 已下线（dsh 侧 skill_manage / 页面 API 写后自己 invalidate）✓
 			const READ_OPS = ['list', 'detail', 'installed'];
 			const WRITE_OPS = ['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion'];

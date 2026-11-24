@@ -1487,7 +1487,22 @@ export async function apply(ctx, config) {
 			//   后者把 distribution 硬编码成 `github-source`，而 monorepo（如 BrowserSkill）
 			//   必须发 `npm` 子包，否则「发布成功但装不上」（文档 §7）✗
 			publishDistribution,
-			market,
+			// ★ 2026-11-24：LLM 安装成功后的重启提醒 → IDE 通知条。
+			//   复用**已声明**的 marketplace capability 的 op:'notify' 旁路（纯 UI、无副作用、不弹确认框），
+			//   避开新增能力名要改白名单 / 类型联合 / 插件声明 / 5 个自动守卫的一整片改动。
+			//   桥未就绪 / 老 IDE 没有该 op ⇒ 静默失败，工具文本提醒仍是主通道 ✓
+			notifyRestart: async (payload) => {
+				const bridge = state.bridge;
+				if (!bridge || typeof bridge.callIDE !== 'function') { return false; }
+				try {
+					await bridge.callIDE('ide.request', {
+						capability: 'marketplace',
+						pluginId: PLUGIN_PACKAGE,
+						params: { op: 'notify', ...payload },
+					}, { timeoutMs: 8000 });
+					return true;
+				} catch { return false; }
+			},			market,
 		}).map(def => tools.register(def)), 'vssaros-marketplace: agent tools');
 	});
 

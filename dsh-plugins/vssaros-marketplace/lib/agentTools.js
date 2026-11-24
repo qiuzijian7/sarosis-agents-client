@@ -90,7 +90,7 @@ function iconOf({ explicit, logo, repo }) {
 }
 
 export function marketToolDefinitions(deps) {
-	const { inspectGithubRepo, publishDistribution, installPackage, market } = deps;
+	const { inspectGithubRepo, publishDistribution, installPackage, market, notifyRestart } = deps;
 
 	return [
 		{
@@ -377,7 +377,20 @@ export function marketToolDefinitions(deps) {
 							text: receipt.nextStep || '⚠ 需重启 Host 进程才生效（请自行重启，我不会替你重启）。',
 						}
 						: null;
-					return {
+					// ★ 2026-11-24：只在「需重启」时弹 IDE 通知条（对齐 dsh 上游「成功不显示 toast」）。
+					//   dep 可选：老 Host / 控制桥未就绪时静默降级为工具文本，绝不阻塞安装回执。
+					//   复用已声明的 marketplace capability 的 op:'notify' 无副作用旁路。
+					if (restartNotice && typeof notifyRestart === 'function') {
+						try {
+							void Promise.resolve(notifyRestart({
+								kind: 'warn',
+								text: `「${targetSlug}」已安装，需重启 Host 进程才生效。${receipt.nextStep || ''}`.slice(0, 500),
+								nextStep: String(receipt.nextStep || '').slice(0, 500),
+								application: String(receipt.application || ''),
+								...(receipt.restartReason ? { restartReason: String(receipt.restartReason) } : {}),
+							})).catch(() => {});
+						} catch { /* 通知失败不影响安装结果 */ }
+					}					return {
 						...r, slug: targetSlug, resolvedFrom,
 						application: receipt.application,
 						restartReason: receipt.restartReason,

@@ -11,6 +11,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { isCodeEditor, isDiffEditor } from '../../../../editor/browser/editorBrowser.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+// ★ 2026-11-24：`marketplace` 能力 op:'notify' 的通知落点（与页面桥 case 'notify' 同文案口径）
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IMarkerService } from '../../../../platform/markers/common/markers.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
@@ -596,6 +598,9 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		// 凭据、审批、模型清单都在 IDE 进程 ⇒ Host 侧只负责把请求送过来、把图接回去。
 		@IAgentOSService private readonly _agentOSService: IAgentOSService,
 		@ITofAuthService private readonly _tofAuth: ITofAuthService,
+		// ★ 2026-11-24：dsh Host 侧安装成功后的重启提醒要弹 IDE 通知条 ⇒ 直接注入通知服务
+		//   （与 `dshHarness.contribution.ts` 的 DshPageCommandContribution 同一个单例）。
+		@INotificationService private readonly _notifications: INotificationService,
 		// 商城清单（`skills` / `mcp` 两条 IDE 能力，2026-10-21）：认证（商城 JWT）在 IDE 侧 ⇒ 这条
 		//   能力天然属于 IDE 侧实现（dsh 侧只发意图）✓。
 		@IMarketplaceService private readonly _marketplace: IMarketplaceService,
@@ -764,6 +769,16 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 	private _ideEnv(): IIdeCapabilityEnv {
 		return {
+			// ★ 2026-11-24：`marketplace` 能力 op:'notify' —— dsh Host 侧 LLM 安装成功后
+			//   把结构化 nextStep 变成 IDE 右下角通知条。文案与页面桥 case 'notify' 同口径
+			//   （`DSH: ` 前缀 + source='DeepSeek Harness'），warn 走警告级。
+			showNotification: r => {
+				this._notifications.notify({
+					severity: r.kind === 'warn' ? Severity.Warning : Severity.Info,
+					message: `DSH: ${r.text}`,
+					source: 'DeepSeek Harness',
+				});
+			},
 			activeResource: () => this._editorService.activeEditor?.resource,
 			// 商城清单（2026-10-21）：`mcp` 能力用（`skills` 那条已于 2026-11-06 下线）。
 			// ⚠ 先 `ensureLoggedIn()`：未登录时商城接口会 401，而 401 的文案没法指导用户 ⇒ 换成
