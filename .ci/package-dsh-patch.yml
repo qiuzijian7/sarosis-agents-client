@@ -77,14 +77,19 @@ stages:
       # 不跑 install-deps：复用构建机已有的 node_modules / dsh-runtime / .build/office-runtime。
       # 缺任何一个由 pack-dsh-only.ps1 硬拦并提示回退主流水线。
       - name: Quick pack (plugins only, no compile)
+        continue-on-error: false
         with:
           charsetType: UTF_8
-        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/pack-dsh-only.ps1'
+        run: |
+          powershell -ExecutionPolicy Bypass -File .ci/scripts/pack-dsh-only.ps1
+          exit $LASTEXITCODE
         shell: powershell
       - name: Archive installers
+        if: null
+        continue-on-error: false
         uses: UploadArtifactory@8.*
         with:
-          filePath: .build/win32-x64/**/*.exe
+          filePath: .build/win32-x64/user-setup/VsSarosUserSetup.exe
           downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
       - name: Archive quick-pack reports
         uses: UploadArtifactory@8.*

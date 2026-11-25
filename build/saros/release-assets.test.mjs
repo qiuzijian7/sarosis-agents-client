@@ -36,7 +36,7 @@ function receipt(artifact = installer.artifacts[0], base = BASE, report = instal
 
 function fixture(t) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'saros-release-assets-'));
-	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	t.after(() => fs.promises.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
 	return root;
 }
 

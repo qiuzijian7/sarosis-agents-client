@@ -61,7 +61,7 @@ for (const sourcePath of sources) {
       assert.ok(!listed.some(e => e.key === second.key));
       assert.ok(fs.readdirSync(archive).every(dir => !fs.readdirSync(path.join(archive, dir)).some(name => name.startsWith('.partial-'))));
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   });
 }

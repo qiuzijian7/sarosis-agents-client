@@ -20,9 +20,13 @@ import { scanFiles, auditStaging, cleanStaging, recordInstallers, verifyInstalle
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIB = 1024 * 1024;
 
+function cleanupFixture(root, remove = fs.promises.rm) {
+	return remove(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+}
+
 function fixture(t) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'saros-pack-'));
-	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	t.after(() => cleanupFixture(root));
 	const write = (relative, content = 'keep') => {
 		const target = path.join(root, relative);
 		fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -49,6 +53,24 @@ function assertOrdered(source, first, second, message = 'required tokens are mis
 	const b = source.indexOf(second);
 	assert.ok(a >= 0 && b >= 0 && a < b, `${message}: ${first}@${a}, ${second}@${b}`);
 }
+
+test('fixture cleanup waits for bounded asynchronous removal', async () => {
+	let complete;
+	const pending = new Promise(resolve => { complete = resolve; });
+	const result = cleanupFixture('fixture-root', (root, options) => {
+		assert.equal(root, 'fixture-root');
+		assert.deepEqual(options, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+		return pending;
+	});
+	assert.equal(result, pending);
+	complete();
+	await result;
+});
+
+test('fixture cleanup propagates permanent deletion errors', async () => {
+	const error = Object.assign(new Error('fixture still locked'), { code: 'EPERM' });
+	await assert.rejects(cleanupFixture('fixture-root', () => Promise.reject(error)), failure => failure === error);
+});
 
 test('targets only allow user and reject system, both and invalid values', () => {
 	assert.deepEqual(policy.resolvePackPolicy({}).assets.map(item => item.target), ['user']);
@@ -756,6 +778,49 @@ test('product installer entry points reject system before any build or manifest 
 		const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 15000 });
 		assert.equal(result.status, 1);
 		assert.match(result.stderr, /ValidateSet|validation|user|验证/i);
+	}
+});
+
+function installerPipelineSteps(file, buildName) {
+	const source = fs.readFileSync(path.join(ROOT, file), 'utf8').replace(/\r\n/g, '\n');
+	const buildStart = source.indexOf(`name: ${buildName}`);
+	assert.ok(buildStart >= 0);
+	const buildEnd = source.indexOf('\n      -', buildStart);
+	const build = source.slice(buildStart, buildEnd);
+	const archiveStart = source.indexOf('name: Archive installers', buildEnd);
+	assert.ok(archiveStart >= 0);
+	const archiveEnd = source.indexOf('\n      -', archiveStart);
+	const archive = source.slice(archiveStart, archiveEnd);
+	const run = build.match(/run: \|\r?\n((?:          [^\r\n]*\r?\n)+)/)?.[1]?.replace(/^          /gm, '');
+	assert.ok(run, 'Installer step must use a multiline PowerShell wrapper');
+	return { build, archive, run };
+}
+
+const installerPipelines = [
+	['.ci/package-win-exe.yml', 'Generate EXE installers (selected targets)', '.ci/scripts/generate-exe.ps1'],
+	['.ci/package-dsh-patch.yml', 'Quick pack (plugins only, no compile)', '.ci/scripts/pack-dsh-only.ps1'],
+];
+
+test('installer pipelines propagate build failure and only archive after success', () => {
+	for (const [file, buildName, script] of installerPipelines) {
+		const { build, archive, run } = installerPipelineSteps(file, buildName);
+		assert.match(build, /continue-on-error: false/);
+		assert.equal(run.trim(), `powershell -ExecutionPolicy Bypass -File ${script}\nexit $LASTEXITCODE`);
+		assert.match(archive, /if: null/);
+		assert.match(archive, /continue-on-error: false/);
+		assert.match(archive, /filePath: \.build\/win32-x64\/user-setup\/VsSarosUserSetup\.exe/);
+	}
+});
+
+test('actual installer PowerShell wrappers preserve child exit codes', { skip: process.platform !== 'win32' }, () => {
+	for (const [file, buildName] of installerPipelines) {
+		const { run } = installerPipelineSteps(file, buildName);
+		for (const code of [0, 7]) {
+			const child = Buffer.from(`exit ${code}`, 'utf16le').toString('base64');
+			const wrapper = run.replace(/^powershell [^\r\n]+/, `powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand ${child}`);
+			const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(wrapper, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 15000 });
+			assert.equal(result.status, code, result.stderr || result.error?.message);
+		}
 	}
 });
 

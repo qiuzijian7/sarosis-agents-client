@@ -59,7 +59,7 @@ async function startServer(t, source) {
 				try { await closed; } finally { clearTimeout(timer); }
 			}
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 		}
 	});
 	for (let attempt = 0; attempt < 100; attempt++) {

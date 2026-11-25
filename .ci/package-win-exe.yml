@@ -190,15 +190,20 @@ stages:
         shell: powershell
       - 
         name: Generate EXE installers (selected targets)
+        continue-on-error: false
         with:
           charsetType: UTF_8
-        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/generate-exe.ps1'
+        run: |
+          powershell -ExecutionPolicy Bypass -File .ci/scripts/generate-exe.ps1
+          exit $LASTEXITCODE
         shell: powershell
       - name: Archive installers
         id: Rz97AF
+        if: null
+        continue-on-error: false
         uses: UploadArtifactory@8.*
         with:
-          filePath: .build/win32-x64/**/*.exe
+          filePath: .build/win32-x64/user-setup/VsSarosUserSetup.exe
           downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
       - name: Upload installers to update server
         id: hgg5hu
