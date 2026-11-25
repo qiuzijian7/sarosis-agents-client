@@ -34,7 +34,7 @@
 
 import { existsSync, readFileSync, promises as fsp } from 'fs';
 import { dirname, join } from '../../../../base/common/path.js';
-import { copyDirectoryConcurrently } from './dshConcurrentCopy.js';
+import { copyDirectoryConcurrently, copyFileWithRetry } from './dshConcurrentCopy.js';
 import { stagePluginDir } from './dshPluginStaging.js';
 import { isSharedProfile } from './dshSharedProfile.js';
 
@@ -267,7 +267,7 @@ export async function syncProfilePluginLayer(
 			return;
 		}
 		await fsp.mkdir(dirname(to), { recursive: true });
-		await fsp.copyFile(from, to);
+		await copyFileWithRetry(from, to);
 	},
 ): Promise<{ restoredUserData: string[] }> {
 	// 坏种子不许在 profile 里留下一个会被误认成「已同步」的混合状态。

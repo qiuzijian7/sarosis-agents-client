@@ -286,6 +286,56 @@ suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 		}
 	});
 
+	test('复制部分成功后遇锁失败，旧 marker 保留；完整重试成功后才登记新版本', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-layer-retry-'));
+		try {
+			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile');
+			fs.mkdirSync(path.join(seed, 'node_modules'), { recursive: true });
+			fs.writeFileSync(path.join(seed, 'package.json'), '{"name":"new-profile"}');
+			fs.writeFileSync(path.join(seed, 'node_modules', 'updated.js'), 'NEW');
+			fs.mkdirSync(profile, { recursive: true });
+			fs.writeFileSync(path.join(profile, 'package.json'), '{"name":"old-profile"}');
+			fs.writeFileSync(path.join(profile, 'user.txt'), 'KEEP');
+			await writeProfileRuntimeMarker(profile, '0.2.2-rc.2');
+			const markerBefore = fs.readFileSync(path.join(profile, PROFILE_RUNTIME_MARKER_REL), 'utf8');
+			const locked = Object.assign(new Error('persistent lock'), { code: 'EBUSY' });
+			await assert.rejects(async () => {
+				await syncProfilePluginLayer(seed, profile, async (from, to, isDirectory) => {
+					if (!isDirectory) { throw locked; }
+					await fs.promises.cp(from, to, { recursive: true });
+				});
+				await writeProfileRuntimeMarker(profile, '0.2.2-rc.5');
+			}, error => error === locked);
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'node_modules', 'updated.js'), 'utf8'), 'NEW');
+			assert.strictEqual(fs.readFileSync(path.join(profile, PROFILE_RUNTIME_MARKER_REL), 'utf8'), markerBefore);
+			assert.strictEqual(planProfileRuntimeSync({
+				profileExists: true, markerVersion: readProfileRuntimeVersion(profile), dshVersion: '0.2.2-rc.5', seedDir: seed,
+			}).kind, 'rebuild', '半更新下次仍必须重试');
+			await syncProfilePluginLayer(seed, profile);
+			await writeProfileRuntimeMarker(profile, '0.2.2-rc.5');
+			assert.strictEqual(readProfileRuntimeVersion(profile), '0.2.2-rc.5');
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'package.json'), 'utf8'), '{"name":"new-profile"}');
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'user.txt'), 'utf8'), 'KEEP');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('插件层普通文件与目录都用重试复制，marker 写入保持在成功同步之后', () => {
+		const sync = code('src/vs/sessions/contrib/dshHarness/electron-main/dshProfileRuntimeSync.ts');
+		const at = sync.indexOf('export async function syncProfilePluginLayer(');
+		const end = sync.indexOf('export function profileSeedDirFor(', at);
+		const layer = sync.slice(at, end);
+		assert.match(layer, /await copyFileWithRetry\(from, to\)/);
+		assert.match(layer, /await copyDirectoryConcurrently\(from, to, \{ dereference: true \}\)/);
+		assert.doesNotMatch(layer, /await fsp\.copyFile\(from, to\)/);
+		const supervisor = code(SUPERVISOR);
+		const rebuildAt = supervisor.indexOf("plan.kind === 'rebuild'");
+		const copyAt = supervisor.indexOf('await syncProfilePluginLayer(', rebuildAt);
+		const markerAt = supervisor.indexOf('await writeProfileRuntimeMarker(', rebuildAt);
+		assert.ok(rebuildAt > 0 && copyAt > rebuildAt && markerAt > copyAt);
+	});
+
 	test('11) channel 不再有升级闸门 / 切版本 IPC；bundledRoot 必须在 dev 下向上回退', () => {
 		const src = code(CHANNEL);
 		for (const banned of ['DshUpgradeGate', 'SetCurrentRuntime', 'InstallRuntime', 'Command.Upgrade,', 'DiscoverUpdates', 'selectRuntimeVersion', 'listInstalled(', 'readState(', 'setCurrent(', '_upgrade(', '_discover(']) {

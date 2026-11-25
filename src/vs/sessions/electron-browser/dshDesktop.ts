@@ -18,6 +18,7 @@ import { ElectronIPCMainProcessService } from '../../platform/ipc/electron-brows
 import { webFrame } from '../../base/parts/sandbox/electron-browser/globals.js';
 import { DSH_DESKTOP_CAPTION_H, DSH_HARNESS_CHANNEL, DshHarnessChannelCommand, IDshHostStatus, IDshViewBounds } from '../contrib/dshHarness/common/dshHarness.js';
 import { desktopMenuLabel, desktopMenuNames, dshDesktopMenuTemplate, type DshDesktopMenuAction, type DshDesktopMenuCommand, type DshDesktopMenuName } from '../contrib/dshHarness/common/dshDesktopMenu.js';
+import { ensureDesktopHostRunning } from '../contrib/dshHarness/common/dshDesktopSessionStart.js';
 
 /** `navigator.windowControlsOverlay` 的投影（与 dsh-better-sidebar 的 viewport-inset 同口径）。 */
 interface WindowControlsOverlayLike {
@@ -244,11 +245,16 @@ async function main(): Promise<void> {
 	});
 
 	showBooting('正在准备 dsh 运行环境…');
-	try {
-		await channel.call<IDshHostStatus>(DshHarnessChannelCommand.Bootstrap, { start: {} });
-	} catch (error) {
-		await channel.call<void>(DshHarnessChannelCommand.DisposeView, { viewId }).catch(() => undefined);
-		showBooting(`dsh 运行环境启动失败：${String((error as Error)?.message ?? error)}`);
+	const hostReady = await ensureDesktopHostRunning(
+		() => channel.call<IDshHostStatus>(DshHarnessChannelCommand.Bootstrap, { start: {} }),
+		async message => {
+			viewVisible = false;
+			await channel.call<void>(DshHarnessChannelCommand.DisposeView, { viewId }).catch(() => undefined);
+			console.error(`[dshDesktopOnly] 后台服务启动失败：${message}`);
+			showBooting(`dsh 运行环境启动失败：${message}\n请关闭窗口后重新启动，或点击右上角 IDE 查看日志。`);
+		},
+	);
+	if (!hostReady) {
 		return;
 	}
 

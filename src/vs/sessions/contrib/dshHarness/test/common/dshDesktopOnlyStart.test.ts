@@ -23,6 +23,7 @@
 import assert from 'assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { ensureDesktopHostRunning } from '../../common/dshDesktopSessionStart.js';
 
 const WMS = 'src/vs/platform/windows/electron-main/windowsMainService.ts';
 const CONTRIB = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarness.contribution.ts';
@@ -119,6 +120,59 @@ suite('启动只露桌面窗口（不许 IDE 闪一下）', () => {
 		assert.ok(!/timeoutMs: 7500/.test(shell), '旧的 7.5s 串行等待不许回来');
 		assert.match(shell, /DshHarnessChannelCommand\.DisposeView/, 'Bootstrap 失败时必须清理预建视图槽');
 		assert.match(shell, /viewVisible = true/, '换皮就绪/超时后才允许显示视图，避免焦点事件提前露出默认样式');
+	});
+
+	test('Bootstrap 兑现 error 状态时保留失败原因，不进入皮肤等待或显示空视图', async () => {
+		const events: string[] = [];
+		const message = 'EBUSY: copyfile mermaid/phase2.layering.spec.d.ts';
+		const ok = await ensureDesktopHostRunning(async () => ({ state: 'error', error: message }), async error => {
+			events.push('disposeView', error);
+		});
+		if (ok) { events.push('waitViewSelector', 'showView'); }
+		assert.strictEqual(ok, false);
+		assert.deepStrictEqual(events, ['disposeView', message]);
+	});
+
+	test('Bootstrap reject 与兑现 error 共用失败处理，且等待清理完成后才返回', async () => {
+		const events: string[] = [];
+		const ok = await ensureDesktopHostRunning(async () => { throw new Error('IPC disconnected'); }, async message => {
+			await Promise.resolve();
+			events.push('disposeView', message);
+		});
+		assert.strictEqual(ok, false);
+		assert.deepStrictEqual(events, ['disposeView', 'IPC disconnected']);
+	});
+
+	test('只有 running 且无错误才放行，其它状态全部保留失败提示', async () => {
+		assert.strictEqual(await ensureDesktopHostRunning(async () => ({ state: 'running' }), async () => {
+			assert.fail('running 不应清理视图');
+		}), true);
+		for (const state of ['starting', 'stopping', 'stopped', 'error']) {
+			let message = '';
+			assert.strictEqual(await ensureDesktopHostRunning(async () => ({ state }), async error => {
+				message = error;
+			}), false);
+			assert.ok(message.includes(state));
+		}
+		let message = '';
+		assert.strictEqual(await ensureDesktopHostRunning(async () => ({ state: 'running', error: 'startup failed' }), async error => {
+			message = error;
+		}), false);
+		assert.strictEqual(message, 'startup failed');
+	});
+
+	test('B 壳实际接线：检查 Bootstrap 结果之后才允许等待皮肤及显示视图', () => {
+		const shell = code(SHELL);
+		const at = shell.indexOf('const hostReady = await ensureDesktopHostRunning(');
+		const guardAt = shell.indexOf('if (!hostReady)', at);
+		const waitAt = shell.indexOf('DshHarnessChannelCommand.WaitViewSelector', at);
+		assert.ok(at > 0 && guardAt > at && waitAt > guardAt);
+		assert.match(shell.slice(guardAt, waitAt), /if \(!hostReady\) \{\s*return;/);
+		const failure = shell.slice(at, guardAt);
+		assert.match(failure, /viewVisible = false/);
+		assert.match(failure, /DshHarnessChannelCommand.DisposeView/);
+		assert.match(failure, /showBooting\(`dsh 运行环境启动失败：\$\{message\}/);
+		assert.match(failure, /console\.error/);
 	});
 
 	test('8) 关 IDE 不许带走 B 方案 desktop 窗口', () => {

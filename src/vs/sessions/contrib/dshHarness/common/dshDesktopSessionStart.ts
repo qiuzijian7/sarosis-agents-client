@@ -115,6 +115,23 @@ export function sessionStartRetryDelayMs(attempt: number): number {
 /** 默认最多试几次（含第一次）。 */
 export const SESSION_START_MAX_ATTEMPTS = 3;
 
+/** Bootstrap 可能兑现 error 状态而非 reject；只有明确 running 才允许继续加载桌面。 */
+export async function ensureDesktopHostRunning(
+	start: () => Promise<{ readonly state: string; readonly error?: string }>,
+	onFailure: (message: string) => Promise<void>,
+): Promise<boolean> {
+	try {
+		const status = await start();
+		if (status.state !== 'running' || status.error) {
+			throw new Error(status.error || `后台服务未就绪（状态：${status.state}）`);
+		}
+		return true;
+	} catch (error) {
+		await onFailure(error instanceof Error ? error.message : String(error));
+		return false;
+	}
+}
+
 /** 保留已经打开的桌面壳，后台启动失败后仅在用户确认重试时重新启动。 */
 export async function ensureDesktopHostStarted(start: () => Promise<void>, waitForRetry: (message: string) => Promise<boolean>): Promise<boolean> {
 	for (;;) {

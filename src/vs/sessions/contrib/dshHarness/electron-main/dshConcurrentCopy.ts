@@ -20,7 +20,34 @@
 import { promises as fsp } from 'fs';
 import { join } from '../../../../base/common/path.js';
 
-export interface IConcurrentCopyOptions {
+const COPY_FILE_RETRY_DELAYS_MS: readonly number[] = [100, 250, 500, 1_000, 2_000];
+
+export interface ICopyFileRetryOptions {
+	readonly retryDelaysMs?: readonly number[];
+	readonly copyFile?: (from: string, to: string) => Promise<void>;
+	readonly sleep?: (delayMs: number) => Promise<void>;
+}
+
+/** 暂态文件锁最多重试五次；耗尽后保留原错误，绝不跳过失败文件。 */
+export async function copyFileWithRetry(from: string, to: string, options?: ICopyFileRetryOptions): Promise<void> {
+	const delays = options?.retryDelaysMs ?? COPY_FILE_RETRY_DELAYS_MS;
+	const copy = options?.copyFile ?? ((source, target) => fsp.copyFile(source, target));
+	const sleep = options?.sleep ?? (delayMs => new Promise<void>(resolve => setTimeout(resolve, delayMs)));
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await copy(from, to);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if ((code !== 'EBUSY' && code !== 'EPERM') || attempt >= delays.length) {
+				throw error;
+			}
+			await sleep(delays[attempt]);
+		}
+	}
+}
+
+export interface IConcurrentCopyOptions extends ICopyFileRetryOptions {
 	/** 文件级并发度（默认 16）。 */
 	readonly concurrency?: number;
 	/** 是否跟随符号链接复制目标内容（对应 `fs.cp` 的 `dereference`）。 */
@@ -78,7 +105,7 @@ export async function copyDirectoryConcurrently(srcDir: string, destDir: string,
 			}
 			const file = files[index];
 			try {
-				await fsp.copyFile(file.from, file.to);
+				await copyFileWithRetry(file.from, file.to, options);
 			} catch (e) {
 				failure = e;
 				return;
