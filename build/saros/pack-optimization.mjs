@@ -325,10 +325,13 @@ export function verifyInstallers(root, env = process.env, identity = buildIdenti
 	if (report.schemaVersion !== 1 || report.commit !== identity.commit || report.productVersion !== identity.productVersion || report.target !== packPolicy.target || report.mode !== packPolicy.mode) {
 		throw new Error('installer report does not match current commit, version or setup targets; regenerate installers');
 	}
+	if (!Array.isArray(report.artifacts) || report.artifacts.length !== packPolicy.assets.length) {
+		throw new Error('installer report must contain only the user installer');
+	}
 	const artifacts = policy.inspectInstallers(root, packPolicy, readBaseline(env));
 	for (const artifact of artifacts) {
-		const expected = report.artifacts?.find(item => item.target === artifact.target);
-		if (!expected || expected.size !== artifact.size || expected.sha256 !== artifact.sha256) { throw new Error(`installer changed since size gate: ${artifact.rel}`); }
+		const expected = report.artifacts.find(item => item.target === artifact.target);
+		if (!expected || expected.platform !== artifact.platform || expected.rel !== artifact.rel || expected.size !== artifact.size || expected.sha256 !== artifact.sha256) { throw new Error(`installer changed since size gate: ${artifact.rel}`); }
 	}
 	return report;
 }

@@ -50,11 +50,12 @@ function assertOrdered(source, first, second, message = 'required tokens are mis
 	assert.ok(a >= 0 && b >= 0 && a < b, `${message}: ${first}@${a}, ${second}@${b}`);
 }
 
-test('targets default to both and reject invalid values', () => {
-	assert.deepEqual(policy.resolvePackPolicy({}).assets.map(item => item.target), ['user', 'system']);
+test('targets only allow user and reject system, both and invalid values', () => {
+	assert.deepEqual(policy.resolvePackPolicy({}).assets.map(item => item.target), ['user']);
 	assert.deepEqual(policy.resolvePackPolicy({ SAROS_SETUP_TARGETS: 'user' }).assets.map(item => item.platform), ['win32-x64-user']);
-	assert.deepEqual(policy.resolvePackPolicy({ SAROS_SETUP_TARGETS: 'system' }).assets.map(item => item.platform), ['win32-x64']);
-	assert.throws(() => policy.resolvePackPolicy({ SAROS_SETUP_TARGETS: 'all' }), /SAROS_SETUP_TARGETS/);
+	for (const target of ['system', 'both', 'all']) {
+		assert.throws(() => policy.resolvePackPolicy({ SAROS_SETUP_TARGETS: target }), /SAROS_SETUP_TARGETS/);
+	}
 	assert.equal(policy.resolvePackPolicy({}).mode, 'offline');
 	assert.equal(policy.resolvePackPolicy({ SAROS_PACK_MODE: 'standard' }).mode, 'standard');
 	assert.throws(() => policy.resolvePackPolicy({ SAROS_PACK_MODE: 'wrong' }), /SAROS_PACK_MODE/);
@@ -157,6 +158,8 @@ test('installer inspection uses selected targets and fails closed on missing bas
 	assert.equal(artifacts.length, 1);
 	assert.equal(artifacts[0].sha256.length, 64);
 	assert.throws(() => policy.inspectInstallers(f.repo, config, { artifacts: [] }), /baseline is missing/);
+	assert.equal(policy.inspectInstallers(f.repo, policy.resolvePackPolicy({})).length, 1);
+	fs.unlinkSync(file);
 	assert.throws(() => policy.inspectInstallers(f.repo, policy.resolvePackPolicy({})), /ENOENT/);
 });
 
@@ -166,9 +169,13 @@ test('recorded installers reject target/version/commit changes and same-size tam
 	const identity = { commit: 'a'.repeat(40), productVersion: '2.2.26241' };
 	const file = path.join(f.repo, policy.resolvePackPolicy(env).assets[0].rel);
 	sparseFile(file, 10 * MIB);
-	recordInstallers(f.repo, env, identity);
+	const report = recordInstallers(f.repo, env, identity);
 	assert.equal(verifyInstallers(f.repo, env, identity).artifacts.length, 1);
-	assert.throws(() => verifyInstallers(f.repo, { SAROS_SETUP_TARGETS: 'system' }, identity), /does not match/);
+	const reportPath = path.join(f.repo, '.build/pack-reports/installers.json');
+	fs.writeFileSync(reportPath, JSON.stringify({ ...report, artifacts: [...report.artifacts, { target: 'system' }] }));
+	assert.throws(() => verifyInstallers(f.repo, env, identity), /only the user installer/);
+	fs.writeFileSync(reportPath, JSON.stringify(report));
+	assert.throws(() => verifyInstallers(f.repo, { SAROS_SETUP_TARGETS: 'system' }, identity), /SAROS_SETUP_TARGETS/);
 	assert.throws(() => verifyInstallers(f.repo, env, { ...identity, productVersion: 'other' }), /does not match/);
 	assert.throws(() => verifyInstallers(f.repo, env, { ...identity, commit: 'b'.repeat(40) }), /does not match/);
 	const fd = fs.openSync(file, 'r+');
@@ -181,9 +188,11 @@ test('CLI rejects unknown targets and publication gates missing artifacts before
 	const result = spawnSync(process.execPath, [script, '--targets-json'], { encoding: 'utf8', env: { ...process.env, SAROS_SETUP_TARGETS: 'wrong' }, timeout: 30000 });
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /SAROS_SETUP_TARGETS/);
-	const targets = spawnSync(process.execPath, [script, '--targets-json'], { encoding: 'utf8', env: { ...process.env, SAROS_SETUP_TARGETS: 'system' }, timeout: 30000 });
-	assert.equal(targets.status, 0);
-	assert.deepEqual(JSON.parse(targets.stdout).map(item => item.target), ['system']);
+	for (const target of ['system', 'both']) {
+		const targets = spawnSync(process.execPath, [script, '--targets-json'], { encoding: 'utf8', env: { ...process.env, SAROS_SETUP_TARGETS: target }, timeout: 30000 });
+		assert.equal(targets.status, 1);
+		assert.match(targets.stderr, /SAROS_SETUP_TARGETS/);
+	}
 	const release = fs.readFileSync(path.join(ROOT, 'build/saros/create-release.cjs'), 'utf8');
 	assertOrdered(release, "'--check-exes'", 'const changelog = buildChangelog');
 	const upload = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
@@ -247,7 +256,7 @@ $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Expected Windows PowerShell 5.1' }
 $assetsJson = '${JSON.stringify(policy.shellAssets(policy.WINDOWS_ASSETS))}'
 $setupAssets = ConvertFrom-Json -InputObject ($assetsJson -join "\`n")
-if ($setupAssets.Count -ne 2) { throw 'Nested JSON array' }
+if (@($setupAssets).Count -ne 1) { throw 'Nested JSON array' }
 foreach ($asset in $setupAssets) {
   if ($asset.target -isnot [string] -or $asset.rel -isnot [string]) { throw 'Target must be scalar' }
 }
@@ -256,11 +265,11 @@ $tokens = $null; $errors = $null
 $uploadAst = [System.Management.Automation.Language.Parser]::ParseInput($upload, [ref]$tokens, [ref]$errors)
 $uploadAssign = $uploadAst.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$setupAssets' }, $true)
 . ([scriptblock]::Create($uploadAssign.Extent.Text))
-if ($setupAssets.Count -ne 2 -or $setupAssets[0].target -isnot [string]) { throw 'Upload nested array regression' }
+if (@($setupAssets).Count -ne 1 -or $setupAssets[0].target -isnot [string]) { throw 'Upload nested array regression' }
 $ast = [System.Management.Automation.Language.Parser]::ParseFile('${file}', [ref]$tokens, [ref]$errors)
 $generateAssign = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$setupAssets' }, $true)
 . ([scriptblock]::Create($generateAssign.Extent.Text))
-if ($setupAssets.Count -ne 2 -or $setupAssets[0].target -isnot [string]) { throw 'Installer nested array regression' }
+if (@($setupAssets).Count -ne 1 -or $setupAssets[0].target -isnot [string]) { throw 'Installer nested array regression' }
 $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-InnoTask' }, $true)
 . ([scriptblock]::Create($fn.Extent.Text))
 function Start-Sleep { param($Seconds) }
@@ -269,9 +278,9 @@ function Remove-InstallerArtifact { param($RelativePath) $script:removed += $Rel
 $script:fakeExit = 1
 function Invoke-FakeGulp { param($Task, $verbose) Write-Output 'gulp diagnostic'; $global:LASTEXITCODE = $script:fakeExit }
 $gulp = 'Invoke-FakeGulp'
-$value = Invoke-InnoTask 'vscode-win32-x64-system-setup'
+$value = Invoke-InnoTask 'vscode-win32-x64-user-setup'
 if ($value -isnot [bool] -or $value -ne $false) { throw 'Inno failure hidden by stdout' }
-if ($script:removed.Count -ne 3 -or ($script:removed | Where-Object { $_ -ne $setupAssets[1].rel })) { throw 'Another target removed during retry' }
+if ($script:removed.Count -ne 3 -or ($script:removed | Where-Object { $_ -ne @($setupAssets)[0].rel })) { throw 'Another target removed during retry' }
 $script:fakeExit = 0
 $value = Invoke-InnoTask 'vscode-win32-x64-user-setup'
 if ($value -isnot [bool] -or $value -ne $true) { throw 'Inno success polluted by stdout' }
@@ -471,10 +480,10 @@ test('filtered staging refresh replaces stale plugin files and excludes developm
 	assert.match(source, /refresh: true, filter: shippedDshPluginPath/);
 });
 
-test('CI defaults to the smaller standard/user package and archives JSON reports', () => {
+test('CI only publishes standard/user and archives JSON reports', () => {
 	const source = fs.readFileSync(path.join(ROOT, '.ci/package-win-exe.yml'), 'utf8');
 	assert.match(source, /SAROS_PACK_MODE:\s*\n\s*value: standard/);
-	assert.match(source, /SAROS_SETUP_TARGETS:\s*\n\s*value: user/);
+	assert.match(source, /SAROS_SETUP_TARGETS:\s*\n\s*value: user\s*\n\s*allow-modify-at-startup: false/);
 	assert.match(source, /SAROS_MAX_EXE_MB:/);
 	assert.match(source, /SAROS_MAX_EXE_GROWTH_PERCENT:/);
 	assert.match(source, /SAROS_MAX_UPLOAD_MB:\s*\n\s*value: '2048'/);
@@ -673,7 +682,7 @@ test('Windows CI executable steps use ASCII names and explicit UTF8 charset', ()
 
 test('PowerShell target CLI output is ASCII-only and contains no localization fields', () => {
 	const cli = path.join(ROOT, 'build/saros/pack-optimization.mjs');
-	for (const [flag, targets, expected] of [['--targets-json', 'both', 2], ['--targets-json', 'user', 1], ['--all-targets-json', 'both', 2]]) {
+	for (const [flag, targets, expected] of [['--targets-json', 'user', 1], ['--all-targets-json', 'user', 1]]) {
 		const result = spawnSync(process.execPath, [cli, flag], {
 			cwd: ROOT, env: { ...process.env, SAROS_PACK_MODE: 'offline', SAROS_SETUP_TARGETS: targets }, encoding: 'utf8', timeout: 30000,
 		});
@@ -695,7 +704,7 @@ $assetsJson = & '${node}' '${cli}' --targets-json
 if ($LASTEXITCODE -ne 0) { throw 'Target CLI failed' }
 $assetsText = [string]::Join([Environment]::NewLine, [string[]]$assetsJson)
 $setupAssets = ConvertFrom-Json -InputObject $assetsText
-if (@($setupAssets).Count -ne 2 -or $setupAssets[0].target -ne 'user' -or $setupAssets[0].PSObject.Properties.Name -contains 'kind') { throw 'ASCII target JSON regression' }
+if (@($setupAssets).Count -ne 1 -or @($setupAssets)[0].target -ne 'user' -or @($setupAssets)[0].PSObject.Properties.Name -contains 'kind') { throw 'ASCII target JSON regression' }
 $env:SAROS_SETUP_TARGETS = 'user'
 $singleJson = & '${node}' '${cli}' --targets-json
 if ($LASTEXITCODE -ne 0) { throw 'Single-target CLI failed' }
@@ -705,7 +714,7 @@ if (@($singleAssets).Count -ne 1 -or @($singleAssets)[0].target -ne 'user') { th
 Write-Output 'PS51_ASCII_TARGETS_OK'
 `;
 	const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
-		cwd: ROOT, env: { ...process.env, SAROS_PACK_MODE: 'offline', SAROS_SETUP_TARGETS: 'both' }, encoding: 'utf8', timeout: 30000,
+		cwd: ROOT, env: { ...process.env, SAROS_PACK_MODE: 'offline', SAROS_SETUP_TARGETS: 'user' }, encoding: 'utf8', timeout: 30000,
 	});
 	assert.equal(result.status, 0, result.stderr || result.error?.message);
 	assert.match(result.stdout, /PS51_ASCII_TARGETS_OK/);
@@ -733,11 +742,21 @@ test('EXE generation hard gate and target parsing fail closed after earlier stag
 	assert.match(generate, /try \{ \$setupAssets = ConvertFrom-Json/);
 	assert.match(generate, /Assert-SetupAssets \$setupAssets \$expectedTargetCount/);
 	assert.match(upload, /try \{ \$setupAssets = ConvertFrom-Json/);
-	assert.match(upload, /Invalid installer target count/);
+	assert.match(upload, /Exactly one user installer is required/);
 	assert.match(upload, /\$maxUploadMB = 2048/);
 	assert.match(upload, /\[int\]::TryParse\(\$env:SAROS_MAX_UPLOAD_MB/);
 	assert.match(upload, /\$uploadLimitText = \[string\]\$maxUploadMB/);
 	assertOrdered(whisper, '--check-staging', '$stagingBin');
+});
+
+test('product installer entry points reject system before any build or manifest write', { skip: process.platform !== 'win32' }, () => {
+	for (const [file, parameter, value] of [['deploy-package/scripts/build-installer.ps1', '-BuildType', 'system'], ['.ci/scripts/pack-dsh-only.ps1', '-Target', 'system'], ['deploy-package/scripts/update-manifest.ps1', '-Platform', 'win32-x64']]) {
+		const source = path.join(ROOT, file).replace(/'/g, "''");
+		const script = `$source = [IO.File]::ReadAllText('${source}', [Text.Encoding]::UTF8); & ([scriptblock]::Create($source)) ${parameter} '${value}'`;
+		const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 15000 });
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /ValidateSet|validation|user|验证/i);
+	}
 });
 
 test('mangler preserves exports from generated files imported by compiled sources', () => {

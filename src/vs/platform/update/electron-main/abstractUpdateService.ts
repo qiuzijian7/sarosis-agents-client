@@ -285,6 +285,14 @@ export abstract class AbstractUpdateService implements IUpdateService {
 		return updateMode === 'none' ? undefined : this.productService.quality;
 	}
 
+	getUpdateFeedUrl(): string | undefined {
+		const quality = this.getProductQuality(this.configurationService.getValue<string>('update.mode'));
+		if (!quality || !this.productService.updateUrl) {
+			return undefined;
+		}
+		return this.buildUpdateFeedUrl(quality, this.productService.commit ?? 'unknown');
+	}
+
 	private scheduleCheckForUpdates(delay = 60 * 60 * 1000): Promise<void> {
 		return timeout(delay)
 			.then(() => this.checkForUpdates(false))

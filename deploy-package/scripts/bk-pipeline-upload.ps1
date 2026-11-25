@@ -28,9 +28,9 @@ if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Installer gate failed; upload abo
 $assetsJson = node build/saros/pack-optimization.mjs --targets-json
 if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Invalid packaging policy" -ForegroundColor Red; exit 1 }
 try { $setupAssets = ConvertFrom-Json -InputObject ($assetsJson -join "`n") } catch { Write-Host "[ERROR] Invalid installer target JSON: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
-if (@($setupAssets).Count -lt 1 -or @($setupAssets).Count -gt 2) { Write-Host "[ERROR] Invalid installer target count" -ForegroundColor Red; exit 1 }
+if (@($setupAssets).Count -ne 1) { Write-Host "[ERROR] Exactly one user installer is required" -ForegroundColor Red; exit 1 }
 foreach ($asset in $setupAssets) {
-  if (@('user', 'system') -notcontains $asset.target -or @('win32-x64-user', 'win32-x64') -notcontains $asset.platform -or [string]::IsNullOrWhiteSpace($asset.rel)) {
+  if ($asset.target -ne 'user' -or $asset.platform -ne 'win32-x64-user' -or $asset.rel -ne '.build/win32-x64/user-setup/VsSarosUserSetup.exe') {
     Write-Host "[ERROR] Invalid installer target metadata" -ForegroundColor Red
     exit 1
   }
@@ -219,26 +219,5 @@ if ($failCount -gt 0) {
 }
 
 node build/saros/release-assets.mjs --complete-upload $UpdateServer
-if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Immutable archive links are incomplete or not downloadable; release blocked" -ForegroundColor Red; exit 1 }
-
-# ---- Verify: check server manifest ----
-Write-Host ""
-Write-Host "--- Verify manifest ---"
-try {
-    $verifyPlatform = $packages[0].Platform
-    $verifyUrl = "${UpdateServer}/api/update/${verifyPlatform}/saros/${commit}"
-    $response = Invoke-WebRequest -Uri $verifyUrl -UseBasicParsing -TimeoutSec 10
-    if ($response.StatusCode -eq 204) {
-        Write-Host "[OK] Verify success: server manifest updated, commit matches" -ForegroundColor Green
-    } else {
-        Write-Host "[WARN] Verify returned $($response.StatusCode), manifest may not be updated" -ForegroundColor Yellow
-    }
-} catch {
-    # 204 triggers an exception in PowerShell, this is normal
-    $statusCode = $_.Exception.Response.StatusCode.value__
-    if ($statusCode -eq 204) {
-        Write-Host "[OK] Verify success: server manifest updated, commit matches" -ForegroundColor Green
-    } else {
-        Write-Host "[WARN] Verify failed (HTTP $statusCode)" -ForegroundColor Yellow
-    }
-}
+if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Installer archives or update feeds failed verification; release blocked" -ForegroundColor Red; exit 1 }
+Write-Host "[OK] All selected installer channels verified: version, commit, hash, download target and immutable archive" -ForegroundColor Green

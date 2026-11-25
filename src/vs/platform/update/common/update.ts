@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Event } from '../../../base/common/event.js';
+import { gt, valid } from '../../../base/common/semver/semver.js';
 import { upcast } from '../../../base/common/types.js';
 import { createDecorator } from '../../instantiation/common/instantiation.js';
 
@@ -13,6 +14,13 @@ export interface IUpdate {
 	timestamp?: number;
 	url?: string;
 	sha256hash?: string;
+}
+
+/** A native update must have a valid product version strictly newer than the installed version. */
+export function isNewerProductVersion(current: string, remote: string | undefined): boolean {
+	const local = valid(current);
+	const candidate = valid(remote);
+	return !!local && !!candidate && gt(candidate, local);
 }
 
 /**
@@ -109,6 +117,8 @@ export interface IUpdateService {
 	readonly onStateChange: Event<State>;
 	readonly state: State;
 
+	/** Native main-process feed URL, using the same installation target as downloads. */
+	getUpdateFeedUrl?(): string | undefined;
 	checkForUpdates(explicit: boolean): Promise<void>;
 	downloadUpdate(explicit: boolean): Promise<void>;
 	applyUpdate(): Promise<void>;

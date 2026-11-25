@@ -18,12 +18,15 @@
 
 param(
     [switch]$InitBaseline,
+    [ValidateSet('user')]
     [string]$Target = 'user',
     [string]$Only = '',
     [switch]$SkipSeed
 )
 
 $ErrorActionPreference = 'Stop'
+if ($env:SAROS_SETUP_TARGETS -and $env:SAROS_SETUP_TARGETS -ne 'user') { throw 'Only user installers are supported' }
+$env:SAROS_SETUP_TARGETS = 'user'
 $repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 $staging = Join-Path (Split-Path $repoRoot) 'VSCode-win32-x64'

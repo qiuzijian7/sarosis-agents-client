@@ -33,7 +33,8 @@ export function compareInstallerReports(offline, standard) {
 		|| offline.productVersion !== standard.productVersion || offline.target !== standard.target) {
 		throw new Error('Comparison requires offline/standard reports for the same commit, version and setup targets');
 	}
-	const selected = policy.resolvePackPolicy({ SAROS_SETUP_TARGETS: offline.target }).assets;
+	const historicalAssets = [...policy.WINDOWS_ASSETS, { target: 'system', platform: 'win32-x64', rel: '.build/win32-x64/system-setup/VsSarosSetup.exe' }];
+	const selected = historicalAssets.filter(asset => offline.target === 'both' || asset.target === offline.target);
 	for (const report of [offline, standard]) {
 		if (!Array.isArray(report.artifacts) || report.artifacts.length !== selected.length) { throw new Error('Comparison report has missing or duplicate artifacts'); }
 		for (const asset of selected) {

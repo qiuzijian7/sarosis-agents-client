@@ -37,6 +37,17 @@ if (!platform || !exePath || !productVersion || !downloadUrl) {
 	process.exit(1);
 }
 
+if (!/^win32-(x64|arm64)-user$/.test(platform)) {
+	console.error('Only Windows user installation channels can be published');
+	process.exit(1);
+}
+const assetUrl = new URL(downloadUrl);
+if (!['http:', 'https:'].includes(assetUrl.protocol) || path.basename(exePath) !== 'VsSarosUserSetup.exe'
+	|| path.posix.basename(assetUrl.pathname) !== 'VsSarosUserSetup.exe') {
+	console.error('Expected a user installer and its HTTP(S) download URL');
+	process.exit(1);
+}
+
 if (!commit) {
 	try {
 		commit = execSync('git rev-parse HEAD', { cwd: path.resolve(__dirname, '..', '..', '..') }).toString().trim();

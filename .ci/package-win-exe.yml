@@ -21,10 +21,10 @@ variables:
       required: true
   SAROS_SETUP_TARGETS:
     value: user
-    allow-modify-at-startup: true
+    allow-modify-at-startup: false
     props:
       type: vuex-input
-      description: 安装包目标：user / system / both；默认只出 user 包，避免重复生成等大负载
+      description: 仅发布用户级安装包 user；system 和 both 已停止支持
       required: true
   SAROS_MAX_EXE_MB:
     value: '850'

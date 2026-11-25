@@ -27,6 +27,9 @@ function listLinks(curl, options) {
 
 function assertExpectedLinks(actual, downloads) {
 	if (!Array.isArray(actual)) { throw new Error('Release assets.links must be an array'); }
+	if ([...actual, ...downloads].some(link => /VsSaros(?:is)?Setup(?:\.exe)?/i.test(`${link.name || ''} ${link.url || ''}`))) {
+		throw new Error('System installers are no longer supported in current releases');
+	}
 	const expectedNames = new Set();
 	for (const download of downloads) {
 		if (!download.name || !download.url || expectedNames.has(download.name)) { throw new Error('Invalid or duplicate expected asset name'); }
@@ -42,6 +45,7 @@ function ensureReleaseLinks(curl, options, downloads) {
 	// Validate desired entries before mutating any remote links.
 	assertExpectedLinks(downloads, downloads);
 	const existing = listLinks(curl, options);
+	assertExpectedLinks(existing, []);
 	for (const download of downloads) {
 		const matches = existing.filter(link => link.name === download.name);
 		if (matches.length > 1) { throw new Error(`Duplicate remote asset name: ${download.name}`); }

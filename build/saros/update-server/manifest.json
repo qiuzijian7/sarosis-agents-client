@@ -5,12 +5,5 @@
     "url": "http://21.139.192.124:3030/downloads/VsSarosUserSetup.exe",
     "sha256hash": "23bcb73585aa2dd34d58cff022e2c22f2f9ba4793fb49a295b6953a43e6d6490",
     "timestamp": 1795416122089
-  },
-  "win32-x64": {
-    "version": "8c3022d6aac08e689f0b4e572ed05625cc08e7e7",
-    "productVersion": "2.2.26229",
-    "url": "http://21.139.192.124:3030/downloads/VsSarosisSetup.exe",
-    "sha256hash": "80b6a6e7ef830500e0b1097c0c1fc64643b40a22a7400b63a12cb22030632acc",
-    "timestamp": 1793787635619
   }
 }

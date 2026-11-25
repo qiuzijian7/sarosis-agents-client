@@ -3,7 +3,8 @@
 
 param(
     [string]$ManifestPath = "..\update-server\manifest.json",
-    [string]$Platform = "win32-x64-user",  # win32-x64-user 或 win32-x64
+    [ValidateSet('win32-x64-user', 'win32-arm64-user')]
+    [string]$Platform = "win32-x64-user",
     [string]$Version = "",                 # Git commit SHA
     [string]$ProductVersion = "",         # 产品版本号，如 1.0.0
     [string]$Url = "",                    # 安装包下载 URL
@@ -44,6 +45,11 @@ if ([string]::IsNullOrEmpty($Sha256Hash)) {
 
 if ($Timestamp -eq 0) {
     $Timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+}
+
+$downloadUri = [Uri]$Url
+if ($downloadUri.Scheme -notin @('http', 'https') -or [IO.Path]::GetFileName($downloadUri.AbsolutePath) -ne 'VsSarosUserSetup.exe') {
+    throw 'Expected a User installer HTTP(S) download URL'
 }
 
 # 更新 manifest

@@ -11,7 +11,8 @@
  * 少了这道闸门，用户点「一键升级」会被**降级**装回旧版 ✗✗。
  */
 import assert from 'assert';
-import { buildUpdateEndpoint, compareVersions, decideAppUpdate, parseAppUpdateResponse } from '../../common/dshAppUpdate.js';
+import { buildUpdateEndpoint, compareVersions, decideAppUpdate, parseAppUpdateResponse, toAppUpdateCheckUrl } from '../../common/dshAppUpdate.js';
+import { isNewerProductVersion } from '../../../../../platform/update/common/update.js';
 
 suite('dshHarness / 应用一键升级：版本比较与降级闸门', () => {
 
@@ -34,9 +35,22 @@ suite('dshHarness / 应用一键升级：版本比较与降级闸门', () => {
 		assert.strictEqual(decideAppUpdate('2.2.26125', '2.2.26125'), 'uptodate');
 		// ★ 真机实测的那一组：更新源更旧 ⇒ 必须是 downgrade（一键升级里据此拒绝）
 		assert.strictEqual(decideAppUpdate('2.2.26125', '2.2.26080'), 'downgrade');
-		// 残缺响应 ⇒ 当成已最新（宁可不升，也不猜）
-		assert.strictEqual(decideAppUpdate('2.2.26125', undefined), 'uptodate');
-		assert.strictEqual(decideAppUpdate('2.2.26125', '   '), 'uptodate');
+		assert.strictEqual(decideAppUpdate('2.2.26125', undefined), 'unknown');
+		assert.strictEqual(decideAppUpdate('2.2.26125', '   '), 'unknown');
+		assert.strictEqual(decideAppUpdate('2.2.26276', 'invalid'), 'unknown');
+		assert.strictEqual(decideAppUpdate('invalid', '2.2.26277'), 'unknown');
+		assert.strictEqual(decideAppUpdate('2.2.26276', '2.2.26277'), 'upgrade');
+		assert.strictEqual(decideAppUpdate('2.2.26276', '2.2.26229'), 'downgrade');
+	});
+
+	test('原生更新服务也必须拒绝同版、旧版和无效版本', () => {
+		assert.strictEqual(isNewerProductVersion('2.2.26276', '2.2.26277'), true);
+		assert.strictEqual(isNewerProductVersion('2.2.26276', '2.2.26276'), false);
+		assert.strictEqual(isNewerProductVersion('2.2.26276', '2.2.26229'), false);
+		assert.strictEqual(isNewerProductVersion('2.2.26276', '2.2.26276-rc.1'), false);
+		assert.strictEqual(isNewerProductVersion('2.2.26276', undefined), false);
+		assert.strictEqual(isNewerProductVersion('2.2.26276', 'invalid'), false);
+		assert.strictEqual(isNewerProductVersion('invalid', '2.2.26277'), false);
 	});
 
 	test('buildUpdateEndpoint：与 win32 更新服务同形状（noversioncheck 必须有）', () => {
@@ -44,6 +58,18 @@ suite('dshHarness / 应用一键升级：版本比较与降级闸门', () => {
 		assert.strictEqual(url, 'http://h:3030/api/update/win32-x64/saros/abc123?channel=latest&noversioncheck=true');
 		// 尾部斜杠不能拼成 `//api`
 		assert.ok(!url.includes('//api'));
+	});
+
+	test('原生更新 URL 转换保留 user/system/archive 和已有查询参数', () => {
+		for (const platform of ['win32-x64-user', 'win32-x64', 'win32-x64-archive', 'win32-arm64-user', 'darwin-arm64']) {
+			const feed = `https://updates.example/api/update/${platform}/saros/build?u=none`;
+			const url = new URL(toAppUpdateCheckUrl(feed));
+			assert.strictEqual(url.pathname, new URL(feed).pathname);
+			assert.strictEqual(url.searchParams.get('u'), 'none');
+			assert.strictEqual(url.searchParams.get('noversioncheck'), 'true');
+			assert.strictEqual(toAppUpdateCheckUrl(url.toString()), url.toString());
+		}
+		assert.throws(() => toAppUpdateCheckUrl('file:///update'));
 	});
 
 	test('parseAppUpdateResponse：只认需要的字段，形状不对 ⇒ undefined', () => {

@@ -10,7 +10,6 @@ const crypto = require('node:crypto');
 
 const WINDOWS_ASSETS = Object.freeze([
 	Object.freeze({ target: 'user', platform: 'win32-x64-user', kind: '用户级安装', rel: '.build/win32-x64/user-setup/VsSarosUserSetup.exe' }),
-	Object.freeze({ target: 'system', platform: 'win32-x64', kind: '系统级安装', rel: '.build/win32-x64/system-setup/VsSarosSetup.exe' }),
 ]);
 const MIB = 1024 * 1024;
 
@@ -22,15 +21,15 @@ function positiveNumber(value, fallback, name) {
 }
 
 function resolvePackPolicy(env = process.env) {
-	const target = env.SAROS_SETUP_TARGETS || 'both';
-	if (!['both', 'user', 'system'].includes(target)) {
-		throw new Error('SAROS_SETUP_TARGETS must be both, user or system');
+	const target = env.SAROS_SETUP_TARGETS || 'user';
+	if (target !== 'user') {
+		throw new Error('SAROS_SETUP_TARGETS must be user; system and both are no longer supported');
 	}
 	const mode = env.SAROS_PACK_MODE || 'offline';
 	if (!['standard', 'offline'].includes(mode)) { throw new Error('SAROS_PACK_MODE must be standard or offline'); }
 	return {
 		target, mode,
-		assets: WINDOWS_ASSETS.filter(asset => target === 'both' || asset.target === target),
+		assets: WINDOWS_ASSETS,
 		minExeBytes: 10 * MIB,
 		maxExeBytes: positiveNumber(env.SAROS_MAX_EXE_MB, 850, 'SAROS_MAX_EXE_MB') * MIB,
 		maxGrowthPercent: positiveNumber(env.SAROS_MAX_EXE_GROWTH_PERCENT, 10, 'SAROS_MAX_EXE_GROWTH_PERCENT'),

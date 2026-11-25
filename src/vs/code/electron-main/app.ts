@@ -2003,6 +2003,7 @@ export class CodeApplication extends Disposable {
 				isBuilt: this.environmentMainService.isBuilt,
 				// 可选组件（媒体 / Office / Whisper）的下载源与更新检查同源。
 				updateUrl: this.productService.updateUrl,
+				getAppUpdateFeedUrl: () => accessor.get(IUpdateService).getUpdateFeedUrl?.(),
 				requestQuit: (willRestart: boolean) => lifecycleMainService.quit(willRestart),
 				// desktop-only 壳（B 方案）没有 IDE 渲染进程 ⇒ caption 菜单的「检查更新」
 				// 只能由主进程代触发；服务不可用时记日志，不让菜单动作抛到页面。

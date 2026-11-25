@@ -6,7 +6,7 @@ $vsOutRoot = Join-Path (Split-Path $repoRoot) "VSCode-win32-x64"
 foreach ($report in @('.build/pack-reports/installers.json', '.build/pack-reports/uploads.json', '.build/pack-reports/installer-comparison.json')) {
   if (Test-Path -LiteralPath $report) { Remove-Item -LiteralPath $report -Force -ErrorAction Stop }
 }
-foreach ($installer in @('.build/win32-x64/user-setup/VsSarosUserSetup.exe', '.build/win32-x64/system-setup/VsSarosSetup.exe')) {
+foreach ($installer in @('.build/win32-x64/user-setup/VsSarosUserSetup.exe')) {
   if (Test-Path -LiteralPath $installer) { Remove-Item -LiteralPath $installer -Force -ErrorAction Stop }
 }
 
@@ -39,14 +39,13 @@ function Assert-SetupAssets($Assets, [int]$ExpectedCount, [string]$Label) {
   $items = @($Assets)
   if ($items.Count -ne $ExpectedCount) { throw "$Label must contain $ExpectedCount installer targets (actual $($items.Count))" }
   foreach ($asset in $items) {
-    if (@('user', 'system') -notcontains $asset.target) { throw "$Label has invalid target: $($asset.target)" }
-    if (@('win32-x64-user', 'win32-x64') -notcontains $asset.platform) { throw "$Label has invalid platform: $($asset.platform)" }
-    if ([string]::IsNullOrWhiteSpace($asset.rel) -or $asset.rel -notlike '.build/win32-x64/*/*.exe') { throw "$Label has invalid installer path: $($asset.rel)" }
+    if ($asset.target -ne 'user') { throw "$Label has invalid target: $($asset.target)" }
+    if ($asset.platform -ne 'win32-x64-user') { throw "$Label has invalid platform: $($asset.platform)" }
+    if ($asset.rel -ne '.build/win32-x64/user-setup/VsSarosUserSetup.exe') { throw "$Label has invalid installer path: $($asset.rel)" }
   }
 }
 
-$expectedTargetCount = 2
-if ($env:SAROS_SETUP_TARGETS -eq 'user' -or $env:SAROS_SETUP_TARGETS -eq 'system') { $expectedTargetCount = 1 }
+$expectedTargetCount = 1
 $assetsJson = node build/saros/pack-optimization.mjs --targets-json
 if ($LASTEXITCODE -ne 0) { Write-Error "Invalid packaging policy"; exit 1 }
 try { $setupAssets = ConvertFrom-Json -InputObject ($assetsJson -join "`n") } catch { Write-Host "[ERROR] Invalid installer target JSON: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
@@ -54,14 +53,14 @@ Assert-SetupAssets $setupAssets $expectedTargetCount 'Selected targets'
 $allAssetsJson = node build/saros/pack-optimization.mjs --all-targets-json
 if ($LASTEXITCODE -ne 0) { Write-Error "Invalid packaging policy"; exit 1 }
 try { $allSetupAssets = ConvertFrom-Json -InputObject ($allAssetsJson -join "`n") } catch { Write-Host "[ERROR] Invalid all-target JSON: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
-Assert-SetupAssets $allSetupAssets 2 'All targets'
+Assert-SetupAssets $allSetupAssets 1 'All targets'
 function Remove-InstallerArtifact([string]$RelativePath) {
   if (Test-Path -LiteralPath $RelativePath) { Remove-Item -LiteralPath $RelativePath -Force -ErrorAction Stop }
 }
 Remove-InstallerArtifact '.build/pack-reports/installers.json'
 foreach ($asset in $allSetupAssets) { Remove-InstallerArtifact $asset.rel }
 Write-Host "=== Packaging policy regression tests (120s per-test timeout) ==="
-node --test --test-timeout=120000 --test-concurrency=1 build/saros/pack-optimization.test.mjs build/saros/release-assets.test.mjs dsh-plugins/vssaros-web-content-import/test/whisperModel.test.mjs
+node --test --test-timeout=120000 --test-concurrency=1 build/saros/pack-optimization.test.mjs build/saros/release-assets.test.mjs build/saros/update-server/update.test.mjs build/saros/update-server/archive.test.mjs dsh-plugins/vssaros-web-content-import/test/whisperModel.test.mjs
 if ($LASTEXITCODE -ne 0) { Write-Error "Packaging policy regression tests failed"; exit 1 }
 
 # ===== 校验 @vscode/tree-sitter-wasm 已进打包产物（语法高亮 wasm）=====

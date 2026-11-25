@@ -58,7 +58,7 @@ async function apiGet(url) {
 	return { __status: 401 };
 }
 
-function isExe(name) { return /UserSetup\.exe$|Setup\.exe$/i.test(String(name || '')); }
+function isExe(name) { return String(name || '') === 'VsSarosUserSetup.exe'; }
 
 async function checkRelease(projectId, label, { requireExe }) {
 	const x = await apiGet(`${GITLAB_API}/projects/${projectId}/releases/${encodeURIComponent(tag)}`);
@@ -67,14 +67,17 @@ async function checkRelease(projectId, label, { requireExe }) {
 	if (desc.length < MIN_DESC) { problems.push(`${label}: 描述只有 ${desc.length} 字符（期望 ≥${MIN_DESC}）⇒ 残桩`); }
 	const links = ((x.assets || {}).links) || [];
 	const exeLinks = links.filter(l => isExe(l.name));
-	if (requireExe && exeLinks.length === 0) {
-		problems.push(`${label}: 资产链接里没有安装包（links=${links.length}）`);
+	if (links.some(l => /VsSaros(?:is)?Setup(?:\.exe)?/i.test(`${l.name || ''} ${l.url || ''}`))) {
+		problems.push(`${label}: 当前发行仍包含已停止支持的 System 安装包`);
+	}
+	if (requireExe && exeLinks.length !== 1) {
+		problems.push(`${label}: 资产链接必须包含唯一 User 安装包（links=${links.length}）`);
 	}
 	return { desc, links, exeLinks };
 }
 
 const main = await checkRelease(MAIN_PROJECT, '主仓 release', { requireExe: true });
-await checkRelease(ISSUE_PROJECT, '发布仓库 release', { requireExe: false });
+await checkRelease(ISSUE_PROJECT, '发布仓库 release', { requireExe: true });
 
 // 安装包直链必须真能下载
 for (const l of (main?.exeLinks || [])) {

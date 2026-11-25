@@ -15,15 +15,16 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import policy from './pack-policy.cjs';
 import links from './release-links.cjs';
-import { trustedDownloadBase, validateUploadResponse, validateUploadReport, recordUpload, completeUpload, probeArchive, invalidateUpload } from './release-assets.mjs';
+import { trustedDownloadBase, validateUploadResponse, validateUploadReport, validateUpdateFeedResponse, recordUpload, completeUpload, probeArchive, probeUpdateFeed, invalidateUpload } from './release-assets.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const BASE = 'https://downloads.example';
 const REPORT_PATH = '.build/pack-reports/uploads.json';
 const installer = {
-	schemaVersion: 1, commit: 'a'.repeat(40), productVersion: '2.2.26241', mode: 'standard', target: 'both',
-	artifacts: policy.WINDOWS_ASSETS.map(asset => ({ ...asset, size: 11 * 1048576, sha256: asset.target === 'user' ? 'b'.repeat(64) : 'c'.repeat(64) })),
+	schemaVersion: 1, commit: 'a'.repeat(40), productVersion: '2.2.26241', mode: 'standard', target: 'user',
+	artifacts: policy.WINDOWS_ASSETS.map(asset => ({ ...asset, size: 11 * 1048576, sha256: 'b'.repeat(64) })),
 };
+const systemArtifact = { target: 'system', platform: 'win32-x64', rel: '.build/win32-x64/system-setup/VsSarosSetup.exe', size: 11 * 1048576, sha256: 'c'.repeat(64) };
 
 function receipt(artifact = installer.artifacts[0], base = BASE, report = installer) {
 	const name = artifact.target === 'user' ? 'VsSarosUserSetup.exe' : 'VsSarosisSetup.exe';
@@ -64,8 +65,11 @@ test('trusted origins reject credentials/paths and allow explicit public downloa
 test('upload receipt must match platform/commit/version/size/hash and immutable archive', () => {
 	const original = receipt();
 	assert.equal(validateUploadResponse(original, installer, original.platform, BASE).name, 'VsSarosUserSetup.exe');
-	const system = receipt(installer.artifacts[1]);
-	assert.equal(validateUploadResponse(system, installer, system.platform, BASE).name, 'VsSarosSetup.exe');
+	const system = receipt(systemArtifact);
+	assert.throws(() => validateUploadResponse(system, installer, system.platform, BASE), /does not match/);
+	for (const report of [{ ...installer, target: 'both', artifacts: [...installer.artifacts, systemArtifact] }, { ...installer, target: 'system', artifacts: [systemArtifact] }, { ...installer, artifacts: [...installer.artifacts, systemArtifact] }]) {
+		assert.throws(() => validateUploadResponse(system, report, system.platform, BASE), /Only the user/);
+	}
 	for (const patch of [{ ok: false }, { platform: 'wrong' }, { version: 'd'.repeat(40) }, { productVersion: 'other' }, { size: 0 }, { size: original.size + 1 }, { sha256hash: '0'.repeat(64) }]) {
 		assert.throws(() => validateUploadResponse({ ...original, ...patch }, installer, original.platform, BASE), /does not match/);
 	}
@@ -81,16 +85,22 @@ test('partial/old/mode-changed/duplicated reports cannot become complete Release
 	const root = fixture(t);
 	const first = recordUpload(root, installer, installer.artifacts[0].platform, receipt(), BASE);
 	assert.throws(() => validateUploadReport(first, installer, BASE), /incomplete/);
-	await assert.rejects(completeUpload(root, installer, BASE, async () => {}), /missing selected/);
-	const second = recordUpload(root, installer, installer.artifacts[1].platform, receipt(installer.artifacts[1]), BASE);
-	for (const patch of [{ mode: 'offline' }, { target: 'user' }, { commit: 'd'.repeat(40) }, { productVersion: 'other' }, { artifacts: [second.artifacts[0], second.artifacts[0]] }]) {
+	const second = first;
+	for (const patch of [{ mode: 'offline' }, { target: 'both' }, { commit: 'd'.repeat(40) }, { productVersion: 'other' }, { artifacts: [second.artifacts[0], second.artifacts[0]] }]) {
 		assert.throws(() => validateUploadReport({ ...second, ready: true, ...patch }, installer, BASE));
 	}
 	let count = 0;
-	await completeUpload(root, installer, BASE, async () => { count++; });
-	assert.equal(count, 2);
+	const feeds = [];
+	await completeUpload(root, installer, BASE, async () => { count++; }, { updateServer: 'https://updates.example', probeFeed: async (download, report, server, base) => {
+		feeds.push(download.platform);
+		assert.equal(report, installer);
+		assert.equal(server, 'https://updates.example');
+		assert.equal(base, BASE);
+	} });
+	assert.equal(count, 1);
+	assert.deepEqual(feeds, ['win32-x64-user']);
 	const ready = JSON.parse(fs.readFileSync(path.join(root, REPORT_PATH), 'utf8'));
-	assert.equal(validateUploadReport(ready, installer, BASE).length, 2);
+	assert.equal(validateUploadReport(ready, installer, BASE).length, 1);
 	assert.throws(() => recordUpload(root, installer, installer.artifacts[0].platform, { ...receipt(), archive: null }, BASE), /no immutable/);
 	assert.equal(JSON.parse(fs.readFileSync(path.join(root, REPORT_PATH), 'utf8')).ready, false);
 	invalidateUpload(root);
@@ -100,9 +110,62 @@ test('partial/old/mode-changed/duplicated reports cannot become complete Release
 test('failed archive probing invalidates an earlier successful receipt', async t => {
 	const root = fixture(t);
 	for (const artifact of installer.artifacts) { recordUpload(root, installer, artifact.platform, receipt(artifact), BASE); }
-	await completeUpload(root, installer, BASE, async () => {});
+	await completeUpload(root, installer, BASE, async () => {}, { probeFeed: async () => {} });
 	await assert.rejects(completeUpload(root, installer, BASE, async () => { throw new Error('archive missing'); }), /archive missing/);
 	assert.equal(JSON.parse(fs.readFileSync(path.join(root, REPORT_PATH), 'utf8')).ready, false);
+});
+
+test('failed user update feed probing invalidates a ready report', async t => {
+	const root = fixture(t);
+	for (const artifact of installer.artifacts) { recordUpload(root, installer, artifact.platform, receipt(artifact), BASE); }
+	await completeUpload(root, installer, BASE, async () => {}, { probeFeed: async () => {} });
+	const feeds = [];
+	await assert.rejects(completeUpload(root, installer, BASE, async () => {}, { probeFeed: async download => {
+		feeds.push(download.platform);
+		throw new Error('user feed stale');
+	} }), /user feed stale/);
+	assert.deepEqual(feeds, installer.artifacts.map(item => item.platform));
+	assert.equal(JSON.parse(fs.readFileSync(path.join(root, REPORT_PATH), 'utf8')).ready, false);
+});
+
+test('update feed metadata must match the installer version, commit, hash and target', () => {
+	for (const artifact of installer.artifacts) {
+		const body = receipt(artifact);
+		const download = validateUploadResponse(body, installer, artifact.platform, BASE);
+		validateUpdateFeedResponse(body, installer, download, BASE);
+		validateUpdateFeedResponse({ ...body, url: download.url }, installer, download, BASE);
+		for (const patch of [{ version: 'd'.repeat(40) }, { productVersion: '2.2.26229' }, { sha256hash: '0'.repeat(64) }, { url: 'https://evil.example/setup.exe' }, { url: receipt(systemArtifact).url }]) {
+			assert.throws(() => validateUpdateFeedResponse({ ...body, ...patch }, installer, download, BASE), /does not match|wrong installer/);
+		}
+	}
+});
+
+test('update feed probes reject 204, HTTP failures, oversized bodies and wrong targets', async t => {
+	let mode = 'ok';
+	let base;
+	const seen = [];
+	base = await serve(t, (req, res) => {
+		const endpoint = new URL(req.url, base);
+		assert.equal(endpoint.searchParams.get('noversioncheck'), 'true');
+		assert.equal(req.headers.authorization, undefined);
+		assert.equal(req.headers['x-upload-token'], undefined);
+		const platform = endpoint.pathname.split('/')[3];
+		seen.push(platform);
+		if (mode === '204' || mode === '503') { res.writeHead(Number(mode)); res.end(); return; }
+		if (mode === 'large') { res.end('x'.repeat(65 * 1024)); return; }
+		const artifact = installer.artifacts.find(item => item.platform === platform);
+		const body = receipt(artifact, BASE);
+		res.end(JSON.stringify(mode === 'wrong' ? { ...body, url: 'https://evil.example/setup.exe' } : body));
+	});
+	for (const artifact of installer.artifacts) {
+		await probeUpdateFeed(validateUploadResponse(receipt(artifact), installer, artifact.platform, BASE), installer, base, BASE);
+	}
+	assert.deepEqual(seen, installer.artifacts.map(item => item.platform));
+	const download = validateUploadResponse(receipt(), installer, installer.artifacts[0].platform, BASE);
+	for (const failure of ['204', '503', 'large', 'wrong']) {
+		mode = failure;
+		await assert.rejects(probeUpdateFeed(download, installer, base, BASE));
+	}
 });
 
 test('archive probes use one-byte range, no auth, no redirects/full downloads', async t => {
@@ -138,7 +201,7 @@ function gitlabFake({ byTag = false, failWrites = false, ignoreWrites = false } 
 	return { curl, calls, set: value => { entries = value; }, get: () => entries };
 }
 const LINK_OPTIONS = { api: 'https://gitlab.example/api', project: '1', releaseId: 42, tag: 'v2.2.26241', headers: {} };
-const desired = [{ name: 'VsSarosUserSetup.exe', url: 'https://downloads.example/archive/user' }, { name: 'VsSarosSetup.exe', url: 'https://downloads.example/archive/system' }];
+const desired = [{ name: 'VsSarosUserSetup.exe', url: 'https://downloads.example/archive/user' }, { name: 'ReleaseNotes.txt', url: 'https://downloads.example/notes' }];
 
 test('both repositories create asset links, update same-name stale URL, and reruns are idempotent', () => {
 	for (const project of ['1790708', '1764429']) {
@@ -168,6 +231,16 @@ test('failed or ignored remote writes never pass Release verification', () => {
 	assert.throws(() => links.ensureReleaseLinks(gitlabFake({ failWrites: true }).curl, LINK_OPTIONS, desired), /HTTP 401/);
 	assert.throws(() => links.ensureReleaseLinks(gitlabFake({ ignoreWrites: true }).curl, LINK_OPTIONS, desired), /missing/);
 	assert.throws(() => links.ensureReleaseLinks(gitlabFake().curl, LINK_OPTIONS, []), /nonempty/);
+});
+
+test('system release links fail before any remote writes', () => {
+	const system = { name: 'VsSarosSetup.exe', url: 'https://downloads.example/archive/system' };
+	assert.throws(() => links.assertExpectedLinks([...desired, system], desired), /System installers/);
+	assert.throws(() => links.assertExpectedLinks([system], [system]), /System installers/);
+	const fake = gitlabFake();
+	fake.set([system]);
+	assert.throws(() => links.ensureReleaseLinks(fake.curl, LINK_OPTIONS, desired), /System installers/);
+	assert.ok(fake.calls.every(call => call.method === 'GET'));
 });
 
 test('real update server archives upload once and immutable URL survives latest replacement', async t => {
@@ -244,7 +317,10 @@ test('publication consumes archives before git writes and upload preserves/valid
 	assertOrdered(upload, '--invalidate-upload', '--check-exes');
 	assert.match(upload, /--record-upload \$platform \$responseFile \$UpdateServer/);
 	assert.match(upload, /--complete-upload \$UpdateServer/);
+	assert.ok(!upload.includes('$packages[0].Platform'));
+	assert.ok(!upload.includes('Verify success: server manifest updated, commit matches'));
 	const generate = fs.readFileSync(path.join(ROOT, '.ci/scripts/generate-exe.ps1'), 'utf8');
+	assert.ok(generate.includes('build/saros/update-server/update.test.mjs'));
 	assertOrdered(generate, "'.build/pack-reports/uploads.json'", 'if (-not (Test-Path $gulp))');
 	assertOrdered(generate, '--check-seed', 'node --test');
 	assertOrdered(generate, '--check-staging', 'node --test');

@@ -2,7 +2,8 @@
 # 构建 VsSarosis 安装包
 
 param(
-    [string]$BuildType = "user",  # user 或 system
+    [ValidateSet('user')]
+    [string]$BuildType = "user",
     [string]$Configuration = "Release"
 )
 
@@ -62,14 +63,7 @@ if ($env:VSSAROS_SKIP_OFFICE_RUNTIME -eq '1') {
 
 # 3. 构建安装包
 Write-Host "[3/5] 构建安装包..." -ForegroundColor Cyan
-if ($BuildType -eq "user") {
-    npm run gulp vscode-win32-x64-user-setup
-} elseif ($BuildType -eq "system") {
-    npm run gulp vscode-win32-x64-system-setup
-} else {
-    Write-Host "错误: 未知的构建类型: $BuildType" -ForegroundColor Red
-    exit 1
-}
+npm run gulp vscode-win32-x64-user-setup
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "错误: 构建失败" -ForegroundColor Red
@@ -100,7 +94,7 @@ Write-Host "  ✅ 内置运行时 $bundledVersion 已进包" -ForegroundColor Gr
 
 # 5. 查找构建产物
 Write-Host "[5/5] 查找构建产物..." -ForegroundColor Cyan
-$expectedName = if ($BuildType -eq "user") { "VsSarosUserSetup.exe" } else { "VsSarosisSetup.exe" }
+$expectedName = "VsSarosUserSetup.exe"
 $buildOutputPath = ".build\win32-x64\$BuildType-setup\$expectedName"
 
 if (-not (Test-Path $buildOutputPath)) {

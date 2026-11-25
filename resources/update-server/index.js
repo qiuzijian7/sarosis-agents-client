@@ -144,6 +144,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     const [, platform, quality, commit] = match;
+    res.setHeader('Cache-Control', 'no-store');
+    if (!/^win32-(x64|arm64)-user$/.test(platform)) {
+        res.writeHead(/^win32-(x64|arm64|ia32)$/.test(platform) ? 410 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Only user installations are supported', platform }));
+        return;
+    }
     log(`更新请求: platform=${platform}, quality=${quality}, commit=${commit}`);
 
     // 验证 quality（可选，防止非 saros 客户端误用）

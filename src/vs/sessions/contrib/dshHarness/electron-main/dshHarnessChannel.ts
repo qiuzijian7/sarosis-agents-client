@@ -31,6 +31,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWindowsMainService, OpenContext } from '../../../../platform/windows/electron-main/windows.js';
 // ★ 2026-10-31：platform 层的「安装更新之前」注册点（platform 不认识 dsh ⇒ 由这里注入"释放 dsh Host"）
 import { registerBeforeUpdateInstallHook } from '../../../../platform/update/electron-main/updateInstallHooks.js';
+import { toAppUpdateCheckUrl } from '../common/dshAppUpdate.js';
 import { DshBridgeMethod, DshBridgeReverseMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeCodeBuddyImportResult, IBridgeCodeBuddyStatus, IBridgeCreditRecordArgs, IBridgeCreditRecordResult, IBridgeCreditRouteResult, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgeLightAIImportResult, IBridgeLightAIStatus, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeReverseRequest, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofStatus, IBridgeTofSyncResult, IBridgeTofTicketResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateCodeBuddyImportArgs, validateCreditRouteArgs, validateInstallCancelArgs, validateLightAIImportArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs, validateTofSyncArgs, validateWorkspaceContextArgs } from '../common/dshBridgeProtocol.js';
 import { DshCreditProxy, IDshCreditSample } from './dshCreditProxy.js';
 import { localPluginDir, toFileSpec } from '../common/dshCli.js';
@@ -113,6 +114,8 @@ export interface IDshHarnessChannelOptions {
 	 * 由 `app.ts` 注入 `IUpdateService.checkForUpdates(true)`；未注入时该菜单项静默跳过。
 	 */
 	readonly checkForUpdates?: () => Promise<void>;
+	/** Native update service feed; preserves the installed user/system/archive target. */
+	readonly getAppUpdateFeedUrl?: () => string | undefined;
 }
 
 // ★ 2026-11-09：`readBridgeInfo()`（读伴生插件 peer 范围做「运行时升级预检」）随版本发现下线。
@@ -193,6 +196,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private readonly _requestQuit: ((willRestart: boolean) => Promise<boolean>) | undefined;
 	/** desktop-only caption 菜单的「检查更新」（见 `IDshHarnessChannelOptions.checkForUpdates`）。 */
 	private readonly _checkForUpdates: (() => Promise<void>) | undefined;
+	private readonly _getAppUpdateFeedUrl: (() => string | undefined) | undefined;
 	/** 「最后一个界面 ⇒ 退出」这件事**只武装一次**（见 `_requestAppQuit`）。 */
 	private _quitRequested = false;
 	/** 强退兜底定时器（退出流程没往下走时的最后手段）。 */
@@ -228,6 +232,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		this._windowsMainService = windowsMainService;
 		this._requestQuit = options.requestQuit;
 		this._checkForUpdates = options.checkForUpdates;
+		this._getAppUpdateFeedUrl = options.getAppUpdateFeedUrl;
 		// 真退出时放行 IDE 主窗口的 close（否则"只隐藏"会把退出流程卡死 ✗）。
 		// `before-quit` 在关闭窗口之前触发 ⇒ 这里置位就够；用 `on`（不是 `once`）因为 quit 可能被取消后重来。
 		app.on('before-quit', () => { this._appQuitting = true; });
@@ -1456,20 +1461,27 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			// ★★ 2026-10-30（真机 P0：打包 exe 的更新面板红字 `Failed to fetch`）：
 			//   渲染进程检查更新走的是浏览器 fetch/XHR ⇒ 更新源（内网静态托管）**不发 CORS 头**
 			//   ⇒ 响应被浏览器拦掉 ⇒ JS 只能看到 "Failed to fetch"（saros-pocket 同坑有据可查）。
-			//   ⇒ 渲染进程把拼好的 URL 传过来，这里用**主进程**的 fetch 代为请求（无跨域概念）✓。
-			//   返回 `{ ok:false, error }` 而不是抛错 ⇒ 面板能显示精确原因，而不是笼统的失败。
 			case DshHarnessChannelCommand.CheckAppUpdate: {
-				const url = String(arg?.url ?? '');
-				if (!/^https?:\/\//i.test(url)) {
-					return { ok: false, error: `非法的更新源地址：${url.slice(0, 120)}` };
-				}
 				try {
+					const feedUrl = this._getAppUpdateFeedUrl?.();
+					if (!feedUrl) {
+						return { ok: false, error: '这个构建没有可用的更新源，或更新已被禁用，请手动下载安装包' };
+					}
+					if (!/^https?:\/\//i.test(feedUrl)) {
+						return { ok: false, error: '非法的更新源地址' };
+					}
+					const url = toAppUpdateCheckUrl(feedUrl);
+					const platform = new URL(url).pathname.split('/')[3] ?? 'unknown';
 					const res = await this._fetch(url);
 					const body = await res.text();
+					this._logService.info(`[dshHarness] app update check: platform=${platform} status=${res.status}`);
 					if (!res.ok && res.status !== 204) {
-						return { ok: false, status: res.status, error: `更新源返回 HTTP ${res.status}` };
+						const error = res.status === 410 && /^win32-(x64|arm64|ia32)$/.test(platform)
+							? '系统级安装版已停止支持，请手动迁移到 User 用户级安装版'
+							: `更新源返回 HTTP ${res.status}（渠道 ${platform}）`;
+						return { ok: false, status: res.status, platform, error };
 					}
-					return { ok: true, status: res.status, body };
+					return { ok: true, status: res.status, body, platform };
 				} catch (e) {
 					return { ok: false, error: String((e as Error)?.message ?? e).slice(0, 200) };
 				}

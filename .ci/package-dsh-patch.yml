@@ -32,10 +32,10 @@ variables:
       required: true
   SAROS_SETUP_TARGETS:
     value: user
-    allow-modify-at-startup: true
+    allow-modify-at-startup: false
     props:
       type: vuex-input
-      description: 安装包目标：user / system；默认只出 user 包（ISCC 压缩是快包剩下的主要耗时）
+      description: 仅发布 user 安装包；system 已停止支持
       required: true
   SAROS_MAX_EXE_MB:
     value: '850'

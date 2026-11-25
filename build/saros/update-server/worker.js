@@ -22,9 +22,7 @@
 
 const ASSET_NAME_BY_PLATFORM = {
 	'win32-x64-user': 'VsSarosUserSetup',
-	'win32-arm64-user': 'VsSarosUserSetup',
-	'win32-x64': 'VsSarosSetup',
-	'win32-arm64': 'VsSarosSetup'
+	'win32-arm64-user': 'VsSarosUserSetup'
 };
 
 export default {
@@ -45,6 +43,9 @@ export default {
 		}
 
 		const [, platform, , currentCommit] = m;
+		if (/^win32-(x64|arm64|ia32)$/.test(platform)) {
+			return Response.json({ error: 'System installation channel retired; install the user edition manually', code: 'SYSTEM_CHANNEL_RETIRED', platform }, { status: 410, headers: { 'Cache-Control': 'no-store' } });
+		}
 		const wantName = ASSET_NAME_BY_PLATFORM[platform];
 		if (!wantName || !env.GH_REPO) {
 			return new Response(null, { status: 204 });

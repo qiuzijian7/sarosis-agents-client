@@ -253,8 +253,6 @@ let _manifestCache = { mtimeMs: -1, manifest: null };
 const ASSET_NAME_BY_PLATFORM = {
 	'win32-x64-user': 'VsSarosUserSetup',
 	'win32-arm64-user': 'VsSarosUserSetup',
-	'win32-x64': 'VsSarosSetup',
-	'win32-arm64': 'VsSarosSetup',
 	// macOS：客户端的 assetID 取自 DarwinUpdateService（updateService.darwin.ts:95）
 	//   `darwinUniversalAssetId ?? (process.arch === 'x64' ? 'darwin' : 'darwin-arm64')`
 	// ⇒ 键名必须是 `darwin`（Intel）与 `darwin-arm64`（Apple Silicon），不是 darwin-x64 ✗
@@ -283,12 +281,15 @@ function readFromManifest(platform) {
 			return _manifestCache.manifest[platform] || null;
 		}
 		const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+		if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+			throw new Error('Invalid update manifest');
+		}
 		_manifestCache = { mtimeMs: stat.mtimeMs, manifest };
 		return manifest[platform] || null;
 	} catch (e) {
 		console.error('[update] 读取 manifest 失败:', e);
 		_manifestCache = { mtimeMs: -1, manifest: null };
-		return null;
+		throw e;
 	}
 }
 
@@ -522,10 +523,9 @@ async function readFromGitHub(platform) {
 	if (GH_TOKEN) {
 		headers['Authorization'] = `Bearer ${GH_TOKEN}`;
 	}
-	const res = await fetch(`https://api.github.com/repos/${GH_REPO}/releases/latest`, { headers });
+	const res = await fetch(`https://api.github.com/repos/${GH_REPO}/releases/latest`, { headers, signal: AbortSignal.timeout(15000) });
 	if (!res.ok) {
-		console.error('[update] GitHub API 错误:', res.status, await res.text());
-		return null;
+		throw new Error(`GitHub update lookup failed: HTTP ${res.status}`);
 	}
 	const release = await res.json();
 	// release.body 约定写入一行 "commit: <full-commit-sha>"；productVersion 取 tag_name
@@ -637,17 +637,38 @@ const server = http.createServer(async (req, res) => {
 	}
 
 	const [, platform, quality, currentCommit] = m;
-	console.log(`[update] check platform=${platform} quality=${quality} commit=${currentCommit.substring(0, 10)}`);
+	const noVersionCheck = url.searchParams.get('noversioncheck') === 'true';
+	res.setHeader('Cache-Control', 'no-store, max-age=0');
+	if (/^win32-(x64|arm64|ia32)$/.test(platform)) {
+		res.writeHead(410, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'system installation channel retired; install the user edition manually', code: 'SYSTEM_CHANNEL_RETIRED', platform }));
+		return;
+	}
+	console.log(`[update] check platform=${platform} quality=${quality} commit=${currentCommit.substring(0, 10)} noversioncheck=${noVersionCheck}`);
 
 	let latest = null;
 	try {
 		latest = GH_REPO ? await readFromGitHub(platform) : readFromManifest(platform);
 	} catch (e) {
 		console.error('[update] 查询最新版本失败:', e);
+		res.writeHead(503, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'update lookup failed', platform }));
+		return;
 	}
-
-	// 无清单 / 查询失败 / 已是最新 → 204（客户端理解为无更新）
-	if (!latest || !latest.version || !latest.url || latest.version === currentCommit) {
+	if (!latest) {
+		res.writeHead(404, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'no release for this installation target', platform }));
+		return;
+	}
+	if (typeof latest.version !== 'string' || !latest.version.trim()
+		|| typeof latest.productVersion !== 'string' || !latest.productVersion.trim()
+		|| typeof latest.url !== 'string' || !/^https?:\/\//i.test(latest.url)) {
+		res.writeHead(502, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'invalid update metadata', platform }));
+		return;
+	}
+	const clientProductVersion = (req.headers['user-agent'] || '').match(/Code\/(\S+)/)?.[1];
+	if (!noVersionCheck && (latest.productVersion === clientProductVersion || (!clientProductVersion && latest.version === currentCommit))) {
 		res.writeHead(204);
 		res.end();
 		return;

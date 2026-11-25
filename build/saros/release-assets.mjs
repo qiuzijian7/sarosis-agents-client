@@ -8,6 +8,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { fileURLToPath } from 'node:url';
 import { verifyInstallers } from './pack-optimization.mjs';
+import policy from './pack-policy.cjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const REPORT = '.build/pack-reports/uploads.json';
@@ -22,6 +23,12 @@ export function trustedDownloadBase(server, env = process.env) {
 }
 
 export function validateUploadResponse(response, installerReport, platform, base) {
+	const allowed = policy.WINDOWS_ASSETS[0];
+	if (installerReport.target !== 'user' || installerReport.artifacts?.length !== 1
+		|| installerReport.artifacts[0].target !== allowed.target || installerReport.artifacts[0].platform !== allowed.platform
+		|| installerReport.artifacts[0].rel !== allowed.rel) {
+		throw new Error('Only the user installer can be published');
+	}
 	const artifact = installerReport.artifacts.find(item => item.platform === platform);
 	if (!artifact || response?.ok !== true || response.platform !== platform
 		|| response.version !== installerReport.commit || response.productVersion !== installerReport.productVersion
@@ -38,7 +45,7 @@ export function validateUploadResponse(response, installerReport, platform, base
 	}
 	const versionKey = String(installerReport.productVersion).replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '') || 'unknown';
 	const key = `${versionKey}--${platform}--${artifact.sha256}`;
-	const serverNames = artifact.target === 'user' ? ['VsSarosUserSetup.exe'] : ['VsSarosSetup.exe', 'VsSarosisSetup.exe'];
+	const serverNames = ['VsSarosUserSetup.exe'];
 	if (!serverNames.some(name => url.pathname === `/downloads/archive/${key}/${name}`)) {
 		throw new Error('Archive URL is not the expected version/platform/SHA256 path');
 	}
@@ -100,6 +107,40 @@ export function probeArchive(download, { timeoutMs = 15000 } = {}) {
 	});
 }
 
+export function validateUpdateFeedResponse(response, installerReport, download, base) {
+	if (download.target !== 'user' || download.platform !== 'win32-x64-user') {
+		throw new Error('Only the user update feed can be published');
+	}
+	if (!response || response.version !== installerReport.commit || response.productVersion !== installerReport.productVersion
+		|| response.sha256hash !== download.sha256 || typeof response.url !== 'string') {
+		throw new Error(`Update feed does not match the verified installer: ${download.platform}`);
+	}
+	const names = ['VsSarosUserSetup.exe'];
+	const expectedUrls = [download.url, ...names.map(name => new URL(`/downloads/${name}`, base).href)];
+	if (!expectedUrls.includes(response.url)) {
+		throw new Error(`Update feed points to the wrong installer target or download origin: ${download.platform}`);
+	}
+}
+
+/** Fetch metadata only, without credentials or redirects; a missing channel's 204 is never success. */
+export async function probeUpdateFeed(download, installerReport, server, base, { timeoutMs = 15000 } = {}) {
+	const endpoint = new URL(`/api/update/${encodeURIComponent(download.platform)}/saros/unknown`, trustedDownloadBase(server, {}));
+	endpoint.searchParams.set('noversioncheck', 'true');
+	const response = await fetch(endpoint, { redirect: 'error', signal: AbortSignal.timeout(timeoutMs), headers: { 'Cache-Control': 'no-cache' } });
+	if (response.status !== 200) {
+		await response.body?.cancel();
+		throw new Error(`Update feed probe failed for ${download.platform}: HTTP ${response.status}, expected 200`);
+	}
+	const chunks = [];
+	let size = 0;
+	for await (const chunk of response.body) {
+		size += chunk.length;
+		if (size > 64 * 1024) { throw new Error('Update feed exceeded 64 KiB'); }
+		chunks.push(chunk);
+	}
+	validateUpdateFeedResponse(JSON.parse(Buffer.concat(chunks).toString('utf8')), installerReport, download, base);
+}
+
 export function invalidateUpload(root = ROOT) {
 	fs.rmSync(path.join(root, REPORT), { force: true });
 }
@@ -127,13 +168,16 @@ export function recordUpload(root, installerReport, platform, response, base) {
 	return report;
 }
 
-export async function completeUpload(root, installerReport, base, probe = probeArchive) {
+export async function completeUpload(root, installerReport, base, probe = probeArchive, { updateServer = base, probeFeed = probeUpdateFeed } = {}) {
 	const report = JSON.parse(fs.readFileSync(path.join(root, REPORT), 'utf8'));
 	// Invalidate a previously completed report before performing any new checks/probes.
 	report.ready = false;
 	writeReport(root, report);
 	const downloads = validateUploadReport({ ...report, ready: true }, installerReport, base);
-	for (const download of downloads) { await probe(download); }
+	for (const download of downloads) {
+		await probe(download);
+		await probeFeed(download, installerReport, updateServer, base);
+	}
 	writeReport(root, { ...report, ready: true });
 	return downloads;
 }
@@ -163,8 +207,8 @@ async function main(args) {
 		if (!args[1]) { throw new Error('--complete-upload requires update server'); }
 		const base = trustedDownloadBase(args[1]);
 		if (base.startsWith('http:')) { console.warn('[release-assets] HTTP archive transport is not authenticated; configure HTTPS for production'); }
-		const downloads = await completeUpload(ROOT, installerReport, base);
-		console.log(`[release-assets] ${downloads.length} immutable download links verified`);
+		const downloads = await completeUpload(ROOT, installerReport, base, probeArchive, { updateServer: trustedDownloadBase(args[1], {}) });
+		console.log(`[release-assets] ${downloads.length} installer archives and update feeds verified`);
 		return;
 	}
 	throw new Error('Usage: --invalidate-upload | --record-upload <platform> <response-json> <server> | --complete-upload <server>');

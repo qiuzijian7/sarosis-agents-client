@@ -33,7 +33,7 @@ import { IProductService } from '../../product/common/productService.js';
 import { asJson, IRequestService } from '../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
-import { AvailableForDownload, DisablementReason, IUpdate, State, StateType, UpdateType } from '../common/update.js';
+import { AvailableForDownload, DisablementReason, IUpdate, isNewerProductVersion, State, StateType, UpdateType } from '../common/update.js';
 // ★ 2026-11-23：Setup 包断点续传（判据在 common，任何不确定都回退全量下载）
 import { acceptResumeResponse, decideResume, shouldKeepPartialFile, validateResumeMeta } from '../common/updateResume.js';
 import { AbstractUpdateService, createUpdateURL, getUpdateRequestHeaders, IUpdateURLOptions, UpdateErrorClassification } from './abstractUpdateService.js';
@@ -251,7 +251,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 			.then(update => {
 				const updateType = getUpdateType();
 
-				if (!update || !update.url || !update.version || !update.productVersion) {
+				if (!update || !update.url || !update.version || !isNewerProductVersion(this.productService.version, update.productVersion)) {
 					// If we were checking for an overwrite update and found nothing newer,
 					// restore the Ready state with the pending update
 					if (this.state.type === StateType.Overwriting) {

@@ -24,7 +24,7 @@ import { IEditorGroupsService } from '../../../../workbench/services/editor/comm
 import { IIdeCapabilityEnv, IIdeSelectionRange, buildExecuteNodeRequest, executeIdeCapability, ideFailureSummary } from '../common/dshIdeCapabilities.js';
 import { DSH_UPGRADE_ASSET_KINDS, IDshUpgradeAppState, IDshUpgradeAssetRow, IDshUpgradeBundledRow, IDshUpgradeState, isPathInside } from '../common/dshPageBridgeProtocol.js';
 // ★ 2026-10-23（desktop 窗口「更新」入口）：应用升级的纯逻辑（版本比较 / **降级闸门** / 端点）
-import { buildUpdateEndpoint, decideAppUpdate, parseAppUpdateResponse } from '../common/dshAppUpdate.js';
+import { decideAppUpdate, parseAppUpdateResponse } from '../common/dshAppUpdate.js';
 import { createUpgradeJob, finishUpgradeJob, finishUpgradeJobItem, startUpgradeJobItem, upgradeJobSummary, type IUpgradeJobState } from '../common/dshUpgradeJob.js';
 import { decideUpgradePolicy } from '../common/dshUpgradePolicy.js';
 import { decideRestartScope } from '../common/dshRestartScope.js';
@@ -37,7 +37,6 @@ import { waitForUpdateReady } from '../common/dshUpdateWait.js';
 import { AppUpdateEvent, IAppUpdateStatus, initialAppUpdateStatus, reduceAppUpdateStatus } from '../common/appUpdateState.js';
 // ★ 2026-11-23：12 态 → 8 相的映射收敛成可单测的穷尽表（宿主不再自己写 switch）。
 import { mapUpdateServiceState } from '../common/appUpdateStateMapping.js';
-import { arch as platformArch } from '../../../../base/common/process.js';
 import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesFromPlugins, activeModulesOf, containersFromPlugins, pagesFromPlugins, resolveContainerPageState, withWorkbenchClient } from '../common/dshModuleContainers.js';
 // `taskboard` 能力（看板"定位卡片"）：与原 `TasksViewPane` 点条目**同一套实现**（同一个 EditorInput
 // 与同一个 focusTaskInBoard），不另开一条"看起来能跳"的路径。
@@ -2315,13 +2314,8 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	/** 问更新源"最新是哪一版"，并用 `decideAppUpdate` 判能不能升（**不下载**）。 */
-	private async _checkAppUpdate(): Promise<IDshUpgradeAppState> {		const current = this._productService.version ?? '0.0.0';
-		const base = this._productService.updateUrl;
-		if (!base) {
-			return { current, action: 'unknown', error: '这个构建没有配置 updateUrl' };
-		}
-		const platform = `${isWindows ? 'win32' : isMacintosh ? 'darwin' : 'linux'}-${platformArch}`;
-		const url = buildUpdateEndpoint(base, platform, this._productService.quality ?? 'stable', this._productService.commit ?? '');
+	private async _checkAppUpdate(): Promise<IDshUpgradeAppState> {
+		const current = this._productService.version ?? '0.0.0';
 		try {
 			// 每次检查都清掉上一版的日志 / 策略，避免旧结论串到新版本。
 			this._appUpdateReleaseNotes = undefined;
@@ -2332,10 +2326,8 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			//   托管，**不发 CORS 头** ⇒ 浏览器拦掉响应，JS 只能看到 `Failed to fetch` ✗✗
 			//   （saros-pocket 的 app.js L2271 早有同一坑的记录与解法：走原生 fetch）。
 			//   ⇒ 请求挪到**主进程**（`CheckAppUpdate` 通道命令，无跨域概念）；
-			//     这里只负责拼 URL、解析响应体。
-			const res = await this._channel.call<{ ok: boolean; status?: number; body?: string; error?: string }>(
+			const res = await this._channel.call<{ ok: boolean; status?: number; body?: string; error?: string; platform?: string }>(
 				DshHarnessChannelCommand.CheckAppUpdate,
-				{ url },
 			);
 			if (!res || !res.ok) {
 				return { current, action: 'unknown', error: res?.error ?? '更新源请求失败' };
@@ -2344,13 +2336,19 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 				return { current, action: 'unknown', error: `更新源返回 HTTP ${res.status ?? 204}（空响应）` };
 			}
 			const parsed = parseAppUpdateResponse(JSON.parse(res.body));
-			this._appUpdateReleaseNotes = parsed?.notes;
-			this._appUpdateMinVersion = parsed?.minVersion;
-			this._appUpdateRolloutPercent = parsed?.rolloutPercent;
-			const remote = parsed?.productVersion;
+			if (!parsed?.version || !parsed.productVersion || !parsed.url || !/^https?:\/\//i.test(parsed.url)) {
+				return { current, action: 'unknown', error: '更新源响应缺少有效的 version、productVersion 或下载地址' };
+			}
+			this._appUpdateReleaseNotes = parsed.notes;
+			this._appUpdateMinVersion = parsed.minVersion;
+			this._appUpdateRolloutPercent = parsed.rolloutPercent;
+			const remote = parsed.productVersion;
 			const action = decideAppUpdate(current, remote);
-			this._logService.info(`[dshHarness] app update: local=${current} remote=${remote ?? '-'} ⇒ ${action}`);
-			return { current, ...(remote ? { remote } : {}), action };
+			this._logService.info(`[dshHarness] app update: local=${current} remote=${remote} ⇒ ${action} platform=${res.platform ?? '-'}`);
+			if (action === 'unknown') {
+				return { current, remote, action, error: '更新源或本地构建的版本号无法识别' };
+			}
+			return { current, remote, action, ...(action === 'downgrade' ? { error: `当前安装渠道的更新源版本 ${remote} 低于本地 ${current}，已阻止降级` } : {}) };
 		} catch (e) {
 			return { current, action: 'unknown', error: String((e as Error)?.message ?? e) };
 		}
@@ -2401,7 +2399,6 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 				: a.error
 					? { type: 'error', message: a.error }
 					: { type: 'not-available' };
-			// `downgrade` / `unknown` 都落到「已是最新」：绝不把「源更旧」显示成可升级 ✗
 			this._appUpdateStatus = { ...reduceAppUpdateStatus(this._appUpdateStatus, event), presentationId: id };
 		} finally {
 			this._upgradeBusy = undefined;

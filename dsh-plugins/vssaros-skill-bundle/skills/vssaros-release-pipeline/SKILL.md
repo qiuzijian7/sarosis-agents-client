@@ -158,7 +158,7 @@ curl -s --header "PRIVATE-TOKEN: $GONGFENG_TOKEN" \
 
 ```bash
 # 测试更新 API（用旧 commit）
-curl -s http://21.139.192.124:3030/api/update/win32-x64/saros/old-commit
+curl -s http://21.139.192.124:3030/api/update/win32-x64-user/saros/old-commit
 
 # 预期返回：{ "version":"v0.1.X", "url":"http://.../downloads/VsSarosUserSetup.exe", "sha256hash":"<hash>" }
 ```

@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 // ★ 2026-11-23：版本比较收敛到 common/dshVersion.ts（含预发布口径）；保留同名导出，调用方不变。
-import { compareVersions as compareSemver } from './dshVersion.js';
+import { compareVersions as compareSemver, parseVersion } from './dshVersion.js';
 export { compareVersions } from './dshVersion.js';
 
 /**
@@ -26,23 +26,18 @@ export { compareVersions } from './dshVersion.js';
 export type AppUpdateAction =
 	/** 更新源比本地新 ⇒ 可以一键升级 ✓ */
 	| 'upgrade'
-	/** 更新源与本地相同（或没有可用信息）⇒ 已是最新 */
+	/** 更新源与本地相同 ⇒ 已是最新 */
 	| 'uptodate'
-	/** 更新源比本地**旧** ⇒ 拒绝（否则就是降级） */
-	| 'downgrade';
+	/** 更新源比本地更旧 ⇒ 禁止降级 */
+	| 'downgrade'
+	/** 缺失或无法识别的版本 ⇒ 无法确定，不允许升级 */
+	| 'unknown';
 
-/**
- * 一键升级的**硬闸门**：只有更新源严格比本地新才允许升。
- *
- * `remote` 缺失（没查到 / 更新源没给 productVersion）按"已是最新"处理 —— 宁可不升，
- * 也不要因为一个残缺响应就把用户装回旧版（可重试，成本低；降级要重装，成本高）。
- * ⚠ 2026-11-23：比较器换成统一真源后，同版本号的预发布（如 `2.2.26125-rc.1`）
- *   比正式版**旧** ⇒ 落到 `downgrade`，不会再被当成「有新版」✗。
- */
+/** 只有有效的远程版本严格高于本地才允许升级；无效数据不能判为已最新。 */
 export function decideAppUpdate(local: string, remote: string | undefined): AppUpdateAction {
 	const r = String(remote ?? '').trim();
-	if (!r) {
-		return 'uptodate';
+	if (!parseVersion(local) || !parseVersion(r)) {
+		return 'unknown';
 	}
 	const cmp = compareSemver(r, local);
 	if (cmp > 0) {
@@ -61,7 +56,18 @@ export function decideAppUpdate(local: string, remote: string | undefined): AppU
 export function buildUpdateEndpoint(base: string, platform: string, quality: string, commit: string): string {
 	const root = String(base ?? '').replace(/\/+$/, '');
 	const h = encodeURIComponent(commit || 'unknown');
-	return `${root}/api/update/${platform}/${quality}/${h}?channel=latest&noversioncheck=true`;
+	return toAppUpdateCheckUrl(`${root}/api/update/${platform}/${quality}/${h}`);
+}
+
+/** 保留原生更新服务的安装渠道和查询参数，仅关闭服务端 commit 比较。 */
+export function toAppUpdateCheckUrl(feedUrl: string): string {
+	const url = new URL(feedUrl);
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+		throw new Error('更新源必须使用 HTTP(S)');
+	}
+	url.searchParams.set('channel', 'latest');
+	url.searchParams.set('noversioncheck', 'true');
+	return url.toString();
 }
 
 /** 更新源返回体的形状（VS Code win32 更新服务的 response）。 */

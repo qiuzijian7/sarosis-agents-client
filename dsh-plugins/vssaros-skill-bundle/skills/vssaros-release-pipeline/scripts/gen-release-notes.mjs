@@ -162,10 +162,9 @@ for (const r of setupRows) {
 md += '\n';
 
 md += `## 🔄 更新方式\n\n`;
-md += `- **已安装用户**：客户端会在 1 小时内自动检测到新版本并后台静默下载，重启即应用更新\n`;
-md += `- **新用户**：直接从本 Release 页面下载安装包\n`;
-md += `  - 系统级（需管理员）：\`VsSarosisSetup.exe\`\n`;
-md += `  - 用户级（普通权限）：\`VsSarosUserSetup.exe\`\n\n`;
+md += '- **已安装 User 版用户**：在客户端检查更新并确认安装，重启后应用更新\n';
+md += '- **新用户**：从本 Release 页面下载用户级安装包 `VsSarosUserSetup.exe`，无需管理员权限\n';
+md += '- **旧 System 版用户**：系统级发行已停止支持，请手动迁移到 User 版；更新不会自动跨安装类型替换\n\n';
 
 // 末尾的元数据行（热更新 Worker 解析必需）
 md += `---\n\n`;

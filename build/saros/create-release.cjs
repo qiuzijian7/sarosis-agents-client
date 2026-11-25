@@ -60,7 +60,7 @@ function resolveCurlBin() {
 const CURL_BIN = resolveCurlBin();
 
 /**
- * 发布资产：Windows 出两个 Inno 安装包；macOS 出 dmg（对外分发）+ zip（**自动更新用**）。
+ * 发布资产：Windows 仅出 User Inno 安装包；macOS 出 dmg（对外分发）+ zip（**自动更新用**）。
  * ⚠ zip 必须发布：DarwinUpdateService 走 electron.autoUpdater（Squirrel.Mac），只认 zip。
  */
 const RELEASE_ASSETS = IS_WIN
