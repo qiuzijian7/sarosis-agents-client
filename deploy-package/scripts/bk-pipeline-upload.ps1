@@ -16,21 +16,77 @@ $ErrorActionPreference = "Stop"
 # Disable Expect: 100-continue for any .NET HTTP calls
 [System.Net.ServicePointManager]::Expect100Continue = $false
 
-function Invoke-UploadCurl {
-    param([string]$Executable, [string[]]$Arguments)
-
-    $savedPreference = [System.Management.Automation.ActionPreference]::Stop
-    $currentPreference = Get-Variable -Name ErrorActionPreference -ValueOnly -ErrorAction SilentlyContinue
-    if ($null -ne $currentPreference) {
-        $savedPreference = [System.Management.Automation.ActionPreference]$currentPreference
+function Resolve-UploadCurl {
+    if (-not [string]::IsNullOrWhiteSpace($env:SAROS_CURL_BIN)) {
+        return $env:SAROS_CURL_BIN.Trim()
     }
-    $ErrorActionPreference = 'Continue'
+    $nativeCurl = Join-Path $env:SystemRoot 'System32\curl.exe'
+    if (Test-Path -LiteralPath $nativeCurl -PathType Leaf) {
+        return $nativeCurl
+    }
+    return (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
+}
+
+function ConvertTo-UploadArgument {
+    param([AllowEmptyString()][string]$Value)
+
+    $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+    return '"' + $escaped + '"'
+}
+
+function Invoke-UploadCurl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [string[]]$Arguments,
+        [Parameter(Mandatory = $true)][ref]$Result,
+        [ValidateRange(1, 2147483)][int]$TimeoutSeconds = 660
+    )
+
+    $Result.Value = $null
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Executable
+    $startInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-UploadArgument $_ }) -join ' ')
+    $startInfo.UseShellExecute = $false
+    $startInfo.WorkingDirectory = (Get-Location).ProviderPath
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $started = $false
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
     try {
-        $commandOutput = & $Executable @Arguments 2>&1
-        $commandExitCode = $LASTEXITCODE
-        return [pscustomobject]@{ Output = @($commandOutput); ExitCode = $commandExitCode }
+        $started = $process.Start()
+        if (-not $started) { throw 'Upload process did not start' }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $Result.Value = [pscustomobject]@{ ExitCode = 28; StandardOutput = ''; StandardError = 'Upload process timed out' }
+        } else {
+            $remaining = [int][Math]::Max(0, ($TimeoutSeconds * 1000) - $elapsed.ElapsedMilliseconds)
+            $outputComplete = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), $remaining)
+            if (-not $outputComplete) {
+                $Result.Value = [pscustomobject]@{ ExitCode = 28; StandardOutput = ''; StandardError = 'Upload process output timed out' }
+            } else {
+                $Result.Value = [pscustomobject]@{ ExitCode = $process.ExitCode; StandardOutput = $stdoutTask.GetAwaiter().GetResult(); StandardError = $stderrTask.GetAwaiter().GetResult() }
+            }
+        }
+    } catch {
+        $Result.Value = [pscustomobject]@{ ExitCode = -1; StandardOutput = ''; StandardError = $_.Exception.Message }
     } finally {
-        $ErrorActionPreference = $savedPreference
+        if ($started) {
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill()
+                    [void]$process.WaitForExit(5000)
+                }
+            } catch { }
+        }
+        $elapsed.Stop()
+        $process.Dispose()
     }
 }
 
@@ -104,7 +160,7 @@ if (Test-Path $versionInfoPath) {
 }
 
 # ---- Check curl.exe availability ----
-$curlExe = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
+$curlExe = Resolve-UploadCurl
 if (-not $curlExe) {
     Write-Host "[ERROR] curl.exe not found. Please install curl or add it to PATH." -ForegroundColor Red
     exit 1
@@ -167,8 +223,10 @@ foreach ($pkg in $packages) {
     $responseDir = Join-Path (Get-Location).Path '.build\pack-reports\upload-responses'
     New-Item -ItemType Directory -Path $responseDir -Force | Out-Null
     $responseFile = Join-Path $responseDir ($platform + '.json')
+    $statusFormatFile = Join-Path $responseDir 'http-status.txt'
+    [IO.File]::WriteAllText($statusFormatFile, '\n%{http_code}', (New-Object Text.UTF8Encoding($false)))
     $curlArgs = @(
-        "-sS",
+        "-q", "-sS", "--globoff",
         "-X", "POST",
         "-H", "Content-Type: application/octet-stream",
         "-H", "Expect:",
@@ -176,7 +234,7 @@ foreach ($pkg in $packages) {
         "--max-time", "600",
         "--upload-file", $exePath,
         "-o", $responseFile,
-        "-w", "`n%{http_code}"
+        "-w", ('@' + $statusFormatFile.Replace('\', '/'))
     )
 
     if ($UploadToken) {
@@ -189,16 +247,19 @@ foreach ($pkg in $packages) {
         Write-Host "  Uploading... (attempt $attempt/$maxRetries)"
         if (Test-Path -LiteralPath $responseFile) { Remove-Item -LiteralPath $responseFile -Force }
 
-        # PowerShell 5.1 会把本机命令的 stderr 转成 ErrorRecord；在 $ErrorActionPreference=Stop
-        # 下 curl 的任何告警都会抛 NativeCommandError 并终止整个脚本 —— 3 次重试和第二个
-        # 安装包都跑不到。调用期间临时降级为 Continue，让重试与错误汇总真正生效。
-        $curlResult = Invoke-UploadCurl -Executable $curlExe -Arguments $curlArgs
-        $output = $curlResult.Output
+        $curlResult = $null
+        Invoke-UploadCurl -Executable $curlExe -Arguments $curlArgs -Result ([ref]$curlResult)
+        if ($null -eq $curlResult -or $null -eq $curlResult.ExitCode -or $null -eq $curlResult.StandardOutput -or $null -eq $curlResult.StandardError) {
+            Write-Host '[ERROR] Upload process returned an invalid result; retry aborted' -ForegroundColor Red
+            exit 1
+        }
         $exitCode = $curlResult.ExitCode
-
-        # Extract HTTP status code from last line of output
-        $lines = ($output -join "`n").Trim().Split("`n")
-        $httpCode = $lines[-1].Trim()
+        $httpCode = 'missing'
+        $statusMatch = [regex]::Match($curlResult.StandardOutput.Trim(), '^\d{3}$')
+        if ($statusMatch.Success) { $httpCode = $statusMatch.Value }
+        $errMsg = $curlResult.StandardError.Trim()
+        if ($UploadToken) { $errMsg = $errMsg.Replace($UploadToken, '[redacted]') }
+        if (-not $errMsg) { $errMsg = 'No curl diagnostic output' }
 
         if ($exitCode -eq 0 -and $httpCode -eq "200") {
             node build/saros/release-assets.mjs --record-upload $platform $responseFile $UpdateServer
@@ -210,7 +271,6 @@ foreach ($pkg in $packages) {
             }
             Write-Host "  [WARN] HTTP 200 did not provide a valid immutable archive receipt" -ForegroundColor Yellow
         }
-        $errMsg = ($output | Select-Object -First 5) -join " "
         if ($attempt -lt $maxRetries) {
             Write-Host "  [WARN] Upload failed (curl exit=$exitCode, HTTP $httpCode): $errMsg -- retrying in 5s..." -ForegroundColor Yellow
             Start-Sleep -Seconds 5

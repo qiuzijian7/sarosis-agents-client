@@ -7,7 +7,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import http from 'node:http';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { PRUNE_LIST, VIRTUAL_STORE_HEAVY_RE } from './prune-list.mjs';
@@ -218,7 +220,7 @@ test('CLI rejects unknown targets and publication gates missing artifacts before
 	const release = fs.readFileSync(path.join(ROOT, 'build/saros/create-release.cjs'), 'utf8');
 	assertOrdered(release, "'--check-exes'", 'const changelog = buildChangelog');
 	const upload = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
-	assertOrdered(upload, '--check-exes', '$curlResult = Invoke-UploadCurl');
+	assertOrdered(upload, '--check-exes', 'Invoke-UploadCurl -Executable $curlExe');
 });
 
 test('staging requires successful packaging, current identity and unchanged entry hashes', t => {
@@ -875,53 +877,164 @@ test('product installer entry points reject system before any build or manifest 
 	}
 });
 
-test('upload curl isolates error preference and preserves exit codes even when the snapshot is null', { skip: process.platform !== 'win32' }, () => {
+function uploadHelpers() {
 	const file = path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1').replace(/'/g, "''");
-	const script = `
-$ErrorActionPreference = 'Stop'
+	return `
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile('${file}', [ref]$tokens, [ref]$errors)
 if ($errors.Count -ne 0) { throw 'Invalid upload script syntax' }
-$fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-UploadCurl' }, $true)
-if (-not $fn) { throw 'Missing upload curl helper' }
-. ([scriptblock]::Create($fn.Extent.Text))
-$script:nullSnapshot = $false
-function Get-Variable {
-    param($Name, [switch]$ValueOnly, $ErrorAction)
-    if ($script:nullSnapshot) { return $null }
-    return Microsoft.PowerShell.Utility\\Get-Variable -Name $Name -ValueOnly
+foreach ($name in @('Resolve-UploadCurl', 'ConvertTo-UploadArgument', 'Invoke-UploadCurl')) {
+    $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
+    if (-not $fn) { throw 'Missing upload helper' }
+    . ([scriptblock]::Create($fn.Extent.Text))
 }
-function Invoke-FakeCurl {
-    if ($ErrorActionPreference -ne 'Continue') { throw 'Curl stderr would abort upload' }
-    Write-Error 'fake native stderr'
-    Write-Output '200'
-    $global:LASTEXITCODE = $script:fakeExit
+`;
 }
+
+test('upload process captures native stdout stderr and exit codes through refs without changing caller preference', { skip: process.platform !== 'win32' }, t => {
+	const f = fixture(t);
+	const native = f.write('native process/args.cjs', 'process.stdout.write(JSON.stringify(process.argv.slice(3))); process.stderr.write("native warning"); process.exit(Number(process.argv[2]));');
+	const slow = f.write('native process/slow.cjs', 'setTimeout(() => process.exit(0), 5000);');
+	const script = `
+$ErrorActionPreference = 'Stop'
+${uploadHelpers()}
+$expected = @('', 'space path', '中文', 'quote"value', 'C:\\trailing\\', 'https://example.test/api?a=1&b=2')
 foreach ($preference in @('Stop', 'Continue')) {
-    foreach ($empty in @($false, $true)) {
-        foreach ($code in @(0, 55)) {
-            $ErrorActionPreference = $preference
-            $script:nullSnapshot = $empty
-            $script:fakeExit = $code
-            $value = Invoke-UploadCurl -Executable 'Invoke-FakeCurl' -Arguments @('dummy')
-            if ($value -isnot [pscustomobject] -or $value.ExitCode -ne $code) { throw 'Curl exit code lost' }
-            if (@($value.Output).Count -ne 2 -or $value.Output[-1] -ne '200') { throw 'Curl stderr or stdout lost' }
-            if ($ErrorActionPreference -ne $preference) { throw 'Caller preference changed' }
-        }
+    foreach ($code in @(0, 55)) {
+        $ErrorActionPreference = $preference
+        $LASTEXITCODE = 99
+        $value = $null
+        $stream = @(Invoke-UploadCurl -Executable '${process.execPath.replace(/'/g, "''")}' -Arguments (@('${native.replace(/'/g, "''")}', [string]$code) + $expected) -Result ([ref]$value))
+        if ($stream.Count -ne 0) { throw 'Result leaked into success stream' }
+        if ($null -eq $value -or $value.ExitCode -ne $code) { throw 'Native exit code lost' }
+        if ($value.StandardError -ne 'native warning') { throw 'Native stderr lost' }
+        $actual = ConvertFrom-Json -InputObject $value.StandardOutput
+        if ($actual.Count -ne $expected.Count) { throw 'Argument count changed' }
+        for ($i = 0; $i -lt $actual.Count; $i++) { if ($actual[$i] -ne $expected[$i]) { throw 'Argument quoting changed' } }
+        if ($ErrorActionPreference -ne $preference -or $LASTEXITCODE -ne 99) { throw 'Caller state changed' }
     }
 }
-function Invoke-ThrowingCurl { throw 'transport failed' }
-try { Invoke-UploadCurl -Executable 'Invoke-ThrowingCurl' -Arguments @(); throw 'Expected transport error' } catch {
-    if ($_.Exception.Message -notmatch 'transport failed') { throw }
-}
-Write-Output 'UPLOAD_CURL_SCOPE_OK'
+$value = $null
+Invoke-UploadCurl -Executable '${path.join(f.root, 'missing.exe').replace(/'/g, "''")}' -Arguments @() -Result ([ref]$value)
+if ($null -eq $value -or $value.ExitCode -ne -1 -or -not $value.StandardError) { throw 'Missing executable not diagnosed' }
+Invoke-UploadCurl -Executable '${process.execPath.replace(/'/g, "''")}' -Arguments @('${slow.replace(/'/g, "''")}') -TimeoutSeconds 1 -Result ([ref]$value)
+if ($value.ExitCode -ne 28 -or $value.StandardError -notmatch 'timed out') { throw 'Timeout not diagnosed' }
+Write-Output 'UPLOAD_NATIVE_PROCESS_OK'
 `;
 	const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 30000 });
 	assert.equal(result.status, 0, result.stderr || result.error?.message);
-	assert.match(result.stdout, /UPLOAD_CURL_SCOPE_OK/);
+	assert.match(result.stdout, /UPLOAD_NATIVE_PROCESS_OK/);
 	const source = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
-	assert.match(source, /\$curlResult = Invoke-UploadCurl/);
+	assert.match(source, /-Result \(\[ref\]\$curlResult\)/);
+	assert.match(source, /Upload process returned an invalid result/);
 	assert.doesNotMatch(source, /\$prevErrorAction/);
+});
+
+test('upload output EOF wait expires instead of blocking after process exit', { skip: process.platform !== 'win32' }, () => {
+	const script = `
+$ErrorActionPreference = 'Stop'
+${uploadHelpers()}
+$assign = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$outputComplete' }, $true)
+$guard = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.StartsWith('if (-not $outputComplete)') }, $true)
+if (-not $assign -or -not $guard) { throw 'Missing bounded output wait' }
+$stdoutTask = (New-Object 'Threading.Tasks.TaskCompletionSource[string]').Task
+$stderrTask = (New-Object 'Threading.Tasks.TaskCompletionSource[string]').Task
+$remaining = 50
+$value = $null
+$Result = [ref]$value
+$elapsed = [Diagnostics.Stopwatch]::StartNew()
+. ([scriptblock]::Create($assign.Extent.Text + [Environment]::NewLine + $guard.Extent.Text))
+if ($value.ExitCode -ne 28 -or $value.StandardError -notmatch 'output timed out' -or $elapsed.ElapsedMilliseconds -gt 2000) { throw 'Output EOF wait did not expire' }
+Write-Output 'UPLOAD_EOF_BOUND_OK'
+`;
+	const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 15000 });
+	assert.equal(result.status, 0, result.stderr || result.error?.message);
+	assert.match(result.stdout, /UPLOAD_EOF_BOUND_OK/);
+});
+
+test('invalid upload results fail before retrying or recording a receipt', { skip: process.platform !== 'win32' }, () => {
+	const script = `
+$ErrorActionPreference = 'Stop'
+${uploadHelpers()}
+$guard = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.Contains('Upload process returned an invalid result') }, $true)
+if (-not $guard) { throw 'Missing result validation' }
+$curlResult = $null
+. ([scriptblock]::Create($guard.Extent.Text))
+throw 'Invalid result was accepted'
+`;
+	const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 15000 });
+	assert.equal(result.status, 1);
+	assert.match(result.stdout, /invalid result; retry aborted/);
+});
+
+test('PowerShell 5.1 uploads bytes with native curl and reads HTTP status independently of response JSON', { skip: process.platform !== 'win32' }, async t => {
+	const f = fixture(t);
+	const payload = Buffer.alloc(2 * MIB, 65);
+	const installer = f.write('upload path/安装包.exe', payload);
+	const responseFile = path.join(f.root, 'response.json');
+	const formatFile = f.write('upload path/status.txt', '\\n%{http_code}');
+	let received = 0;
+	const server = http.createServer((request, response) => {
+		assert.equal(request.method, 'POST');
+		assert.equal(request.url, '/admin/upload?platform=user&commit=test');
+		assert.equal(request.headers['x-upload-token'], 'fixture-token');
+		request.on('data', bytes => { received += bytes.length; });
+		request.on('end', () => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end('{"ok":true}'); });
+	});
+	await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+	t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+	const url = `http://127.0.0.1:${server.address().port}/admin/upload?platform=user&commit=test`;
+	const script = `
+$ErrorActionPreference = 'Stop'
+${uploadHelpers()}
+$env:SAROS_CURL_BIN = ''
+$curl = Resolve-UploadCurl
+if ($curl -ne (Join-Path $env:SystemRoot 'System32\\curl.exe')) { throw 'Native curl not selected' }
+$value = $null
+Invoke-UploadCurl -Executable $curl -Arguments @('-q', '-sS', '--globoff', '-X', 'POST', '-H', 'Expect:', '-H', 'X-Upload-Token: fixture-token', '--upload-file', '${installer.replace(/'/g, "''")}', '-o', '${responseFile.replace(/'/g, "''")}', '-w', '@${formatFile.replaceAll('\\', '/').replace(/'/g, "''")}', '${url}') -Result ([ref]$value)
+if ($value.ExitCode -ne 0 -or $value.StandardOutput.Trim() -ne '200') { throw ('Upload failed: ' + $value.StandardError) }
+if ((Get-Content -Raw '${responseFile.replace(/'/g, "''")}' | ConvertFrom-Json).ok -ne $true) { throw 'Response JSON not preserved' }
+Write-Output 'UPLOAD_LOOPBACK_OK'
+`;
+	const result = await promisify(execFile)('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 30000 });
+	assert.match(result.stdout, /UPLOAD_LOOPBACK_OK/);
+	assert.equal(received, payload.length);
+});
+
+test('complete upload script consumes native process results and verifies the receipt before success', { skip: process.platform !== 'win32' }, async t => {
+	const f = fixture(t);
+	const asset = policy.resolvePackPolicy({}).assets[0];
+	const payload = Buffer.alloc(MIB, 66);
+	f.write(`repo/${asset.rel}`, payload);
+	f.write('repo/product.json', '{"version":"2.2.26285"}');
+	const source = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
+	const script = f.write('repo/upload.ps1', '\uFEFF' + source.replace(/^\uFEFF/, ''));
+	const cli = f.write('commands/cli.cjs', [
+		'const fs = require("node:fs"); const args = process.argv.slice(2);',
+		`if (args.includes('--targets-json')) console.log(${JSON.stringify(JSON.stringify([asset]))});`,
+		'if (args.includes("--record-upload")) { const i = args.indexOf("--record-upload"); if (JSON.parse(fs.readFileSync(args[i + 2], "utf8")).ok !== true) process.exit(1); fs.writeFileSync("verified-upload.json", JSON.stringify({platform:args[i + 1]})); }',
+		'if (args.includes("--complete-upload") && !fs.existsSync("verified-upload.json")) process.exit(1);',
+	].join('\n'));
+	f.write('commands/node.cmd', `@echo off\r\n"${process.execPath}" "${cli}" %*\r\nexit /b %errorlevel%\r\n`);
+	f.write('commands/git.cmd', `@echo off\r\nif "%1"=="rev-parse" (echo ${'a'.repeat(40)}) else (echo 42)\r\nexit /b 0\r\n`);
+	let received = 0;
+	const server = http.createServer((request, response) => {
+		assert.equal(request.method, 'POST');
+		assert.equal(request.headers['x-upload-token'], 'fixture-token');
+		request.on('data', bytes => { received += bytes.length; });
+		request.on('end', () => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end('{"ok":true}'); });
+	});
+	await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+	t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+	const wrapper = `Set-Location '${f.repo.replace(/'/g, "''")}'; [Environment]::CurrentDirectory = '${f.root.replace(/'/g, "''")}'; & '${script.replace(/'/g, "''")}'; exit $LASTEXITCODE`;
+	const result = await promisify(execFile)('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(wrapper, 'utf16le').toString('base64')], {
+		cwd: f.root, encoding: 'utf8', timeout: 30000,
+		env: { ...process.env, PATH: `${path.join(f.root, 'commands')}${path.delimiter}${process.env.PATH ?? ''}`, SAROS_CURL_BIN: '', SAROS_UPLOAD_TOKEN: 'fixture-token', SAROS_UPDATE_SERVER: `http://127.0.0.1:${server.address().port}` },
+	});
+	assert.match(result.stdout, /Success: 1, Failed: 0/);
+	assert.ok(!result.stdout.includes('fixture-token'));
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.repo, 'verified-upload.json'), 'utf8')), { platform: 'win32-x64-user' });
+	assert.equal(received, payload.length);
 });
 
 function installerPipelineSteps(file, buildName) {
