@@ -46,7 +46,7 @@ function fixture(t) {
 
 function sparseFile(file, size) {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
-	const fd = fs.openSync(file, 'w');
+	const fd = fs.openSync(file, 'wx');
 	try { fs.ftruncateSync(fd, size); } finally { fs.closeSync(fd); }
 }
 
@@ -72,6 +72,14 @@ test('fixture cleanup waits for bounded asynchronous removal', async () => {
 test('fixture cleanup propagates permanent deletion errors', async () => {
 	const error = Object.assign(new Error('fixture still locked'), { code: 'EPERM' });
 	await assert.rejects(cleanupFixture('fixture-root', () => Promise.reject(error)), failure => failure === error);
+});
+
+test('sparse fixtures are created once and cannot truncate an existing file', t => {
+	const f = fixture(t);
+	const file = path.join(f.root, 'write-once.dat');
+	sparseFile(file, 4_096);
+	assert.throws(() => sparseFile(file, 1_024), { code: 'EEXIST' });
+	assert.equal(fs.statSync(file).size, 4_096);
 });
 
 test('targets only allow user and reject system, both and invalid values', () => {
@@ -183,8 +191,10 @@ test('installer inspection uses selected targets and fails closed on missing bas
 	assert.equal(artifacts[0].sha256.length, 64);
 	assert.throws(() => policy.inspectInstallers(f.repo, config, { artifacts: [] }), /baseline is missing/);
 	assert.equal(policy.inspectInstallers(f.repo, policy.resolvePackPolicy({})).length, 1);
-	fs.unlinkSync(file);
-	assert.throws(() => policy.inspectInstallers(f.repo, policy.resolvePackPolicy({})), /ENOENT/);
+	const missing = fixture(t);
+	assert.equal(fs.existsSync(path.join(missing.repo, config.assets[0].rel)), false);
+	assert.throws(() => policy.inspectInstallers(missing.repo, policy.resolvePackPolicy({})), /ENOENT/);
+	assert.equal(fs.statSync(file).size, 10 * MIB);
 });
 
 test('recorded installers reject target/version/commit changes and same-size tampering', t => {
@@ -523,15 +533,23 @@ test('compression probe reads all formal Inno settings and rejects missing/dupli
 });
 
 test('successful builds preserve separate standard/offline report history for a controlled comparison', t => {
-	const f = fixture(t);
+	const offlineFixture = fixture(t);
+	const standardFixture = fixture(t);
 	const identity = { commit: 'a'.repeat(40), productVersion: '2.2.26241' };
 	const asset = policy.WINDOWS_ASSETS[0];
-	const file = path.join(f.repo, asset.rel);
-	sparseFile(file, 12 * MIB);
-	recordInstallers(f.repo, { SAROS_SETUP_TARGETS: 'user', SAROS_PACK_MODE: 'offline' }, identity);
-	sparseFile(file, 10 * MIB);
-	recordInstallers(f.repo, { SAROS_SETUP_TARGETS: 'user', SAROS_PACK_MODE: 'standard' }, identity);
-	const history = path.join(f.repo, '.build/pack-reports/history', identity.commit);
+	const offlineFile = path.join(offlineFixture.repo, asset.rel);
+	const standardFile = path.join(standardFixture.repo, asset.rel);
+	sparseFile(offlineFile, 12 * MIB);
+	recordInstallers(offlineFixture.repo, { SAROS_SETUP_TARGETS: 'user', SAROS_PACK_MODE: 'offline' }, identity);
+	const offlineHistory = path.join(offlineFixture.repo, '.build/pack-reports/history', identity.commit);
+	const offlineText = fs.readFileSync(path.join(offlineHistory, 'offline-user.json'), 'utf8');
+	const history = path.join(standardFixture.repo, '.build/pack-reports/history', identity.commit);
+	fs.cpSync(offlineHistory, history, { recursive: true, errorOnExist: true, force: false });
+	sparseFile(standardFile, 10 * MIB);
+	recordInstallers(standardFixture.repo, { SAROS_SETUP_TARGETS: 'user', SAROS_PACK_MODE: 'standard' }, identity);
+	assert.equal(fs.readFileSync(path.join(history, 'offline-user.json'), 'utf8'), offlineText);
+	assert.equal(fs.statSync(offlineFile).size, 12 * MIB);
+	assert.equal(fs.statSync(standardFile).size, 10 * MIB);
 	const offline = JSON.parse(fs.readFileSync(path.join(history, 'offline-user.json'), 'utf8'));
 	const standard = JSON.parse(fs.readFileSync(path.join(history, 'standard-user.json'), 'utf8'));
 	const report = compareInstallerReports(offline, standard);
