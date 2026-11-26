@@ -839,7 +839,8 @@ test('installer pipelines propagate build failure and only archive after success
 		const { build, archive, run } = installerPipelineSteps(file, buildName);
 		assert.match(build, /continue-on-error: false/);
 		assert.equal(run.trim(), `powershell -ExecutionPolicy Bypass -File ${script}\nexit $LASTEXITCODE`);
-		assert.match(archive, /if: null/);
+		// 蓝盾 PAC 不接受步骤级 `if: null`（流水线更新报 yaml 不合法）；无条件步骤必须省略 if。
+		assert.doesNotMatch(archive, /^\s*if:/m);
 		assert.match(archive, /continue-on-error: false/);
 		assert.match(archive, /filePath: \.build\/win32-x64\/user-setup\/VsSarosUserSetup\.exe/);
 	}

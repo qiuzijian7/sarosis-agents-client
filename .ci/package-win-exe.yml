@@ -206,7 +206,6 @@ stages:
         shell: powershell
       - name: Archive installers
         id: Rz97AF
-        if: null
         continue-on-error: false
         uses: UploadArtifactory@8.*
         with:

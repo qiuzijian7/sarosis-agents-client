@@ -85,7 +85,6 @@ stages:
           exit $LASTEXITCODE
         shell: powershell
       - name: Archive installers
-        if: null
         continue-on-error: false
         uses: UploadArtifactory@8.*
         with:
