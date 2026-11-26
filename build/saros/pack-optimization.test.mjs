@@ -967,10 +967,10 @@ throw 'Invalid result was accepted'
 	assert.match(result.stdout, /invalid result; retry aborted/);
 });
 
-test('PowerShell 5.1 uploads bytes with native curl and reads HTTP status independently of response JSON', { skip: process.platform !== 'win32' }, async t => {
+test('PowerShell 5.1 uploads bytes with resolved curl including PATH fallback and reads HTTP status independently of response JSON', { skip: process.platform !== 'win32' }, async t => {
 	const f = fixture(t);
 	const payload = Buffer.alloc(2 * MIB, 65);
-	const installer = f.write('upload path/安装包.exe', payload);
+	const installer = f.write('upload path/VsSarosUserSetup.exe', payload);
 	const responseFile = path.join(f.root, 'response.json');
 	const formatFile = f.write('upload path/status.txt', '\\n%{http_code}');
 	let received = 0;
@@ -988,17 +988,32 @@ test('PowerShell 5.1 uploads bytes with native curl and reads HTTP status indepe
 $ErrorActionPreference = 'Stop'
 ${uploadHelpers()}
 $env:SAROS_CURL_BIN = ''
-$curl = Resolve-UploadCurl
-if ($curl -ne (Join-Path $env:SystemRoot 'System32\\curl.exe')) { throw 'Native curl not selected' }
-$value = $null
-Invoke-UploadCurl -Executable $curl -Arguments @('-q', '-sS', '--globoff', '-X', 'POST', '-H', 'Expect:', '-H', 'X-Upload-Token: fixture-token', '--upload-file', '${installer.replace(/'/g, "''")}', '-o', '${responseFile.replace(/'/g, "''")}', '-w', '@${formatFile.replaceAll('\\', '/').replace(/'/g, "''")}', '${url}') -Result ([ref]$value)
-if ($value.ExitCode -ne 0 -or $value.StandardOutput.Trim() -ne '200') { throw ('Upload failed: ' + $value.StandardError) }
-if ((Get-Content -Raw '${responseFile.replace(/'/g, "''")}' | ConvertFrom-Json).ok -ne $true) { throw 'Response JSON not preserved' }
+$savedRoot = $env:SystemRoot
+try {
+    foreach ($forceFallback in @($false, $true)) {
+        $env:SystemRoot = $savedRoot
+        if ($forceFallback) { $env:SystemRoot = '${f.root.replace(/'/g, "''")}' }
+        $native = Join-Path $env:SystemRoot 'System32\\curl.exe'
+        $expected = if (Test-Path -LiteralPath $native -PathType Leaf) { $native } else { (Get-Command curl.exe -ErrorAction Stop).Source }
+        $curl = Resolve-UploadCurl
+        if (-not $curl -or $curl -ne $expected) { throw 'Curl resolver did not honor native/PATH availability' }
+        $env:SystemRoot = $savedRoot
+        $value = $null
+        Invoke-UploadCurl -Executable $curl -Arguments @('-q', '-sS', '--globoff', '--noproxy', '*', '-X', 'POST', '-H', 'Expect:', '-H', 'X-Upload-Token: fixture-token', '--upload-file', '${installer.replace(/'/g, "''")}', '-o', '${responseFile.replace(/'/g, "''")}', '-w', '@${formatFile.replaceAll('\\', '/').replace(/'/g, "''")}', '${url}') -Result ([ref]$value)
+        if ($null -eq $value -or $value.ExitCode -ne 0 -or $value.StandardOutput.Trim() -ne '200') { throw ('Upload failed: ' + $value.StandardError) }
+        if ((Get-Content -Raw '${responseFile.replace(/'/g, "''")}' | ConvertFrom-Json).ok -ne $true) { throw 'Response JSON not preserved' }
+        $env:SAROS_CURL_BIN = '  ' + $curl + '  '
+        if ((Resolve-UploadCurl) -ne $curl) { throw 'Explicit curl override not honored' }
+        $env:SAROS_CURL_BIN = ''
+    }
+} finally {
+    $env:SystemRoot = $savedRoot
+}
 Write-Output 'UPLOAD_LOOPBACK_OK'
 `;
 	const result = await promisify(execFile)('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 30000 });
 	assert.match(result.stdout, /UPLOAD_LOOPBACK_OK/);
-	assert.equal(received, payload.length);
+	assert.equal(received, 2 * payload.length);
 });
 
 test('complete upload script consumes native process results and verifies the receipt before success', { skip: process.platform !== 'win32' }, async t => {
@@ -1009,9 +1024,11 @@ test('complete upload script consumes native process results and verifies the re
 	f.write('repo/product.json', '{"version":"2.2.26285"}');
 	const source = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
 	const script = f.write('repo/upload.ps1', '\uFEFF' + source.replace(/^\uFEFF/, ''));
+	const targetsJSON = JSON.stringify(policy.shellAssets([asset]));
+	assert.match(targetsJSON, /^[\x00-\x7f]+$/, 'Shell target metadata must be ASCII-only');
 	const cli = f.write('commands/cli.cjs', [
 		'const fs = require("node:fs"); const args = process.argv.slice(2);',
-		`if (args.includes('--targets-json')) console.log(${JSON.stringify(JSON.stringify([asset]))});`,
+		`if (args.includes('--targets-json')) console.log(${JSON.stringify(targetsJSON)});`,
 		'if (args.includes("--record-upload")) { const i = args.indexOf("--record-upload"); if (JSON.parse(fs.readFileSync(args[i + 2], "utf8")).ok !== true) process.exit(1); fs.writeFileSync("verified-upload.json", JSON.stringify({platform:args[i + 1]})); }',
 		'if (args.includes("--complete-upload") && !fs.existsSync("verified-upload.json")) process.exit(1);',
 	].join('\n'));
@@ -1026,15 +1043,17 @@ test('complete upload script consumes native process results and verifies the re
 	});
 	await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 	t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
-	const wrapper = `Set-Location '${f.repo.replace(/'/g, "''")}'; [Environment]::CurrentDirectory = '${f.root.replace(/'/g, "''")}'; & '${script.replace(/'/g, "''")}'; exit $LASTEXITCODE`;
-	const result = await promisify(execFile)('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(wrapper, 'utf16le').toString('base64')], {
-		cwd: f.root, encoding: 'utf8', timeout: 30000,
-		env: { ...process.env, PATH: `${path.join(f.root, 'commands')}${path.delimiter}${process.env.PATH ?? ''}`, SAROS_CURL_BIN: '', SAROS_UPLOAD_TOKEN: 'fixture-token', SAROS_UPDATE_SERVER: `http://127.0.0.1:${server.address().port}` },
-	});
-	assert.match(result.stdout, /Success: 1, Failed: 0/);
-	assert.ok(!result.stdout.includes('fixture-token'));
-	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.repo, 'verified-upload.json'), 'utf8')), { platform: 'win32-x64-user' });
-	assert.equal(received, payload.length);
+	for (const codePage of [65001, 936]) {
+		const wrapper = `$OutputEncoding = [Text.Encoding]::GetEncoding(${codePage}); [Console]::OutputEncoding = $OutputEncoding; Set-Location '${f.repo.replace(/'/g, "''")}'; [Environment]::CurrentDirectory = '${f.root.replace(/'/g, "''")}'; & '${script.replace(/'/g, "''")}'; exit $LASTEXITCODE`;
+		const result = await promisify(execFile)('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(wrapper, 'utf16le').toString('base64')], {
+			cwd: f.root, encoding: 'utf8', timeout: 30000,
+			env: { ...process.env, PATH: `${path.join(f.root, 'commands')}${path.delimiter}${process.env.PATH ?? ''}`, SAROS_CURL_BIN: '', SAROS_UPLOAD_TOKEN: 'fixture-token', SAROS_UPDATE_SERVER: `http://127.0.0.1:${server.address().port}`, NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1' },
+		});
+		assert.match(result.stdout, /Success: 1, Failed: 0/);
+		assert.ok(!result.stdout.includes('fixture-token'));
+		assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.repo, 'verified-upload.json'), 'utf8')), { platform: 'win32-x64-user' });
+	}
+	assert.equal(received, 2 * payload.length);
 });
 
 function installerPipelineSteps(file, buildName) {
