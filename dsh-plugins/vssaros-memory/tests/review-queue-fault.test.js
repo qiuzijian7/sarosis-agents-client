@@ -54,6 +54,47 @@ test('enqueueSuggestion：同义重复只累加 hits，不新增条目', () => w
   assert.equal(rows[0].reason, '第二次')
 }))
 
+for (const missingCwd of [false, true]) {
+  test(`enqueueSuggestion：KEY ${missingCwd ? '缺失 cwd 与有 cwd' : '不同项目'}的相同文本不能合并`, () => withQueue(({ dir, queue }) => {
+    const cwdA = missingCwd ? null : join(dir, 'project-a')
+    const cwdB = join(dir, 'project-b')
+    const agent = (cwd) => ({ id: cwd ?? 'unknown', session: { header: { cwd } } })
+    enqueueSuggestion(queue, 'key', '构建统一用 pnpm', 'A', agent(cwdA))
+    enqueueSuggestion(queue, 'key', '构建统一用 pnpm', 'B', agent(cwdB))
+    enqueueSuggestion(queue, 'key', '构建统一用  pnpm', 'B 再次确认', agent(cwdB))
+    assert.deepEqual(queue.read().map(({ cwd, content, hits, reason }) => ({ cwd, content, hits, reason })), [
+      { cwd: cwdA, content: '构建统一用 pnpm', hits: 1, reason: 'A' },
+      { cwd: cwdB, content: '构建统一用 pnpm', hits: 2, reason: 'B 再次确认' },
+    ])
+  }))
+}
+
+test('approveSuggestions：从其他项目批准 KEY 时仍分别落入建议来源项目', () => withQueue(({ dir, queue, store }) => {
+  const agent = (name) => ({ id: name, session: { header: { cwd: join(dir, name) } } })
+  const a = agent('project-a')
+  const b = agent('project-b')
+  const reviewer = agent('project-reviewer')
+  enqueueSuggestion(queue, 'key', '构建统一用 pnpm', null, a)
+  enqueueSuggestion(queue, 'key', '构建统一用 pnpm', null, b)
+  assert.equal(queue.read().length, 2)
+  const counts = () => [a, b, reviewer].map((owner) => store.entriesOf('key', owner).length)
+  const first = approveSuggestions(store, null, queue, [1], reviewer)
+  assert.deepEqual({ remaining: first.remaining, counts: counts(), cwd: queue.read()[0]?.cwd }, {
+    remaining: 1, counts: [1, 0, 0], cwd: b.session.header.cwd,
+  })
+  const second = approveSuggestions(store, null, queue, [1], reviewer)
+  assert.deepEqual({ remaining: second.remaining, counts: counts() }, { remaining: 0, counts: [1, 1, 0] })
+}))
+
+test('enqueueSuggestion：全局轨的相同事实仍跨项目去重', () => withQueue(({ dir, queue }) => {
+  for (const name of ['project-a', 'project-b']) {
+    enqueueSuggestion(queue, 'memory', '全局统一约定', null, { id: name, session: { header: { cwd: join(dir, name) } } })
+  }
+  assert.deepEqual(queue.read().map(({ target, content, hits }) => ({ target, content, hits })), [
+    { target: 'memory', content: '全局统一约定', hits: 2 },
+  ])
+}))
+
 test('approveSuggestions：越界索引无副作用；成功后条目离开队列并落盘', () => withQueue(({ queue, store }) => {
   enqueueSuggestion(queue, 'memory', '事实 A', null, { id: 'a1' })
   const outOfRange = approveSuggestions(store, null, queue, [99], undefined, undefined, undefined)

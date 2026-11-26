@@ -116,6 +116,11 @@ venv/
 .vs/*
 .workbuddy/*
 build/*
+!build/lib/
+build/lib/*
+!build/lib/test/
+build/lib/test/*
+!build/lib/test/extensions.test.ts
 # ★ 2026-10-16 构建期预装 dsh 运行时的脚本**必须入库**（与下方 build/saros/ 下的
 # fetch-*.mjs 同待遇：脚本入库，它产出的 /dsh-runtime/ 不入库）。
 # 两个打包入口（.ci/scripts/package-vscode.ps1、deploy-package/scripts/build-installer.ps1）
@@ -379,3 +384,6 @@ build/saros/update-server/downloads/
 
 # dsh 运行时本地状态（自动重建，不入库）
 .dsh/vssaros-memory/update-state.json
+
+# vssaros-memory 测试临时 HOME（mkdtemp 生成，不入库）
+dsh-plugins/vssaros-memory/.memory-test-home-*/

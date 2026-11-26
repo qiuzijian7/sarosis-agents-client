@@ -101,7 +101,7 @@ try {
 }
 
 // ── ② client ─────────────────────────────────────────────────────────────
-function loadClient(fetchImpl, reactOverrides = {}) {
+function loadClient(fetchImpl, reactOverrides = {}, environment = {}) {
 	let mod = null;
 	// ⚠ 2026-11-02：`client.js` 的深链 effect 会读 `window.location`（`?wb=` / `#wb=`），
 	// 假 window 少了 location ⇒ apply() 直接抛，后面 12 条断言全部连锁失败（基线 18/30）。
@@ -119,8 +119,10 @@ function loadClient(fetchImpl, reactOverrides = {}) {
 		throw new Error('unexpected require ' + name);
 	};
 	const src = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8');
-	const fakeDocument = { getElementById: () => ({}), createElement: () => ({}), head: { appendChild() { } } };
-	if (fetchImpl) { new Function('window', 'globalThis', 'document', 'fetch', src)(sandboxWindow, {}, fakeDocument, fetchImpl); }
+	const fakeDocument = environment.document || { getElementById: () => ({}), createElement: () => ({}), head: { appendChild() { } } };
+	if (environment.localStorage) {
+		new Function('window', 'globalThis', 'document', 'localStorage', src)(sandboxWindow, {}, fakeDocument, environment.localStorage);
+	} else if (fetchImpl) { new Function('window', 'globalThis', 'document', 'fetch', src)(sandboxWindow, {}, fakeDocument, fetchImpl); }
 	else { new Function('window', 'globalThis', 'document', src)(sandboxWindow, {}, fakeDocument); }
 	return mod;
 }
@@ -601,6 +603,141 @@ await t('统一 HomeItemRegistry：两个来源、一个投影、一个排序字
 	assert.deepStrictEqual(emptyState().homeItemOrder, [], '状态必须包含统一排序字段');
 	assert.throws(() => validateState({ ...emptyState(), homeItemOrder: ['a', 'a'] }), /排序键/,
 		'统一排序字段必须复用原有合法性校验');
+});
+function homeAnchorDocument() {
+	const nodes = [];
+	const createElement = tag => {
+		const node = {
+			tag, children: [], attributes: {}, style: {}, listeners: {}, parentNode: null,
+			setAttribute(key, value) { this.attributes[key] = value; },
+			getAttribute(key) { return this.attributes[key] || null; },
+			addEventListener(key, listener) { this.listeners[key] = listener; },
+			appendChild(child) { this.insertBefore(child, null); },
+			insertBefore(child, before) {
+				if (child.parentNode) {
+					const siblings = child.parentNode.children;
+					siblings.splice(siblings.indexOf(child), 1);
+				}
+				child.parentNode = this;
+				this.children.splice(before ? this.children.indexOf(before) : this.children.length, 0, child);
+			},
+			replaceChildren(...children) {
+				for (const child of this.children) { child.parentNode = null; }
+				this.children = [];
+				for (const child of children) { this.appendChild(child); }
+			},
+			querySelectorAll() { return []; },
+			get firstElementChild() { return this.children[0] || null; },
+			get firstChild() { return this.children[0] || null; },
+			get nextSibling() {
+				return this.parentNode ? this.parentNode.children[this.parentNode.children.indexOf(this) + 1] || null : null;
+			},
+		};
+		nodes.push(node);
+		return node;
+	};
+	const sidebar = createElement('aside');
+	return {
+		createElement, sidebar, head: createElement('head'), body: createElement('body'),
+		getElementById: id => nodes.find(node => node.id === id) || null,
+		querySelector: selector => selector === '[data-slot="sidebar"]' ? sidebar : null,
+		querySelectorAll: () => [],
+	};
+}
+await t('市场插件导航：只进开始页，普通打开不固定，锚点持久化与取消固定', () => {
+	const doc = homeAnchorDocument();
+	const saved = new Map();
+	const store = { getItem: key => saved.get(key) || null, setItem: (key, value) => saved.set(key, value) };
+	const panelClient = loadClient(undefined, {}, { document: doc, localStorage: store });
+	const { service, ctx } = serviceOf(panelClient);
+	let panels = [
+		{ options: { id: 'plugins', label: '插件' } },
+		{ options: { id: 'market-example', label: () => '市场测试插件' } },
+	];
+	let onPanels = null;
+	ctx.slots.entriesOfSlot = name => name === 'sidebar.panellist' ? panels : [];
+	ctx.slots.subscribe = (name, listener) => {
+		assert.equal(name, 'sidebar.panellist');
+		onPanels = listener;
+		return () => { onPanels = null; };
+	};
+	const sidebar = { getTabs: () => [], getSnapshot: () => ({ sessionId: 's1' }) };
+	let tree = panelClient.makeVsSarosHomeGuide(service, ctx, sidebar)({});
+	const registry = panelClient.__testGetGlobal('__vssarosHomeItemRegistry');
+	const item = registry.get('panel:market-example');
+	assert.deepStrictEqual({ title: item.title, source: item.origin.registry, nativeTab: item.visibility.nativeTab },
+		{ title: '市场测试插件', source: 'sidebar.panellist', nativeTab: false });
+	assert.equal(registry.get('panel:plugins'), null, '宿主插件页不能重复投影');
+	const open = findTreeProps(tree, props => props['data-vssaros-home-open'] === item.key);
+	const pin = findTreeProps(tree, props => props['data-vssaros-home-anchor'] === item.key);
+	assert.ok(open && pin, '第三方导航入口必须自动出现在开始页且有图钉');
+	const box = doc.getElementById('vssaros-home-anchor-list');
+	assert.equal(box.style.display, 'none', '未固定时左侧栏不出现插件 item');
+	open.onClick();
+	assert.deepStrictEqual(ctx.calls.selected, ['market-example'], '保留插件原页面打开行为');
+	assert.deepStrictEqual(panelClient.__testReadHomeAnchors(), [], '打开页面不等于固定');
+	pin.onClick();
+	const anchor = box.children.find(node => node.getAttribute('data-vssaros-home-anchor-item') === item.key);
+	assert.ok(anchor, '点击图钉才添加左侧栏 item');
+	anchor.listeners.click();
+	assert.deepStrictEqual(ctx.calls.selected, ['market-example', 'market-example']);
+
+	const reloadDoc = homeAnchorDocument();
+	const reloadClient = loadClient(undefined, {}, { document: reloadDoc, localStorage: store });
+	const reloaded = serviceOf(reloadClient);
+	reloaded.ctx.slots.entriesOfSlot = ctx.slots.entriesOfSlot;
+	reloadClient.makeVsSarosHomeGuide(reloaded.service, reloaded.ctx, sidebar)({});
+	const reloadBox = reloadDoc.getElementById('vssaros-home-anchor-list');
+	assert.ok(reloadBox.children.some(node => node.getAttribute('data-vssaros-home-anchor-item') === item.key),
+		'重载后恢复用户固定状态');
+	const off = registry.subscribe(() => { });
+	panels = [];
+	onPanels();
+	panelClient.__testRenderHomeAnchors();
+	assert.equal(registry.get(item.key), null, '卸载后开始页移除入口');
+	assert.equal(box.style.display, 'none', '卸载后不留下失效锚点');
+	panels = [{ options: { id: 'market-example', label: '市场测试插件' } }];
+	onPanels();
+	tree = panelClient.makeVsSarosHomeGuide(service, ctx, sidebar)({});
+	findTreeProps(tree, props => props['data-vssaros-home-anchor'] === item.key).onClick();
+	assert.equal(box.style.display, 'none', '再次点击取消固定');
+	reloadClient.__testRenderHomeAnchors();
+	assert.equal(reloadBox.style.display, 'none', '取消固定后的持久化状态不会复活');
+	off();
+	assert.equal(onPanels, null, '注销必须释放插件导航订阅');
+	service.dispose();
+	reloaded.service.dispose();
+});
+await t('市场插件导航：隐藏仅限原左栏，注册更新和同名插件按身份区分', () => {
+	const doc = homeAnchorDocument();
+	const panelClient = loadClient(undefined, {}, { document: doc });
+	const { service, ctx } = serviceOf(panelClient);
+	let panels = [{ options: { id: 'one', label: '同名插件' } }];
+	ctx.slots.entriesOfSlot = () => panels;
+	const registry = panelClient.createHomeItemRegistry(service, null);
+	assert.equal(registry.get('panel:one').title, '同名插件');
+	panels = [...panels, { options: { id: 'two', label: '同名插件' } }];
+	assert.deepStrictEqual(registry.snapshot().map(item => item.key), ['panel:one', 'panel:two']);
+	panels[0].options.label = () => '新标题';
+	assert.equal(registry.get('panel:one').title, '新标题', '来源签名变化使缓存自动失效');
+	const nav = doc.createElement('nav');
+	const nativeButton = doc.createElement('button');
+	nativeButton.setAttribute('aria-label', '新标题');
+	nativeButton.closest = selector => selector === 'nav' ? nav : null;
+	const anchorButton = doc.createElement('button');
+	anchorButton.setAttribute('aria-label', '新标题');
+	anchorButton.closest = selector => selector === '[data-vssaros-home-anchors]' ? {} : null;
+	const rightButton = doc.createElement('button');
+	rightButton.setAttribute('aria-label', '新标题');
+	doc.querySelectorAll = selector => {
+		assert.ok(selector.includes('[data-slot="sidebar"] nav button'), '不能按标题隐藏导航区之外的控件');
+		return [nativeButton, anchorButton];
+	};
+	panelClient.__testHideSidebarRows(service);
+	assert.deepStrictEqual([nav.style.display, anchorButton.style.display, rightButton.style.display],
+		['none', undefined, undefined], '只隐藏原导航，不隐藏锚点和右侧同名按钮');
+	assert.match(doc.getElementById('vssaros-hidden-left-rows').textContent, /nav:has/);
+	service.dispose();
 });
 await t('开始页：install-status 短轮询、目录自动发现文案与 key/身份下线', () => {
 	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
@@ -1362,7 +1499,6 @@ await t('服务端：provide desktopWorkbenchOwnership + 注册 state / state/wr
 			'GET /api/vssaros-workbenches/development-guide',
 			'GET /api/vssaros-workbenches/install-status',
 			'GET /api/vssaros-workbenches/link',
-			'GET /api/vssaros-workbenches/plugin-resources',
 			'GET /api/vssaros-workbenches/state',
 			'POST /api/vssaros-workbenches/state/write',
 		]);

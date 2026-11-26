@@ -14,11 +14,11 @@
  */
 
 import assert from 'assert';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { missingFilesInNestedCopy, repairProfileDeps } from '../../electron-main/dshProfileDepsRepair.js';
+import { mapProfileRepairInputs, missingFilesInNestedCopy, repairProfileDeps } from '../../electron-main/dshProfileDepsRepair.js';
 
 const SUPERVISOR = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupervisor.ts';
 
@@ -135,5 +135,75 @@ suite('dshHarness / profile 依赖自愈', () => {
 		const iInstall = src.indexOf('one-shot install of');
 		const iRepair = src.indexOf('repairProfileDeps(');
 		assert.ok(iInstall > 0 && iRepair > iInstall, '自愈必须**在装插件之后**（否则体检的是旧树 ✗）');
+	});
+
+	test('bounded parallel reads preserve input order despite out-of-order completion', async () => {
+		let active = 0;
+		let peak = 0;
+		const result = await mapProfileRepairInputs([0, 1, 2, 3, 4, 5], async value => {
+			peak = Math.max(peak, ++active);
+			await new Promise(resolve => setTimeout(resolve, value % 2 ? 1 : 5));
+			active--;
+			return value * 2;
+		}, { concurrency: 3 });
+		assert.deepStrictEqual(result, [0, 2, 4, 6, 8, 10]);
+		assert.strictEqual(peak, 3);
+		assert.strictEqual(active, 0);
+	});
+
+	test('failure waits for queued and in-flight reads before rejecting', async () => {
+		const error = new Error('read failed');
+		const completed: number[] = [];
+		await assert.rejects(mapProfileRepairInputs([0, 1, 2], async value => {
+			if (value === 0) { throw error; }
+			await new Promise(resolve => setTimeout(resolve, 5));
+			completed.push(value);
+			return value;
+		}, { concurrency: 2 }), caught => caught === error);
+		assert.deepStrictEqual(completed.sort(), [1, 2]);
+	});
+
+	test('invalid concurrency remains bounded and empty input is a no-op', async () => {
+		assert.deepStrictEqual(await mapProfileRepairInputs([], async () => { throw new Error('must not run'); }), []);
+		for (const concurrency of [0, -2, NaN, Infinity, 100]) {
+			let active = 0;
+			let peak = 0;
+			await mapProfileRepairInputs(Array.from({ length: 20 }, (_, i) => i), async i => {
+				peak = Math.max(peak, ++active);
+				await new Promise(resolve => setTimeout(resolve, 1));
+				active--;
+				return i;
+			}, { concurrency });
+			assert.ok(peak >= 1 && peak <= 16);
+		}
+	});
+
+	test('parallel dependency inspection selects the same reference and repairs as serial inspection', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'dsh-deps-parallel-'));
+		try {
+			const serial = join(dir, 'serial');
+			const parallel = join(dir, 'parallel');
+			for (let i = 0; i < 12; i++) {
+				const pkg = `dependency-${i}`;
+				const manifest = JSON.stringify({ name: pkg, version: '1.0.0' });
+				write(serial, `${pkg}/package.json`, manifest);
+				write(serial, `${pkg}/lib/current.js`, `CURRENT-${i}`);
+				write(serial, `parent-${i}/package.json`, '{}');
+				write(serial, `parent-${i}/node_modules/${pkg}/package.json`, manifest);
+				write(serial, `parent-${i}/node_modules/${pkg}/lib/current.js`, `CURRENT-${i}`);
+				write(serial, `parent-${i}/node_modules/${pkg}/lib/missing.js`, `MISSING-${i}`);
+			}
+			cpSync(serial, parallel, { recursive: true });
+			const a = await repairProfileDeps(serial, () => undefined, { concurrency: 1 });
+			const b = await repairProfileDeps(parallel, () => undefined, { concurrency: 8 });
+			assert.deepStrictEqual(b, a);
+			assert.strictEqual(b.repaired.length, 12);
+			for (const rel of b.repaired) {
+				assert.strictEqual(readFileSync(join(parallel, rel), 'utf8'), readFileSync(join(serial, rel), 'utf8'));
+			}
+			assert.deepStrictEqual((await repairProfileDeps(parallel, () => undefined)).repaired, []);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

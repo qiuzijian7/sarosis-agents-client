@@ -29,6 +29,8 @@
 import assert from 'assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { tmpdir } from 'os';
+import { repairBundledPluginFiles, repairProfileDeps } from '../../electron-main/dshProfileDepsRepair.js';
 
 const REPAIR = 'src/vs/sessions/contrib/dshHarness/electron-main/dshProfileDepsRepair.ts';
 const SUPERVISOR = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupervisor.ts';
@@ -95,5 +97,95 @@ suite('启动前补回随包插件缺失的自带文件', () => {
 		assert.match(body, /_missingBundledPluginEntries\(/, '要按 main 核对随包插件入口还在不在');
 		const calls = src.match(/_repairProfileAfterInstall\(dsh, profile, env/g) ?? [];
 		assert.ok(calls.length >= 2, `spec 安装与本地目录安装都要调用（实测 ${calls.length} 处）`);
+	});
+
+	test('parallel inventory skips test/dev workspace trees before traversal and preserves installed files', async () => {
+		const dir = fs.mkdtempSync(path.join(tmpdir(), 'dsh-bundled-inventory-'));
+		const descriptor = Object.getOwnPropertyDescriptor(fs.promises, 'readdir')!;
+		const original = fs.promises.readdir;
+		const visited: string[] = [];
+		const write = (rel: string, text: string) => {
+			const full = path.join(dir, rel);
+			fs.mkdirSync(path.dirname(full), { recursive: true });
+			fs.writeFileSync(full, text);
+		};
+		try {
+			write('bundled/plugin/package.json', '{"name":"@vssaros/plugin","version":"1.0.0"}');
+			write('bundled/plugin/lib/index.js', 'BUNDLED');
+			write('bundled/plugin/vendor/required.cjs', 'REQUIRED');
+			write('bundled/plugin/test/deep/fixture.js', 'TEST');
+			write('bundled/plugin/dev/package.json', '{}');
+			write('bundled/plugin/dev/src/entry.js', 'DEV');
+			write('installed/@vssaros/plugin/package.json', '{"name":"@vssaros/plugin","version":"1.0.0"}');
+			write('installed/@vssaros/plugin/lib/index.js', 'USER');
+			Object.defineProperty(fs.promises, 'readdir', { ...descriptor, value: (...args: Parameters<typeof original>) => {
+				visited.push(String(args[0]).replace(/\\/g, '/'));
+				return original(...args);
+			} });
+			const repaired = await repairBundledPluginFiles(path.join(dir, 'bundled'), path.join(dir, 'installed'), () => undefined);
+			assert.deepStrictEqual(repaired, ['@vssaros/plugin/vendor/required.cjs']);
+			assert.strictEqual(fs.readFileSync(path.join(dir, 'installed/@vssaros/plugin/lib/index.js'), 'utf8'), 'USER');
+			assert.strictEqual(fs.readFileSync(path.join(dir, 'installed/@vssaros/plugin/vendor/required.cjs'), 'utf8'), 'REQUIRED');
+			assert.ok(visited.every(p => !p.includes('/plugin/test') && !p.includes('/plugin/dev')));
+			assert.ok(!fs.existsSync(path.join(dir, 'installed/@vssaros/plugin/dev')));
+			assert.ok(!fs.existsSync(path.join(dir, 'installed/@vssaros/plugin/test')));
+		} finally {
+			Object.defineProperty(fs.promises, 'readdir', descriptor);
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('an ordinary runtime dev directory is retained and absent plugins are not installed by repair', async () => {
+		const dir = fs.mkdtempSync(path.join(tmpdir(), 'dsh-bundled-runtime-dev-'));
+		const write = (rel: string, text: string) => {
+			const full = path.join(dir, rel);
+			fs.mkdirSync(path.dirname(full), { recursive: true });
+			fs.writeFileSync(full, text);
+		};
+		try {
+			write('bundled/plugin/package.json', '{"name":"@vssaros/plugin"}');
+			write('bundled/plugin/dev/runtime.js', 'RUNTIME');
+			write('bundled/absent/package.json', '{"name":"@vssaros/absent"}');
+			write('bundled/absent/lib/index.js', 'ABSENT');
+			write('installed/@vssaros/plugin/package.json', '{"name":"@vssaros/plugin"}');
+			const repaired = await repairBundledPluginFiles(path.join(dir, 'bundled'), path.join(dir, 'installed'), () => undefined, { concurrency: 1 });
+			assert.deepStrictEqual(repaired, ['@vssaros/plugin/dev/runtime.js']);
+			assert.ok(!fs.existsSync(path.join(dir, 'installed/@vssaros/absent')));
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('files created after inventory are not overwritten by either repair path', async () => {
+		const dir = fs.mkdtempSync(path.join(tmpdir(), 'dsh-repair-write-race-'));
+		const descriptor = Object.getOwnPropertyDescriptor(fs.promises, 'copyFile')!;
+		const original = fs.promises.copyFile;
+		const write = (rel: string, text: string) => {
+			const full = path.join(dir, rel);
+			fs.mkdirSync(path.dirname(full), { recursive: true });
+			fs.writeFileSync(full, text);
+		};
+		try {
+			write('bundled/plugin/package.json', '{"name":"@vssaros/plugin"}');
+			write('bundled/plugin/lib/new.js', 'BUNDLED');
+			write('installed/@vssaros/plugin/package.json', '{"name":"@vssaros/plugin"}');
+			write('deps/dependency/package.json', '{"name":"dependency","version":"1.0.0"}');
+			write('deps/dependency/lib/new.js', 'REFERENCE');
+			write('deps/parent/package.json', '{}');
+			write('deps/parent/node_modules/dependency/package.json', '{"name":"dependency","version":"1.0.0"}');
+			Object.defineProperty(fs.promises, 'copyFile', { ...descriptor, value: (...args: Parameters<typeof original>) => {
+				fs.writeFileSync(args[1], 'CONCURRENT');
+				return original(...args);
+			} });
+			const bundled = await repairBundledPluginFiles(path.join(dir, 'bundled'), path.join(dir, 'installed'), () => undefined);
+			const deps = await repairProfileDeps(path.join(dir, 'deps'), () => undefined);
+			assert.deepStrictEqual(bundled, []);
+			assert.deepStrictEqual(deps.repaired, []);
+			assert.strictEqual(fs.readFileSync(path.join(dir, 'installed/@vssaros/plugin/lib/new.js'), 'utf8'), 'CONCURRENT');
+			assert.strictEqual(fs.readFileSync(path.join(dir, 'deps/parent/node_modules/dependency/lib/new.js'), 'utf8'), 'CONCURRENT');
+		} finally {
+			Object.defineProperty(fs.promises, 'copyFile', descriptor);
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

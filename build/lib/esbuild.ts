@@ -5,8 +5,32 @@
 
 import * as cp from 'child_process';
 import * as path from 'path';
+import * as fs from 'fs';
+import type { Plugin } from 'esbuild';
 
 const root = path.resolve(import.meta.dirname, '../..');
+
+export function sourceTypeScriptPlugin(sourceDir: string): Plugin {
+	const sourceRoot = path.resolve(sourceDir);
+	return {
+		name: 'resolve-source-typescript',
+		setup(build) {
+			build.onResolve({ filter: /\.js$/, namespace: 'file' }, args => {
+				if (!args.path.startsWith('.') && !path.isAbsolute(args.path)) {
+					return;
+				}
+				const candidate = path.resolve(args.resolveDir, args.path).replace(/\.js$/, '.ts');
+				const relative = path.relative(sourceRoot, candidate);
+				if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+					return;
+				}
+				if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+					return { path: candidate };
+				}
+			});
+		}
+	};
+}
 
 // esbuild-based bundle tasks (drop-in replacement for bundle-vscode / minify-vscode)
 

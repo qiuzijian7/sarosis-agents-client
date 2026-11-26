@@ -1733,7 +1733,14 @@ export function apply(ctx, rawConfig = {}) {
   let legacyImport = null
   if (config.legacyAgentImport !== false) {
     try {
-      legacyImport = importLegacyAgentMemory(config)
+      const started = performance.now()
+      legacyImport = importLegacyAgentMemory(config, {
+        force: process.env.VSSAROS_MEMORY_IMPORT_FORCE_HASH === '1',
+        metadataCache: process.env.VSSAROS_MEMORY_IMPORT_LOCAL_CACHE === '1' ? true : undefined,
+      })
+      try {
+        console.info(`[vssaros-memory] legacy migration ${Math.round(performance.now() - started)}ms: scanned=${legacyImport.scanned}, cached=${legacyImport.cached}, imported=${legacyImport.imported}, failed=${legacyImport.failed}`)
+      } catch { /* Logging must not change migration results. */ }
     } catch (error) {
       legacyImport = { error: String(error?.message ?? error) }
     }

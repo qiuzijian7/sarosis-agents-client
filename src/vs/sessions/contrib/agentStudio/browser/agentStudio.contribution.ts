@@ -457,7 +457,7 @@ function channelConfigProperties(): Record<string, any> {
 				f.type === 'password' || f.type === 'textarea' || f.type === 'agent' ? 'string' : f.type;
 			const prop: any = { type: schemaType, default: f.default };
 			if (f.description) {
-				prop.description = localize('agentStudio.channel.' + f.key, f.description);
+				prop.description = f.description;
 			}
 			if (f.type === 'select' && f.options) {
 				prop.enum = f.options.map(o => o.value);
@@ -1344,7 +1344,12 @@ class KbMediaViewerResolverContribution extends Disposable implements IWorkbench
 		// 接管的类型清单 = 单一真源（`kbMediaViewerKinds.ts`）⇒ 加类型只改一处，不会出现
 		// 「pane 认识但没注册 glob」（点了还是文本编辑器）这类漂移。
 		// ★ 2026-09-24：追加 png / jpg / jpeg / jfif / gif / webp / bmp / avif / ico / svg（图片预览）。
-		const viewers = KB_MEDIA_VIEWER_GLOBS.map(v => ({ pattern: v.pattern, label: localize(v.labelKey, v.label) }));
+		const viewerLabels: Record<string, string> = {
+			'kb.pdfPreview': localize('kb.pdfPreview', 'PDF 预览'),
+			'kb.docxPreview': localize('kb.docxPreview', 'Word 预览'),
+			'kb.imagePreview': localize('kb.imagePreview', '图片预览'),
+		};
+		const viewers = KB_MEDIA_VIEWER_GLOBS.map(v => ({ pattern: v.pattern, label: viewerLabels[v.labelKey] ?? v.label }));
 		for (const v of viewers) {
 			this._register(resolverService.registerEditor(
 				v.pattern,

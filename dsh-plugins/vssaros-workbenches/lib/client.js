@@ -22,8 +22,8 @@
 //   · 标准分栏（customFrame=false）P1 暂按整页渲染（右栏承载在 P2 做，方案 §4.3）。
 // 构建标记：在页面 console 里输入 __vssarosWorkbenchBuild 即可知道窗口加载的是哪个版本
 // ⚠ bump package.json 版本时必须同步本行 —— check-assistant-collapse.mjs 会判红（2026-11-10 收口）。
-// 0.3.75（2026-11-24）：修掉「插件页」误导提示；未安装项由 Host 真源裁决并给出宿主插件页安装入口。
-globalThis.__vssarosWorkbenchBuild = '0.3.75';
+// 0.3.76（2026-11-26）：第三方插件导航进入开始页，左栏仅显示用户固定的锚点。
+globalThis.__vssarosWorkbenchBuild = '0.3.76';
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-workbenches',
 	factory: (require) => {
@@ -324,12 +324,11 @@ window.__ModuleLoader__.load({
 			const floating = host === document.body;
 			const slot = homeAnchorSlot(host, floating);
 			const stored = readHomeAnchors();
-			// anchor surface：只在 registry 里明确查到且已下线时才隐藏；查不到的（刚固定 / 未就绪）一律保留。
 			const registry = globalThis.__vssarosHomeItemRegistry;
 			const list = registry && typeof registry.get === 'function'
 				? stored.filter(entry => {
 					const item = registry.get(entry.key);
-					return !item || selectHomeItems([item], 'anchor').length === 1;
+					return item ? selectHomeItems([item], 'anchor').length === 1 : !entry.key.startsWith('panel:');
 				})
 				: stored;
 			const signature = JSON.stringify(list);
@@ -400,28 +399,32 @@ window.__ModuleLoader__.load({
 		 * chat-surface 侧也有一份，但它的 install 幂等标记在「Host 重启但 window 未重建」时
 		 * 会挡住重新执行；workbenches 入口每次页面加载都会跑，这里补一道双保险。
 		 */
-		function hideOfficialSidebarRowsForAnchors() {
+		function hideOfficialSidebarRowsForAnchors(service = homeItemRegistryOwner && homeItemRegistryOwner.service) {
 			if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') { return; }
-			const labels = ['插件', 'Plugins', '自动化任务', 'Automation tasks', 'Automated tasks', '更多', 'More'];
+			const roots = ['[data-slot="sidebar"]', '[data-sidebar-left]', '.sidebar-left'];
+			const labels = [...new Set(['插件', 'Plugins', '自动化任务', 'Automation tasks', 'Automated tasks', '更多', 'More',
+				...sidebarPanelEntriesOf(service).map(panel => panel.title)])];
 			try {
-				if (typeof document.getElementById === 'function' && !document.getElementById('vssaros-hidden-left-rows')
-					&& typeof document.createElement === 'function') {
-					const style = document.createElement('style');
+				let style = typeof document.getElementById === 'function' ? document.getElementById('vssaros-hidden-left-rows') : null;
+				if (!style && typeof document.createElement === 'function') {
+					style = document.createElement('style');
 					style.id = 'vssaros-hidden-left-rows';
-					style.textContent = labels.map(label => '[data-slot="sidebar"] button[aria-label="' + label + '"]').join(',')
-						+ '{display:none!important}';
 					const host = document.head || document.documentElement || document.body;
 					if (host && typeof host.appendChild === 'function') { host.appendChild(style); }
 				}
+				const css = roots.flatMap(root => labels.map(label => root + ' nav:has(button[aria-label='
+					+ JSON.stringify(label) + '])')).join(',') + '{display:none!important}';
+				if (style && style.textContent !== css) { style.textContent = css; }
 			} catch { /* 样式注入失败不影响行隐藏 */ }
 			try {
-				const buttons = document.querySelectorAll('button[aria-label]');
-				for (let i = 0; i < buttons.length; i += 1) {
-					const btn = buttons[i];
+				const buttons = document.querySelectorAll(roots.map(root => root + ' nav button[aria-label]').join(','));
+				for (const btn of buttons) {
+					if (typeof btn.closest === 'function' && btn.closest('[data-vssaros-home-anchors]')) { continue; }
 					const label = String(btn.getAttribute('aria-label') || '').trim();
-					if (labels.indexOf(label) < 0 || btn.getAttribute('data-vssaros-hidden') === '1') { continue; }
-					btn.setAttribute('data-vssaros-hidden', '1');
-					btn.style.display = 'none';
+					if (!labels.includes(label)) { continue; }
+					const nav = typeof btn.closest === 'function' ? btn.closest('nav') : null;
+					const target = nav || btn;
+					if (target.style.display !== 'none') { target.style.display = 'none'; }
 				}
 			} catch { /* DOM 未就绪时由 observer / 兜底定时器补 */ }
 		}
@@ -833,17 +836,53 @@ window.__ModuleLoader__.load({
 		}
 		/**
 		 * 统一开始页 item 注册层（2026-11-21 架构收口）。
-		 * 工作台页（catalog）与 Better Sidebar tab 是「来源不同、形状相同」的 item：
-		 * 两个 adapter 归一成 HomeItem，registry 统一身份、可见性、去热与查表；渲染层不再拼前缀。
+		 * catalog、Better Sidebar tab 与官方导航槽归一成 HomeItem；
+		 * registry 统一身份、可见性、去重与查表，渲染层不再拼前缀。
 		 */
 		const HOME_ITEM_KIND_CATALOG = 'workbench';
 		const HOME_ITEM_KIND_TAB = 'tool';
+		const HOME_ITEM_KIND_PANEL = 'plugin';
 		const HOME_ITEM_SOURCE_CATALOG = 'catalog';
 		const HOME_ITEM_SOURCE_TABS = 'betterSidebar';
+		const HOME_ITEM_SOURCE_PANELS = 'sidebar.panellist';
 		const HOME_ITEM_OWNER = 'vssaros-workbenches';
-		/** catalogKey 自带 workbenchId/pageId 命名空间；tab id 需要显式 tool: 前缀。 */
 		function homeItemKey(kind, id) {
-			return kind === HOME_ITEM_KIND_TAB ? 'tool:' + String(id) : String(id);
+			if (kind === HOME_ITEM_KIND_TAB) { return 'tool:' + String(id); }
+			if (kind === HOME_ITEM_KIND_PANEL) { return 'panel:' + String(id); }
+			return String(id);
+		}
+		function sidebarPanelEntriesOf(service) {
+			const slots = service && service.ctx && service.ctx.slots;
+			if (!slots) { return []; }
+			const entries = typeof slots.entriesOfSlot === 'function' ? slots.entriesOfSlot(HOME_ITEM_SOURCE_PANELS)
+				: typeof slots.entries === 'function' ? slots.entries(HOME_ITEM_SOURCE_PANELS) : [];
+			return entries.filter(entry => entry && entry.options && typeof entry.options.id === 'string')
+				.map(entry => {
+					const options = entry.options;
+					let label = options.label;
+					try { if (typeof label === 'function') { label = label(); } } catch { label = ''; }
+					return { ...options, title: typeof label === 'string' && label.trim() ? label : options.id };
+				}).sort((a, b) => (a.order || 0) - (b.order || 0));
+		}
+		function homeItemOfPanelDescriptor(descriptor) {
+			const key = homeItemKey(HOME_ITEM_KIND_PANEL, descriptor.id);
+			return Object.freeze({
+				key, itemKey: key, kind: HOME_ITEM_KIND_PANEL,
+				title: descriptor.title, description: String(descriptor.description || '插件页面'),
+				icon: guideIconOf(descriptor), source: 'DSH 插件', availability: 'ready',
+				visibility: homeItemVisibility(true, false, true),
+				origin: Object.freeze({ registry: HOME_ITEM_SOURCE_PANELS, descriptorId: descriptor.id }),
+				aliases: Object.freeze([]), replacedBy: '',
+				catalogKey: '', tabId: '', workbenchId: '', panelId: descriptor.id, page: null, tool: null,
+			});
+		}
+		function openSidebarPanelItem(service, item) {
+			if (!item || item.origin.registry !== HOME_ITEM_SOURCE_PANELS
+				|| !sidebarPanelEntriesOf(service).some(panel => panel.id === item.panelId)) { return false; }
+			const layout = service && service.ctx && service.ctx.layout;
+			if (!layout || typeof layout.selectPanel !== 'function') { return false; }
+			layout.selectPanel(item.panelId);
+			return true;
 		}
 		/** 宿主自己注册的承载 tab（catalog adapter / 图片资源）不是开始页工具。 */
 		function isHostOwnedTab(descriptor) {
@@ -896,7 +935,7 @@ window.__ModuleLoader__.load({
 				&& item.availability === 'ready' && item.visibility && item.visibility[field] !== false);
 		}
 		/**
-		 * HomeItemRegistry：两个来源合成一张冻结表，缓存 + 细粒度失效；
+		 * HomeItemRegistry：所有来源合成一张冻结表，缓存 + 细粒度失效；
 		 * get(key) 供左侧栏锚点与统一打开入口使用，不再依赖渲染闭包里的 items。
 		 */
 		function createHomeItemRegistry(service, betterSidebar) {
@@ -912,9 +951,11 @@ window.__ModuleLoader__.load({
 					descriptor.id, descriptor.hidden === true, descriptor.bottomOnly === true,
 					descriptor.vssarosOwner || '', typeof descriptor.title === 'function' ? '' : descriptor.title,
 				].join(':')).join('|');
-				return { snap, pages, tabs, tabsStamp };
+				const panels = sidebarPanelEntriesOf(service);
+				const panelsStamp = JSON.stringify(panels.map(panel => [panel.id, panel.title, panel.order, panel.description]));
+				return { snap, pages, tabs, tabsStamp, panels, panelsStamp };
 			};
-			const build = ({ pages, tabs }) => {
+			const build = ({ pages, tabs, panels }) => {
 				const byKey = new Map();
 				for (const page of pages) {
 					if (!page || typeof page.key !== 'string') { continue; }
@@ -926,12 +967,22 @@ window.__ModuleLoader__.load({
 					const item = homeItemOfTabDescriptor(descriptor);
 					if (!byKey.has(item.key)) { byKey.set(item.key, item); }
 				}
+				const catalogPanels = new Set(['plugins', 'schedules', 'vssaros-workbench']);
+				for (const page of pages) {
+					catalogPanels.add(PANEL_PREFIX + page.workbenchId);
+					if (page.workbenchId.startsWith('manifest:')) { catalogPanels.add(page.pageId); }
+				}
+				for (const panel of panels) {
+					if (catalogPanels.has(panel.id)) { continue; }
+					const item = homeItemOfPanelDescriptor(panel);
+					if (!byKey.has(item.key)) { byKey.set(item.key, item); }
+				}
 				return { items: Object.freeze([...byKey.values()]), byKey };
 			};
 			const ensure = () => {
 				const src = sources();
-				if (!cached || cached.snap !== src.snap || cached.tabsStamp !== src.tabsStamp) {
-					cached = Object.freeze({ ...build(src), snap: src.snap, tabsStamp: src.tabsStamp });
+				if (!cached || cached.snap !== src.snap || cached.tabsStamp !== src.tabsStamp || cached.panelsStamp !== src.panelsStamp) {
+					cached = Object.freeze({ ...build(src), snap: src.snap, tabsStamp: src.tabsStamp, panelsStamp: src.panelsStamp });
 				}
 				return cached;
 			};
@@ -944,6 +995,8 @@ window.__ModuleLoader__.load({
 					const offs = [];
 					try { if (service && typeof service.subscribeCatalog === 'function') { offs.push(service.subscribeCatalog(notify)); } } catch { /* 已释放 */ }
 					try { if (betterSidebar && typeof betterSidebar.subscribe === 'function') { offs.push(betterSidebar.subscribe(notify)); } } catch { /* 已释放 */ }
+					const slots = service && service.ctx && service.ctx.slots;
+					if (slots && typeof slots.subscribe === 'function') { offs.push(slots.subscribe(HOME_ITEM_SOURCE_PANELS, notify)); }
 					return () => { for (const off of offs) { try { if (typeof off === 'function') { off(); } } catch { /* 已释放 */ } } };
 				},
 			});
@@ -1297,11 +1350,9 @@ window.__ModuleLoader__.load({
 				const [dragOverKey, setDragOverKey] = React.useState('');
 				const [restartPending, setRestartPending] = React.useState([]);
 				React.useEffect(() => {
-					const offCatalog = service.subscribeCatalog(() => forceRevision(n => n + 1));
+					const offItems = getHomeItemRegistry(service, betterSidebar).subscribe(() => forceRevision(n => n + 1));
 					const offState = service.subscribe(() => forceRevision(n => n + 1));
-					const offTabs = betterSidebar && typeof betterSidebar.subscribe === 'function'
-						? betterSidebar.subscribe(() => forceRevision(n => n + 1)) : () => { };
-					return () => { offCatalog(); offState(); offTabs(); };
+					return () => { offItems(); offState(); };
 				}, []);
 				/** 已安装但当前 Host 未加载的包：短轮询现有 install-status，不改动 Host，也不写回用户设置。 */
 				React.useEffect(() => {
@@ -1467,6 +1518,12 @@ window.__ModuleLoader__.load({
 				const openHomeItem = (item, surface = 'right-tab') => {
 					if (!item) { setNotice('开始页条目不存在或已下线。'); return; }
 					if (item.origin.registry === HOME_ITEM_SOURCE_TABS) { openTool(item.tabId); return; }
+					if (item.origin.registry === HOME_ITEM_SOURCE_PANELS) {
+						try {
+							if (!openSidebarPanelItem(service, item)) { setNotice('插件页面未就绪或已停用。'); }
+						} catch (error) { setNotice('打开插件失败：' + String(error && error.message || error)); }
+						return;
+					}
 					// left-anchor 与 right-tab 必须同链路：从左侧栏点锚点也要打开右栏 catalog tab。
 					// 之前 surface !== 'right-tab' 会强制降级到注册式工作台本体，用户看到「点了没反应」。
 					if (!sidebarLayoutV1Enabled) {
@@ -1576,7 +1633,7 @@ window.__ModuleLoader__.load({
 					const className = 'vssaros-home-workbench-card'
 						+ (isKeyboard ? ' is-keyboard-dragging' : '') + (isDrop ? ' is-drop-target' : '')
 						+ (anchored ? ' is-anchored' : '');
-					const dragProps = isWorkbench ? {
+					const dragProps = item.kind !== HOME_ITEM_KIND_TAB ? {
 						draggable: !needle,
 						onDragStart: ev => { htmlDragKey = item.itemKey; if (ev.dataTransfer) { ev.dataTransfer.setData('text/plain', item.itemKey); } },
 						onDragOver: ev => { ev.preventDefault(); setDragOverKey(item.itemKey); },
@@ -4838,6 +4895,17 @@ window.__ModuleLoader__.load({
 			service.View = makeView(service);
 			service.PageView = makePageView(service);
 			ctx.effect(maintainStyles, 'vssaros-workbenches: styles');
+			ctx.effect(() => {
+				const registry = getHomeItemRegistry(service, null);
+				globalThis.__vssarosHomeItemRegistry = registry;
+				const refresh = () => { hideOfficialSidebarRowsForAnchors(service); renderHomeAnchors(); };
+				const off = registry.subscribe(refresh);
+				refresh();
+				return () => {
+					off();
+					if (globalThis.__vssarosHomeItemRegistry === registry) { delete globalThis.__vssarosHomeItemRegistry; }
+				};
+			}, 'vssaros-workbenches: sidebar panel launchers');
 			// ★ 2026-11-02：默认 agent 要用 `remote.agentPresets.select`（官方：`select(sessionId, presetId)`）。
 			//   ⚠ 必须 `ctx.inject`：未声明 inject 的包里 `ctx.get` 返回 undefined（kb / studio 都踩过）。
 			//   服务缺席 ⇒ 只是不套默认 agent，工作台其它功能不受影响，所以**不放进 module.exports.inject**（那会变成硬依赖）。
@@ -4873,6 +4941,7 @@ window.__ModuleLoader__.load({
 							globalThis.__vssarosOpenHomeAnchor = key => {
 								const item = registry.get(key);
 								if (!item) { return; }
+								if (item.origin.registry === HOME_ITEM_SOURCE_PANELS) { openSidebarPanelItem(service, item); return; }
 								if (item.origin.registry === HOME_ITEM_SOURCE_TABS && typeof sidebar.openTab === 'function') {
 									sidebar.openTab({ type: item.tabId }); return;
 								}
@@ -5295,6 +5364,8 @@ window.__ModuleLoader__.load({
 		module.exports.__testReadHomeAnchors = readHomeAnchors;
 		module.exports.__testToggleHomeAnchor = toggleHomeAnchor;
 		module.exports.__testWriteHomeAnchors = writeHomeAnchors;
+		module.exports.__testRenderHomeAnchors = renderHomeAnchors;
+		module.exports.__testHideSidebarRows = hideOfficialSidebarRowsForAnchors;
 		module.exports.__Frame = Frame;
 		return module.exports;
 	},

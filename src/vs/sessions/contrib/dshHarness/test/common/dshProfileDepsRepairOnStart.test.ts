@@ -68,4 +68,18 @@ suite('每次启动前都要体检 profile 依赖树', () => {
 		const seg = src.slice(iRepair, iRepair + 900);
 		assert.match(seg, /catch \(error\)/, '自愈失败必须被 catch（否则一次读盘失败就起不来 ✗）');
 	});
+
+	test('3) 成功批量安装只在 spawn 前深扫，CLI 重试之前仍保留自愈', () => {
+		const src = stripComments(read(SUPERVISOR));
+		const begin = src.indexOf('const missed = wants.filter(');
+		const end = src.indexOf('const staleAfterInstall =', begin);
+		assert.ok(begin > 0 && end > begin);
+		const beforeRetry = src.slice(begin, end);
+		assert.match(beforeRetry, /if \(missed\.length\)\s*\{\s*try\s*\{/);
+		assert.ok(beforeRetry.includes("trace.measure('deps-repair-before-retry'"));
+		assert.ok(beforeRetry.includes('repairProfileDeps('));
+		const args = src.indexOf('...buildHostArgs(');
+		const spawn = src.indexOf('spawn(node.path, args', args);
+		assert.ok(src.slice(args, spawn).includes("trace.measure('deps-repair-before-spawn'"));
+	});
 });

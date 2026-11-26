@@ -42,6 +42,7 @@ import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName, parseHostRun
 import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_BROWSER_PLUGIN_NAME, DSH_VISION_ROUTER_PLUGIN_NAME, DSH_BETTER_SIDEBAR_PLUGIN_NAME, DSH_DEEP_PTC_MODE_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_OFFICE_TEMPLATE_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_LOOP_PLUGIN_NAME, DSH_PLUGIN_RESOURCES_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_FORGE_BUNDLE_PLUGIN_NAME, DSH_FORGE_CLIENT_UI_PLUGIN_NAME, DSH_FORGE_GITHUB_PLUGIN_NAME, DSH_FORGE_PLUGIN_NAME, DSH_FORGE_SESSION_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WORKTREE_RUNTIME_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, DSH_WORKITEM_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
 import { DSH_OFFICIAL_SESSION_SEARCH_BUNDLE, mergeMissingBundles, migrateOfficialWorktreeBundles, migrateRetiredEgoBundles, parseProfileBundles, syncOfficialSessionSearchRows } from '../common/dshPluginActivation.js';
 import { renderSessionIdentityPreload } from '../common/dshSessionIdentity.js';
+import { DshStartupTrace } from '../common/dshStartupTrace.js';
 import { renderSessionSearchCompatPreload } from '../common/dshSessionSearchCompat.js';
 import { renderWorktreeLongPathsPreload } from '../common/dshWorktreeLongPaths.js';
 import { hostLeaseBlocker, IDshHostLease, staleHostByPluginFiles } from '../common/dshHostLease.js';
@@ -1185,6 +1186,7 @@ export class DshHostSupervisor extends Disposable {
 		this._keepAlive = options.keepAlive === true;
 		const generation = ++this._generation;
 		const t0 = Date.now();
+		const trace = new DshStartupTrace(`${process.pid}-${generation}`, line => this._appendLog(line));
 		const { profile, dshHome } = this._resolveProfileAndHome(options);
 		// 新 Host ⇒ mux 路由要重新注册 ⇒ 先当"没就绪"（复用路径另有一处置 true）。
 		this._muxReady = false;
@@ -1195,8 +1197,8 @@ export class DshHostSupervisor extends Disposable {
 		this._setStatus({ state: 'starting', bridge: 'none', profile, dshHome });
 
 		try {
-			const node = await this._opts.runtime.resolveNode(options.nodePath);
-			const dsh = await this._opts.runtime.resolveDsh(options.runtimePath, node);
+			const node = await trace.measure('resolve-node', () => this._opts.runtime.resolveNode(options.nodePath));
+			const dsh = await trace.measure('resolve-dsh', () => this._opts.runtime.resolveDsh(options.runtimePath, node));
 			this._appendLog(`node ${node.version} (${node.source}: ${node.path})`);
 			this._appendLog(`dsh ${dsh.version} (${dsh.source}: ${dsh.bin})`);
 			// ⚠ 2026-10-12：这里必须把**数据根**交给 Host 的**子进程 env** ✓ —— 三条理由（都实测过）：
@@ -1276,7 +1278,7 @@ export class DshHostSupervisor extends Disposable {
 				this._appendLog(`诊断 preload 已注入 Host：${hostPreload}`);
 			}
 
-			await this._ensureProfile(node, dsh, profile, env);
+			await trace.measure('profile-sync', () => this._ensureProfile(node, dsh, profile, env));
 			// 共享态把标记交给 Host：主进程/channel 的写路径已在各入口物化，但 Host 内插件
 			// （如工作台市场的 pluginManager 回落通道）看不到主进程，只能凭这两个变量自己先物化。
 			{
@@ -1290,7 +1292,7 @@ export class DshHostSupervisor extends Disposable {
 			// virtualStoreDir 指向 seed 自己的路径 → 之后每次 `dsh plugin add` 都 ERR_PNPM_UNEXPECTED_STORE
 			// （实测伴生插件全部升不上去，dev 实例长期跑旧插件）。这里装插件前无条件校正一次
 			// （幂等：只在值不一致时写），新种子与既有 profile 都覆盖。
-			await this._repairSeededStoreMetadata(this._profileDir(profile, env));
+			await trace.measure('store-metadata', () => this._repairSeededStoreMetadata(this._profileDir(profile, env)));
 			// 伴生插件逐个安装（profile 的 pnpm 锁决定了并行没收益），进度报给状态区。
 			const plugins: [string, string | undefined, string][] = [
 				// ⚠ **要先装它**：dsh 官方 web app 提供 `webServer` / `connection` 两个服务。缺它时
@@ -1438,11 +1440,12 @@ export class DshHostSupervisor extends Disposable {
 			//   `_planPluginInstall` 会判 wants > 0 ⇒ pnpm 重装 5s + `_pluginsStale` ⇒ 放弃复用
 			//   常驻 Host ⇒ 每次冷启动 18–19s。这里用 `dsh-plugins` 当前源码直接修好漂移插件，
 			//   让 wants 归零；不从 profile-seed 同步，避免种子自身也可能落后于源码。
-			const bundledSync = await this._syncBundledPluginDirs(plugins, this._profileDir(profile, env));
+			const bundledSync = await trace.measure('bundled-source-sync', () => this._syncBundledPluginDirs(plugins, this._profileDir(profile, env)));
 			if (bundledSync.changed) {
 				this._pluginsStale = true;
 				this._appendLog(`bundled plugin sync: refreshed ${bundledSync.synced.length} plugin(s) from source; existing Host must not be reused`);
 			}
+			trace.mark('plugin-plan.begin');
 			const wants: { name: string; dir: string; label: string; bundled: string; installed?: string; fingerprint?: string }[] = [];
 			for (let i = 0; i < plugins.length; i++) {
 				const [name, dir, label] = plugins[i];
@@ -1456,7 +1459,9 @@ export class DshHostSupervisor extends Disposable {
 			const installedVersionOf = (name: string) => this._readPkgVersion(join(pluginProfileDir, 'node_modules', ...name.split('/'), 'package.json'));
 			// ★ 2026-10-21：版本错配自检（profile 已装 vs 随包）—— 漏装/不同代要**在日志里点名**。
 			this._auditBundledVersions(plugins, pluginProfileDir);
+			trace.mark('plugin-plan.end');
 			if (wants.length) {
+				trace.mark('plugin-install.begin');
 				// 共享态首启 `wants` 正常为空（种子里已预装伴生插件）⇒ 不物化；真要装就先落可写副本。
 				await this._materializeIfShared(pluginProfileDir);
 				// 真的执行了安装动作（升级既有 / 补装缺失）⇒ 置标记：下一次 `start()` 不接管旧 Host
@@ -1487,14 +1492,16 @@ export class DshHostSupervisor extends Disposable {
 				//   **重物化整棵依赖树** ⇒ `compression/node_modules/negotiator` 这类嵌套副本会被装成
 				//   **缺文件**的残次品（缺 `lib/accept.js`）⇒ dsh 的四个插件 import 全挂在同一条 require 栈上
 				//   ⇒ `webStartup/connection` 起不来 ⇒ **Host 直接 exit code 1** ⇒ 桌面窗口只报"控制桥不可用"。
-				//   ⇒ 不是偶发，是"每次装插件后必坏" ⇒ 光手工补一次没用（下次装插件又被覆盖）⇒ 这里装完立刻自愈 ✓。
-				try {
-					const repair = await repairProfileDeps(join(pluginProfileDir, 'node_modules'), line => this._appendLog(line));
-					if (repair.repaired.length) {
-						this._appendLog(`deps-repair: 补齐 ${repair.repaired.length} 个缺失文件（扫了 ${repair.scanned} 个嵌套副本）`);
+				// 需要继续运行安装 CLI 时先修依赖；全部到位则合并到去重/修链接之后的 spawn 前体检。
+				if (missed.length) {
+					try {
+						const repair = await trace.measure('deps-repair-before-retry', () => repairProfileDeps(join(pluginProfileDir, 'node_modules'), line => this._appendLog(line)));
+						if (repair.repaired.length) {
+							this._appendLog(`deps-repair: 补齐 ${repair.repaired.length} 个缺失文件（扫了 ${repair.scanned} 个嵌套副本）`);
+						}
+					} catch (error) {
+						this._appendLog(`deps-repair 失败（忽略 ⇒ 让 Host 的错误自己显形）：${String((error as Error)?.message ?? error).slice(0, 160)}`);
 					}
-				} catch (error) {
-					this._appendLog(`deps-repair 失败（忽略 ⇒ 让 Host 的错误自己显形）：${String((error as Error)?.message ?? error).slice(0, 160)}`);
 				}
 				// 版本已相同、内容仍不一致 ⇒ pnpm 把**同路径的 `file:` 依赖**当成"没变化"而跳过了替换 ——
 				// 这份副本是陈旧的（Host 会跑旧代码）。**必须说出来**：沉默时它表现为"每次启动都重装、
@@ -1543,6 +1550,7 @@ export class DshHostSupervisor extends Disposable {
 						await this._ensurePlugin(w.name, w.dir, node, dsh, profile, env, w.label, false);
 					}
 				}
+				trace.mark('plugin-install.end');
 			}
 			// 收敛结果：谁最终没到位就记一笔（交给启动失败文案，见 `_startupPluginProblems`）。
 			// 口径与 `_ensurePlugin` 的返回契约一致：装上了 = 随包版本；不等于随包版本就是没装上
@@ -1564,7 +1572,7 @@ export class DshHostSupervisor extends Disposable {
 			}
 			const bridgeVersion: string | undefined = installedVersionOf(DSH_BRIDGE_PLUGIN_NAME);
 			// 收敛"必须与运行时同一模块实例"的 dsh 包——不同实例会让**实时启停永远失败**（见该方法注释）。
-			await this._dedupeSharedPackages(dsh, profile, env);
+			await trace.measure('shared-package-dedupe', () => this._dedupeSharedPackages(dsh, profile, env));
 			// ★★ 2026-11-02（真机：F5 起不来；Host 自己的日志是
 			//   `Error: UNKNOWN: unknown error, realpath …\profiles\vssaros\node_modules\@deepseek-ai\dsh-app-boot`
 			//   抛在 `composeProfile → createRuntimeResolution → linkedProfileRoots` ⇒ Host code 1 退出）：
@@ -1572,7 +1580,7 @@ export class DshHostSupervisor extends Disposable {
 			//   `existsSync` 对断链返回 **false**（它跟随链接），所以"文件都在"的检查全是绿的 ✗。
 			//   ⇒ 每次启动前沿 `node_modules/@scope/<名字>` 扫一层：`lstat` 判定是链接后 `realpath` 试一下，
 			//     失败就地**用真实副本替换**（源优先取链接指向的目标，其次取运行时同版本包）。
-			await this._repairBrokenProfileLinks(dsh, profile, env);
+			await trace.measure('broken-link-repair', () => this._repairBrokenProfileLinks(dsh, profile, env));
 			// ★★ 2026-10-30（外部机器 P0：**窗口开了，但界面是 dsh 原生的**，没有侧栏「主页」/没有我们的页面）：
 			//   现场 `profile/package.json` 里 `dependencies` 全在、profile 的 node_modules 里
 			//   那批 `@vssaros` 插件文件也全在，
@@ -1585,7 +1593,7 @@ export class DshHostSupervisor extends Disposable {
 			//     · 插件早已装好时 `wants` 为空 ⇒ **连装都不装** ⇒ bundles 永远停在模板那 3 项。
 			//   ⇒ 这里**无条件**补登记：以随包种子（构建期校验过的权威清单）为准，
 			//     保留已有顺序、只追加缺的 ⇒ 幂等，不碰用户手工启停（停用=移出 bundles，我们只补**随包**那些）。
-			await this._ensureProfileBundles(profile, dsh, env, plugins, pluginProfileDir);
+			await trace.measure('profile-bundles', () => this._ensureProfileBundles(profile, dsh, env, plugins, pluginProfileDir));
 			const sessionIdentityPreload = join(this._opts.runDir, `session-identity-${dsh.version}.mjs`);
 			const identitySource = renderSessionIdentityPreload(dsh.bin) + renderWorktreeLongPathsPreload(dsh.version, process.platform) + renderSessionSearchCompatPreload(dsh.version);
 			const previousIdentitySource = await fsp.readFile(sessionIdentityPreload, 'utf8').catch(() => undefined);
@@ -1611,7 +1619,9 @@ export class DshHostSupervisor extends Disposable {
 			//   ⇒ 补一个跨进程成立的判据：profile 里随包插件的最新写盘时间 > 租约 `startedAt`
 			//   （Host 就绪时写、复用时不刷新）⇒ 等价于"插件换过" ⇒ 置 `_pluginsStale`，
 			//   后面的"不接管 + 回收孤儿 + spawn 成功后清标记"整条既有路径原样复用 ✓。
+			trace.mark('plugin-fingerprint.begin');
 			const newestPluginFile = this._newestPluginFile(this._profileDir(profile, env), plugins.map(([name]) => name));
+			trace.mark('plugin-fingerprint.end');
 			if (existing && !this._pluginsStale) {
 				const diskStale = staleHostByPluginFiles(existing, newestPluginFile);
 				if (diskStale) {
@@ -1634,8 +1644,9 @@ export class DshHostSupervisor extends Disposable {
 				if (blocker) {
 					this._appendLog(`not reusing the running Host: ${blocker}`);
 				} else {
-					const unreachable = await leases.probe(existing);
-					if (!unreachable && await this._adoptLease(existing, generation, profile, dshHome, t0, options)) {
+					const unreachable = await trace.measure('lease-probe', () => leases.probe(existing));
+					if (!unreachable && await trace.measure('lease-adopt', () => this._adoptLease(existing, generation, profile, dshHome, t0, options))) {
+						trace.mark('host-reused');
 						return this._status;
 					}
 					if (unreachable) {
@@ -1963,11 +1974,11 @@ export class DshHostSupervisor extends Disposable {
 					try {
 						const bundledRoot = this._bundledPluginsRoot();
 						if (bundledRoot) {
-							const repairedFiles = await repairBundledPluginFiles(
+							const repairedFiles = await trace.measure('bundled-file-repair', () => repairBundledPluginFiles(
 								bundledRoot,
 								join(pluginProfileDir, 'node_modules'),
 								line => this._appendLog(line),
-							);
+							));
 							if (repairedFiles.length) {
 								this._appendLog(`deps-repair（启动前）: 补回 ${repairedFiles.length} 个随包插件自带文件`);
 							}
@@ -1975,7 +1986,7 @@ export class DshHostSupervisor extends Disposable {
 					} catch (error) {
 						this._appendLog(`deps-repair（启动前·随包插件文件）失败（忽略 ⇒ 让 Host 的错误自己显形）：${String((error as Error)?.message ?? error)}`);
 					}
-					const preRepair = await repairProfileDeps(join(pluginProfileDir, 'node_modules'), line => this._appendLog(line));
+					const preRepair = await trace.measure('deps-repair-before-spawn', () => repairProfileDeps(join(pluginProfileDir, 'node_modules'), line => this._appendLog(line)));
 					if (preRepair.repaired.length) {
 						this._appendLog(`deps-repair（启动前）: 补齐 ${preRepair.repaired.length} 个缺失文件（扫了 ${preRepair.scanned} 个嵌套副本）`);
 					}
@@ -2007,6 +2018,7 @@ export class DshHostSupervisor extends Disposable {
 					child = spawn(node.path, args, { cwd: homedir(), env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 				}
 				this._child = child;
+				trace.mark('host-spawned');
 				this._appendLog(`spawned pid ${child.pid}: node ${args.map(a => a === dsh.bin ? '<dsh>' : a).join(' ')}${hostLogFile ? ` (log → ${hostLogFile})` : ''}`);
 				// P0-3：请求端口已知时从 spawn 起就并行探 mux，结果暂存，running 后再发布。
 				if (hostPort !== 0 && !this._muxProbeStarted) {
@@ -2014,7 +2026,7 @@ export class DshHostSupervisor extends Disposable {
 					void this._probeMuxAfterReady(`http://127.0.0.1:${hostPort}`, generation, true);
 				}
 
-				const connection = await this._awaitReady(child, generation, pipe, token, hostLogFile);
+				const connection = await trace.measure('host-await-ready', () => this._awaitReady(child, generation, pipe, token, hostLogFile));
 				this._throwIfStale(generation);
 
 				this._connection = { origin: connection.origin, authUrl: connection.authUrl };
@@ -2132,6 +2144,8 @@ export class DshHostSupervisor extends Disposable {
 				this._setStatus({ state: 'error', bridge: 'none', profile, dshHome, error: message, errorCode });
 			}
 			return this._status;
+		} finally {
+			trace.finish(generation === this._generation ? this._status.state : 'superseded');
 		}
 	}
 

@@ -159,6 +159,13 @@ export function postProcessNLS(
 	return replaceInOutput(content, indexMap, preserveEnglish);
 }
 
+export function assertNoNLSPlaceholders(content: string, fileName: string): void {
+	const placeholders = content.match(/%%NLS2?:[^%]*%%/g);
+	if (placeholders) {
+		throw new Error(`[nls] Unresolved placeholders in ${fileName}: ${placeholders.slice(0, 3).join(', ')}`);
+	}
+}
+
 // ============================================================================
 // Transformation
 // ============================================================================

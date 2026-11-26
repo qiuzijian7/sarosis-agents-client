@@ -11,7 +11,8 @@ import { promisify } from 'util';
 
 import glob from 'glob';
 import gulpWatch from '../lib/watch/index.ts';
-import { nlsPlugin, createNLSCollector, finalizeNLS, postProcessNLS } from './nls-plugin.ts';
+import { nlsPlugin, createNLSCollector, finalizeNLS, postProcessNLS, assertNoNLSPlaceholders } from './nls-plugin.ts';
+import { sourceTypeScriptPlugin } from '../lib/esbuild.ts';
 import { convertPrivateFields, adjustSourceMap, type ConvertPrivateFieldsResult } from './private-to-property.ts';
 import { getVersion } from '../lib/getVersion.ts';
 import { getGitCommitDate } from '../lib/date.ts';
@@ -906,6 +907,7 @@ interface CapabilityPluginManifest {
 	name: string;
 	version: string;
 	module: string; // relative path from out/vs/sessions/contrib/agentStudio/browser/
+	appResource?: string;
 	capabilities: Array<{
 		capability: string;
 		provider: string;
@@ -1218,7 +1220,10 @@ ${tslib}`,
 		const outPath = path.join(REPO_ROOT, outDir, `${entryPoint}.js`);
 
 		// Use CSS external plugin for entry points that don't need bundled CSS
-		const plugins: esbuild.Plugin[] = bundleCssEntryPoints.has(entryPoint) ? [] : [cssExternalPlugin()];
+		const plugins: esbuild.Plugin[] = [sourceTypeScriptPlugin(path.join(REPO_ROOT, SRC_DIR))];
+		if (!bundleCssEntryPoints.has(entryPoint)) {
+			plugins.push(cssExternalPlugin());
+		}
 		// Add content mapper plugin to inject product config and builtin extensions
 		plugins.push(contentMapperPlugin);
 		if (doNls) {
@@ -1280,7 +1285,7 @@ ${tslib}`,
 
 		const outPath = path.join(REPO_ROOT, outDir, `${entry}.js`);
 
-		const bootstrapPlugins: esbuild.Plugin[] = [inlineMinimistPlugin(), contentMapperPlugin];
+		const bootstrapPlugins: esbuild.Plugin[] = [sourceTypeScriptPlugin(path.join(REPO_ROOT, SRC_DIR)), inlineMinimistPlugin(), contentMapperPlugin];
 		if (doNls) {
 			bootstrapPlugins.unshift(nlsPlugin({
 				baseDir: path.join(REPO_ROOT, SRC_DIR),
@@ -1371,6 +1376,9 @@ ${tslib}`,
 					if (nlsResult.edits.length > 0) {
 						nlsEdits.set(file.path, { preNLSCode, edits: nlsResult.edits });
 					}
+				}
+				if (file.path.endsWith('.js') && doNls) {
+					assertNoNLSPlaceholders(content, path.relative(path.join(REPO_ROOT, outDir), file.path));
 				}
 
 				// Rewrite sourceMappingURL to CDN URL if configured

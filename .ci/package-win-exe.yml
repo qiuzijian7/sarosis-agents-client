@@ -12,6 +12,13 @@ on:
 variables:
   NODE_OPTIONS:
     value: --max-old-space-size=8192
+  SAROS_BUILD_MANGLE:
+    value: '0'
+    allow-modify-at-startup: true
+    props:
+      type: vuex-input
+      description: 0 使用无混淆生产编译（默认）；1 开启旧 TypeScript mangling（耗时和内存较高）
+      required: true
   SAROS_PACK_MODE:
     value: standard
     allow-modify-at-startup: true
@@ -134,7 +141,7 @@ stages:
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/build-kbblocks.ps1'
         shell: powershell
       - 
-        name: Compile build with mangling
+        name: Compile production build (optional mangling)
         with:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/compile-build.ps1'

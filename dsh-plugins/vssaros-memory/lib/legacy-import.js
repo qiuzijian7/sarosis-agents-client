@@ -16,7 +16,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statfsSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { ENTRY_DELIMITER, parseEntries, serializeEntries, withLock } from './store.js'
@@ -113,29 +113,80 @@ export function legacySources(config) {
   return out
 }
 
+/** Normal local Linux filesystem updates have usable identity/change metadata; this does not cover snapshot replay. */
+export function isSupportedLegacyCacheFileSystem(type, platform = process.platform) {
+  return platform === 'linux' && [0xef53n, 0x58465342n, 0x9123683en].includes(type)
+}
+
+function canUseMetadataCache(source, destination, options) {
+  if (options.metadataCache !== undefined) return options.metadataCache === true
+  if (process.platform !== 'linux') return false
+  try {
+    return [source, destination].every(path => isSupportedLegacyCacheFileSystem(statfsSync(path, { bigint: true }).type))
+  } catch { return false }
+}
+
+/** Stable file identity for a previously content-verified migration; recent or coarse timestamps are not cached. */
+function fileStamp(path, now) {
+  try {
+    const st = statSync(path, { bigint: true })
+    if (!st.isFile() || st.dev === 0n || st.ino === 0n || st.mtimeNs <= 0n || st.ctimeNs <= 0n || st.birthtimeNs <= 0n
+      || st.ctimeNs % 1_000_000_000n === 0n
+      || Number(st.ctimeNs / 1_000_000n) > now - 2_000) return undefined
+    return `v1:${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}:${st.birthtimeNs}`
+  } catch { return undefined }
+}
+
 /**
  * 执行导入（启动时调用；失败的单个源记进账本，不抛）。
- * @returns {{ scanned: number, imported: number, skipped: number, failed: number, details: object[] }}
+ * @param {{ force?: boolean, metadataCache?: boolean, readSource?: (path: string) => string, now?: () => number }} [options]
+ * @returns {{ scanned: number, imported: number, skipped: number, cached: number, failed: number, details: object[] }}
  */
-export function importLegacyAgentMemory(config) {
+export function importLegacyAgentMemory(config, options = {}) {
   const ledgerPath = join(config.memoryDir, LEGACY_LEDGER_FILE)
   let ledger = { version: 1, sources: {} }
   try {
     const parsed = JSON.parse(readFileSync(ledgerPath, 'utf8'))
-    if (parsed && typeof parsed.sources === 'object') ledger = { version: 1, sources: parsed.sources }
+    if (parsed?.sources && typeof parsed.sources === 'object' && !Array.isArray(parsed.sources)) ledger = { version: 1, sources: parsed.sources }
   } catch { /* 没有账本 = 第一次导入 */ }
-  const summary = { scanned: 0, imported: 0, skipped: 0, failed: 0, details: [] }
+  const summary = { scanned: 0, imported: 0, skipped: 0, cached: 0, failed: 0, details: [] }
+  const now = options.now ?? Date.now
+  const readSource = options.readSource ?? ((path) => readFileSync(path, 'utf8'))
   let dirty = false
   for (const src of legacySources(config)) {
     summary.scanned += 1
+    const destination = join(src.destDir, src.destFile)
+    const previous = ledger.sources[src.source]
+    const cacheAllowed = canUseMetadataCache(src.source, destination, options)
+    const sourceStamp = cacheAllowed ? fileStamp(src.source, now()) : undefined
+    const destinationStamp = cacheAllowed ? fileStamp(destination, now()) : undefined
+    const sameTarget = previous?.dest === destination && previous?.kind === src.kind && previous?.id === src.id
+    if (!options.force && sameTarget && /^[0-9a-f]{40}$/.test(previous?.sha1 ?? '')
+      && sourceStamp && destinationStamp && previous.sourceStamp === sourceStamp && previous.destinationStamp === destinationStamp) {
+      summary.skipped += 1
+      summary.cached += 1
+      continue
+    }
     let text
-    try { text = readFileSync(src.source, 'utf8') } catch { summary.failed += 1; continue }
+    try { text = readSource(src.source) } catch { summary.failed += 1; continue }
+    const stableSourceStamp = sourceStamp && sourceStamp === fileStamp(src.source, now()) ? sourceStamp : null
     const sha1 = createHash('sha1').update(text).digest('hex')
-    if (ledger.sources[src.source]?.sha1 === sha1) { summary.skipped += 1; continue }
+    if (sameTarget && previous?.sha1 === sha1) {
+      summary.skipped += 1
+      if ((previous.sourceStamp ?? null) !== stableSourceStamp || (previous.destinationStamp ?? null) !== (destinationStamp ?? null)) {
+        ledger.sources[src.source] = { ...previous, sourceStamp: stableSourceStamp, destinationStamp: destinationStamp ?? null }
+        dirty = true
+      }
+      continue
+    }
     try {
       const entries = legacyEntriesOf(text)
       const added = entries.length > 0 ? mergeInto(src.destDir, src.destFile, entries) : 0
-      ledger.sources[src.source] = { sha1, kind: src.kind, id: src.id, dest: join(src.destDir, src.destFile), entries: entries.length, added, at: new Date().toISOString() }
+      ledger.sources[src.source] = {
+        sha1, kind: src.kind, id: src.id, dest: destination, entries: entries.length, added, at: new Date().toISOString(),
+        sourceStamp: stableSourceStamp && stableSourceStamp === fileStamp(src.source, now()) ? stableSourceStamp : null,
+        destinationStamp: cacheAllowed ? fileStamp(destination, now()) ?? null : null,
+      }
       summary.imported += added
       summary.details.push({ kind: src.kind, id: src.id, entries: entries.length, added })
       dirty = true

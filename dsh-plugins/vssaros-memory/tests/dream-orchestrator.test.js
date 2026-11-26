@@ -6,11 +6,12 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runDream } from '../lib/dream/orchestrator.js'
 import { readState } from '../lib/dream/state.js'
+import { MemoryStore } from '../lib/store.js'
 
 const EVIDENCE = { file: 'transcripts/01.txt', at: 12 }
 
@@ -44,9 +45,14 @@ function base(root, overrides = {}) {
 
 /** 造六轨文件，返回快照函数。 */
 function seedMemory(memoryDir) {
-  mkdirSync(memoryDir, { recursive: true })
-  const targets = ['MEMORY.md', 'USER.md', 'KEY.md', 'daily.md'].map((n) => join(memoryDir, n))
-  for (const file of targets) writeFileSync(file, `原始 ${file}\n`)
+  const store = new MemoryStore(memoryDir, { botKeyResolver: () => 'coder' })
+  const agent = { session: { header: { cwd: join(memoryDir, 'project') } } }
+  const targets = ['memory', 'user', 'key', 'project', 'daily', 'bot'].map((target) => {
+    assert.equal(store.add(target, `${target} 原始事实`, agent).ok, true)
+    const loc = store.locate(target, agent)
+    return join(loc.dir, loc.file)
+  })
+  assert.equal(new Set(targets).size, 6)
   return () => targets.map((f) => [statSync(f).mtimeMs, readFileSync(f, 'utf8')])
 }
 
@@ -148,18 +154,45 @@ test('skip-if-running：state.running=true 时直接拒绝，不产出任何 run
   assert.equal(result.runId, null)
 }))
 
+for (const analysisFails of [false, true]) {
+  test(`报告目录不可写：${analysisFails ? '业务失败' : '分析成功'}出口也释放 running、不推进窗口、允许重试`, async () => withTmp(async (root) => {
+    const opts = base(root)
+    await runDream({ ...opts, now: () => '2026-11-12T01:00:00Z' })
+    const before = readState(opts.stateFile)
+    const blocked = join(root, 'blocked-output')
+    writeFileSync(blocked, '不是目录', 'utf8')
+    await assert.rejects(runDream({
+      ...opts,
+      outDir: blocked,
+      now: () => '2026-11-13T01:00:00Z',
+      ...(analysisFails ? { analyze: async () => { throw new Error('分析失败') } } : {}),
+    }), (error) => ['ENOTDIR', 'EEXIST'].includes(error.code))
+    const failed = readState(opts.stateFile)
+    assert.deepEqual({
+      running: failed.running, runId: failed.run_id,
+      lastRun: failed.last_run, lastSuccess: failed.last_success,
+      lastResult: failed.runs[0]?.ok,
+    }, {
+      running: false, runId: null,
+      lastRun: before.last_run, lastSuccess: before.last_success,
+      lastResult: false,
+    })
+    const retry = await runDream({ ...opts, now: () => '2026-11-14T01:00:00Z' })
+    assert.equal(retry.ok, true, '报告落盘错误不得永久阻塞后续运行')
+    assert.equal(readState(opts.stateFile).last_run, '2026-11-14T01:00:00Z')
+  }))
+}
+
 test('P0 只读：成功轮与失败轮都不改六轨记忆文件', async () => withTmp(async (root) => {
   const opts = base(root)
   const snapshot = seedMemory(opts.memoryDir)
   const before = snapshot()
-  await runDream(opts)
+  const success = await runDream(opts)
+  assert.equal(success.ok, true)
+  assert.deepEqual(snapshot(), before, '成功轮不能改变六轨文件内容或 mtime')
   const afterFailure = await runDream({ ...opts, outDir: join(root, 'dream2'), stateFile: join(root, 'dream2', 'state.json'), analyze: async () => { throw new Error('x') } })
   assert.equal(afterFailure.ok, false)
-  const targets = ['MEMORY.md', 'USER.md', 'KEY.md', 'daily.md'].map((n) => join(opts.memoryDir, n))
-  for (let i = 0; i < targets.length; i++) {
-    assert.equal(statSync(targets[i]).mtimeMs, before[i][0], 'report-only 不许改记忆文件 mtime')
-    assert.equal(readFileSync(targets[i], 'utf8'), before[i][1])
-  }
+  assert.deepEqual(snapshot(), before, '失败轮不能改变六轨文件内容或 mtime')
 }))
 
 test('提案未通过 refuter 的不进 proposals.json', async () => withTmp(async (root) => {

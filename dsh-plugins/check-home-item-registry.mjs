@@ -30,8 +30,9 @@ for (const [token, why] of [
 	['function homeItemKey(kind, id)', '身份前缀必须由 registry 统一生成'],
 	['function homeItemOfCatalogPage(page)', 'catalog 来源的 adapter'],
 	['function homeItemOfTabDescriptor(descriptor)', 'Better Sidebar 来源的 adapter'],
+	['function homeItemOfPanelDescriptor(descriptor)', '官方导航槽来源的 adapter'],
 	['function selectHomeItems(items, surface = \'start\')', '单一可见性投影'],
-	['function createHomeItemRegistry(service, betterSidebar)', '两个来源合成一张表'],
+	['function createHomeItemRegistry(service, betterSidebar)', '所有来源合成一张表'],
 	['function getHomeItemRegistry(service, betterSidebar)', '单一 registry 入口'],
 	['function migrateHomeItemOrder(saved, availableKeys)', '旧双字段惰性迁移'],
 	['const openHomeItem = (item, surface = \'right-tab\')', '单一打开入口'],
@@ -91,6 +92,9 @@ ck(/function hideOfficialSidebarRowsForAnchors\(/.test(host), '宿主侧必须�
 ck(/try \{ installHomeAnchorBridge\(\); \} catch/.test(host), '模块加载即安装左栏桥，不能只依赖开始页挂载');
 ck(/cached\.snap !== src\.snap \|\| cached\.tabsStamp !== src\.tabsStamp/.test(host),
 	'registry 缓存必须按来源签名自动失效，不能只靠组件订阅');
+ck(/cached\.panelsStamp !== src\.panelsStamp/.test(host), '官方导航注册必须参与来源缓存失效');
+ck(/slots\.subscribe\(HOME_ITEM_SOURCE_PANELS, notify\)/.test(host), '统一注册表必须订阅官方导航变化');
+ck(/function openSidebarPanelItem\(/.test(host), '第三方导航必须保留统一的原页面打开适配');
 ck(/## 4\.2 开始页统一注册表（HomeItemRegistry）/.test(read('doc/workbench-development-standard.md')),
 	'规范正文必须登记统一注册表架构');
 
@@ -102,7 +106,7 @@ ck(/统一 HomeItemRegistry/.test(test), '必须有统一注册表的端到端�
 ck(/新增工具无需改任何硬编码名单/.test(test), '必须回归「新增工具零名单」判据');
 
 if (problems === 0) {
-	ok('开始页统一注册表：两个 adapter / 一个投影 / 一个打开 / 一个排序字段');
+	ok('开始页统一注册表：三个 adapter / 一个投影 / 一个打开 / 一个排序字段');
 }
 console.log(problems === 0
 	? '\n[check-home-item-registry] ✓ 通过'

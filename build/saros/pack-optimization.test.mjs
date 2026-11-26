@@ -262,6 +262,39 @@ test('baseline errors invalidate previous success and verification enforces grow
 	assert.equal(fs.existsSync(path.join(f.repo, '.build/pack-reports/installers.json')), false);
 });
 
+test('production compile defaults to no mangling, supports opt-in and propagates failure in PowerShell 5.1', { skip: process.platform !== 'win32' }, t => {
+	const f = fixture(t);
+	const source = fs.readFileSync(path.join(ROOT, '.ci/scripts/compile-build.ps1'), 'utf8');
+	const script = f.write('repo/.ci/scripts/compile-build.ps1', '\uFEFF' + source.replace(/^\uFEFF/, ''));
+	const commands = path.join(f.root, 'commands');
+	for (const [name, output] of [['nvm', '22.22.1'], ['node', 'v22.22.1'], ['npm', '10.9.4']]) {
+		f.write(`commands/${name}.cmd`, `@echo off\r\necho ${output}\r\nexit /b 0\r\n`);
+	}
+	const capture = path.join(f.root, 'gulp-args.txt');
+	const gulpPath = 'repo/node_modules/.bin/gulp.cmd';
+	const env = { ...process.env, PATH: `${commands}${path.delimiter}${process.env.PATH ?? ''}`, SAROS_BUILD_MANGLE: '' };
+	const run = (mangle, args = [], code = 0) => {
+		f.write(gulpPath, `@echo off\r\necho %* > "${capture}"\r\nexit /b ${code}\r\n`);
+		return spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args], {
+			env: { ...env, SAROS_BUILD_MANGLE: mangle }, encoding: 'utf8', timeout: 30000,
+		});
+	};
+	for (const [mangle, args, task] of [
+		['', [], 'compile-build-without-mangling'],
+		['1', [], 'compile-build-with-mangling'],
+		['0', ['-Mangle'], 'compile-build-with-mangling'],
+	]) {
+		const result = run(mangle, args);
+		assert.equal(result.status, 0, result.stderr || result.error?.message);
+		assert.equal(fs.readFileSync(capture, 'utf8').trim(), `${task} --verbose`, JSON.stringify({ mangle, args, stdout: result.stdout, stderr: result.stderr }));
+	}
+	assert.equal(run('0', [], 37).status, 37);
+	assert.equal(run('invalid').status, 1);
+	assert.ok(!source.includes('npm run compile'), 'Production failure must not fall back to dev compilation');
+	const pipeline = fs.readFileSync(path.join(ROOT, '.ci/package-win-exe.yml'), 'utf8');
+	assert.match(pipeline, /SAROS_BUILD_MANGLE:\s+value: '0'/);
+});
+
 test('CI creates staging marker only after successful package/strip and checks before cleanup', () => {
 	const pack = fs.readFileSync(path.join(ROOT, '.ci/scripts/package-vscode.ps1'), 'utf8');
 	const generate = fs.readFileSync(path.join(ROOT, '.ci/scripts/generate-exe.ps1'), 'utf8');

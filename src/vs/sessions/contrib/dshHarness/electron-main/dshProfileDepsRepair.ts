@@ -30,9 +30,26 @@
  * 为什么不用 `pnpm install` 修：pnpm 正是把它装坏的那一方（重装 = 再坏一次）。
  */
 
-import { promises as fsp } from 'fs';
+import { constants, promises as fsp } from 'fs';
+import { Limiter, Promises } from '../../../../base/common/async.js';
 import { dirname, join } from '../../../../base/common/path.js';
 import { isDevWorkspace } from './dshPluginStaging.js';
+
+export interface IProfileRepairOptions {
+	readonly concurrency?: number;
+}
+
+/** Bounded reads retain input order and settle all workers before propagating an error. */
+export async function mapProfileRepairInputs<T, R>(items: readonly T[], operation: (item: T) => Promise<R>, options?: IProfileRepairOptions): Promise<R[]> {
+	const requested = options?.concurrency ?? 8;
+	const concurrency = Number.isFinite(requested) ? Math.max(1, Math.min(16, Math.floor(requested))) : 8;
+	const limiter = new Limiter<R>(concurrency);
+	try {
+		return await Promises.settled(items.map(item => limiter.queue(() => operation(item))));
+	} finally {
+		limiter.dispose();
+	}
+}
 
 /**
  * **补回随包插件缺失的"自带文件"**（★ 2026-10-29）。
@@ -56,6 +73,7 @@ export async function repairBundledPluginFiles(
 	bundledRoot: string,
 	installedNmDir: string,
 	log: (line: string) => void,
+	options?: IProfileRepairOptions,
 ): Promise<string[]> {
 	const repaired: string[] = [];
 	let entries;
@@ -64,9 +82,9 @@ export async function repairBundledPluginFiles(
 	} catch {
 		return repaired;   // 没有随包目录（老构建）⇒ 什么都不做
 	}
-	for (const entry of entries) {
+	const plans = await mapProfileRepairInputs(entries, async entry => {
 		if (!entry.isDirectory()) {
-			continue;
+			return undefined;
 		}
 		const srcDir = join(bundledRoot, entry.name);
 		let name: string | undefined;
@@ -74,21 +92,27 @@ export async function repairBundledPluginFiles(
 			const pkg = JSON.parse(await fsp.readFile(join(srcDir, 'package.json'), 'utf8')) as { name?: string };
 			name = pkg.name;
 		} catch {
-			continue;   // 读不动 package.json 的条目不是插件（例：dsh-plugins/scripts/）
+			return undefined;
 		}
-		if (!name) {
-			continue;
+		if (typeof name !== 'string' || !name) {
+			return undefined;
 		}
 		const destDir = join(installedNmDir, ...name.split('/'));
 		try {
 			await fsp.stat(destDir);
 		} catch {
-			continue;   // 压根没装 ⇒ 由安装流程负责
+			return undefined;
 		}
-		const have = new Set(await listFiles(destDir));
-		// ★ 2026-11-05：开发工作区（`dev/`，有 `dev/package.json`）不是运行时文件 ⇒ 不补（同 dshPluginStaging.isDevWorkspace）
 		const devWorkspace = await isDevWorkspace(srcDir);
-		for (const rel of await listFiles(srcDir)) {
+		const excluded = new Set(['test', ...(devWorkspace ? ['dev'] : [])]);
+		const have = new Set(await listFiles(destDir, '', excluded));
+		const expected = await listFiles(srcDir, '', excluded);
+		return { name, srcDir, destDir, devWorkspace, have, expected };
+	}, options);
+	for (const plan of plans) {
+		if (!plan) { continue; }
+		const { name, srcDir, destDir, devWorkspace, have, expected } = plan;
+		for (const rel of expected) {
 			if (have.has(rel)) {
 				continue;
 			}
@@ -103,7 +127,7 @@ export async function repairBundledPluginFiles(
 			const to = join(destDir, rel);
 			try {
 				await fsp.mkdir(dirname(to), { recursive: true });
-				await fsp.copyFile(join(srcDir, rel), to);
+				await fsp.copyFile(join(srcDir, rel), to, constants.COPYFILE_EXCL);
 				repaired.push(name + '/' + rel);
 			} catch { /* 单个文件补不回来就算了 */ }
 		}
@@ -122,7 +146,7 @@ export function missingFilesInNestedCopy(nestedFiles: readonly string[], topFile
 }
 
 /** 递归列目录下的文件（相对路径，'/' 分隔；跳过 node_modules/.bin）。 */
-async function listFiles(dir: string, prefix = ''): Promise<string[]> {
+async function listFiles(dir: string, prefix = '', excluded?: ReadonlySet<string>): Promise<string[]> {
 	const out: string[] = [];
 	let entries;
 	try {
@@ -133,10 +157,10 @@ async function listFiles(dir: string, prefix = ''): Promise<string[]> {
 	for (const entry of entries) {
 		const rel = prefix ? prefix + '/' + entry.name : entry.name;
 		if (entry.isDirectory()) {
-			if (entry.name === 'node_modules' || entry.name === '.bin') {
-				continue;   // 嵌套依赖单独处理（顶层对照用）
+			if (entry.name === 'node_modules' || entry.name === '.bin' || excluded?.has(rel)) {
+				continue;
 			}
-			out.push(...await listFiles(join(dir, entry.name), rel));
+			out.push(...await listFiles(join(dir, entry.name), rel, excluded));
 		} else {
 			out.push(rel);
 		}
@@ -189,7 +213,7 @@ export interface IDepsRepairReport {
  * @param nmDir profile 的 `node_modules` 目录。
  * @param log 日志（每个修复写一行 ⇒ 真机能直接看出修了什么 ✓）。
  */
-export async function repairProfileDeps(nmDir: string, log: (line: string) => void): Promise<IDepsRepairReport> {
+export async function repairProfileDeps(nmDir: string, log: (line: string) => void, options?: IProfileRepairOptions): Promise<IDepsRepairReport> {
 	const repaired: string[] = [];
 	let scanned = 0;
 	const top = await topLevelPackages(nmDir);
@@ -197,42 +221,31 @@ export async function repairProfileDeps(nmDir: string, log: (line: string) => vo
 	// ① 收集**同名同版本**的所有副本：顶层 + 每个顶层包自带的一层 node_modules。
 	//    ⚠ 按 version 分组：不同大版本的同名包文件结构不同，互相当基准会补进错版本的文件 ✗。
 	const copies = new Map<string, string[]>();
-	const addCopy = async (name: string, dir: string): Promise<void> => {
+	const nested = await mapProfileRepairInputs(top, async pkg => {
+		const nestedDir = join(nmDir, pkg, 'node_modules');
+		return (await topLevelPackages(nestedDir)).map(name => ({ name, dir: join(nestedDir, name) }));
+	}, options);
+	const inputs = [...top.map(name => ({ name, dir: join(nmDir, name) })), ...nested.flat()];
+	const packages = await mapProfileRepairInputs(inputs, async ({ name, dir }) => {
 		let version = '';
 		try {
 			version = String((JSON.parse(await fsp.readFile(join(dir, 'package.json'), 'utf8')) as { version?: string }).version ?? '');
-		} catch { /* 没有 package.json / 版本 ⇒ 归到空版本组 */ }
-		const key = name + '@' + version;
+		} catch { /* Missing manifests retain the existing empty-version group. */ }
+		return { key: name + '@' + version, dir };
+	}, options);
+	for (const { key, dir } of packages) {
 		const list = copies.get(key) ?? [];
 		list.push(dir);
 		copies.set(key, list);
-	};
-	for (const pkg of top) {
-		await addCopy(pkg, join(nmDir, pkg));
-	}
-	for (const pkg of top) {
-		const nestedDir = join(nmDir, pkg, 'node_modules');
-		let nestedNames: string[] = [];
-		try {
-			nestedNames = await topLevelPackages(nestedDir);
-		} catch {
-			continue;   // 没有嵌套依赖 ⇒ 无事可做 ✓
-		}
-		for (const name of nestedNames) {
-			await addCopy(name, join(nestedDir, name));
-		}
 	}
 
 	// ② 每组选**文件最全**的一份当基准（★ 不限顶层：顶层自己也残时，完整副本可能在
 	//    `@scope/xxx/node_modules/<name>` 里 —— 2026-11-07 真机就是这种情况）。
-	for (const dirs of copies.values()) {
-		if (dirs.length < 2) {
-			continue;   // 只有一份 ⇒ 无从对照（原有"顶层没有就不动"的语义保持）✓
-		}
-		const lists: { dir: string; files: readonly string[] }[] = [];
-		for (const dir of dirs) {
-			lists.push({ dir, files: await listFiles(dir) });
-		}
+	const groups = [...copies.values()].filter(dirs => dirs.length >= 2);
+	const inventories = await mapProfileRepairInputs(groups.flat(), async dir => ({ dir, files: await listFiles(dir) }), options);
+	const filesByDir = new Map(inventories.map(item => [item.dir, item.files]));
+	for (const dirs of groups) {
+		const lists = dirs.map(dir => ({ dir, files: filesByDir.get(dir)! }));
 		const best = lists.reduce((a, b) => (b.files.length > a.files.length ? b : a));
 		if (best.files.length === 0) {
 			continue;   // 全都空 ⇒ 没有可用基准
@@ -248,7 +261,7 @@ export async function repairProfileDeps(nmDir: string, log: (line: string) => vo
 				const to = join(copy.dir, file);
 				try {
 					await fsp.mkdir(join(to, '..'), { recursive: true });
-					await fsp.copyFile(from, to);
+					await fsp.copyFile(from, to, constants.COPYFILE_EXCL);
 					const rel = to.slice(nmDir.length + 1).replace(/\\/g, '/');
 					repaired.push(rel);
 					log(`deps-repair: 补齐 ${rel}（副本缺文件 ⇒ 会让 Host 的插件 import 失败 ✗；基准来自另一份同名包）`);

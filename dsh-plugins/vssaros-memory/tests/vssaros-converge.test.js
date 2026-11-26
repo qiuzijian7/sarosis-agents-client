@@ -120,7 +120,7 @@ test('memory 工具：target 含 bot，Bot 会话里 add/list 走 bot 轨', asyn
   const dir = tempDir('tool')
   try {
     const ctx = fakeCtx()
-    apply(ctx, { memoryDir: dir, legacyAgentImport: false })
+    apply(ctx, { memoryDir: dir, legacyAgentImport: false, coiSyncSkills: false })
     const tool = ctx.state.tools.find((t) => t.name === 'memory')
     assert.ok(tool.parameters.properties.target.enum.includes('bot'))
     const exec = { agent: botAgent('vssaros-coder', { cwd: dir }), callId: 'c', signal: new AbortController().signal }
@@ -138,7 +138,7 @@ test('子代理写 bot 轨与全局轨同一道闸（suggest 模式拒绝）', a
   const dir = tempDir('sub')
   try {
     const ctx = fakeCtx()
-    apply(ctx, { memoryDir: dir, legacyAgentImport: false })
+    apply(ctx, { memoryDir: dir, legacyAgentImport: false, coiSyncSkills: false })
     const tool = ctx.state.tools.find((t) => t.name === 'memory')
     const agent = { session: { header: { agentPreset: 'vssaros-coder', cwd: dir, origin: 'subagent' } } }
     const out = await tool.execute({ action: 'add', target: 'bot', content: '子代理想写的东西' }, { agent, callId: 'c', signal: new AbortController().signal })
@@ -150,7 +150,7 @@ test('子代理写 bot 轨与全局轨同一道闸（suggest 模式拒绝）', a
 test('对外写入口：globalThis[vssaros.memory.store].addBotEntry 写进 bot 轨', () => {
   const dir = tempDir('bus')
   try {
-    apply(fakeCtx(), { memoryDir: dir, legacyAgentImport: false })
+    apply(fakeCtx(), { memoryDir: dir, legacyAgentImport: false, coiSyncSkills: false })
     const writer = globalThis[Symbol.for('vssaros.memory.store')]
     assert.ok(writer?.version >= 1, '写入口版本只增不减（v2 起多了读 / 导入 / 历史方法）')
     assert.ok(writer.addBotEntry('CamelCase.Bot', '步骤证据：工单 T-1 的第 2 步成功').ok)
@@ -290,9 +290,9 @@ test('apply 启动即导入旧记忆（legacyAgentImport:false 时不导入）',
     const on = tempDir('apply-on')
     const off = tempDir('apply-off')
     try {
-      apply(fakeCtx(), { memoryDir: on, legacyAgentDataRoot: dataRoot })
+      apply(fakeCtx(), { memoryDir: on, legacyAgentDataRoot: dataRoot, coiSyncSkills: false })
       assert.ok(existsSync(join(on, 'bots', 'coder', 'MEMORY.md')))
-      apply(fakeCtx(), { memoryDir: off, legacyAgentDataRoot: dataRoot, legacyAgentImport: false })
+      apply(fakeCtx(), { memoryDir: off, legacyAgentDataRoot: dataRoot, legacyAgentImport: false, coiSyncSkills: false })
       assert.ok(!existsSync(join(off, 'bots', 'coder', 'MEMORY.md')))
     } finally { clean(on); clean(off) }
   } finally { clean(dataRoot) }

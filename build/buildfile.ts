@@ -80,6 +80,7 @@ const buildfile = {
 	workerProfileAnalysis,
 	workerOutputLinks,
 	workerBackgroundTokenization,
+	workerKb,
 	workbenchDesktop,
 	workbenchWeb,
 	sessionsWeb,

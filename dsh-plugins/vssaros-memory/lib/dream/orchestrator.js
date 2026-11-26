@@ -111,17 +111,30 @@ export async function runDream(options = {}) {
   manifest.runId = runId
   const runDir = join(outDir, 'runs', runId)
 
+  const finalize = async (proposals) => {
+    let artifactsWritten = false
+    try {
+      await writeRunArtifacts(runDir, {
+        manifest, proposals,
+        report: reportOf(manifest, proposals, manifest.ok ? [] : manifest.failures),
+      })
+      artifactsWritten = true
+    } finally {
+      finishRun(stateFile, {
+        ok: artifactsWritten && manifest.ok,
+        at: now(), runId,
+        reason: artifactsWritten ? manifest.reason : 'artifact-write-failed',
+      })
+    }
+    return { ok: manifest.ok, reason: manifest.reason, manifest, proposals, runId, outDir: runDir }
+  }
+
   /** 所有失败出口统一收尾：释放 running、只在成功时推进窗口。 */
   const fail = async (reason, extras = {}) => {
     Object.assign(manifest, extras)
     manifest.ok = false
     manifest.reason = reason
-    await writeRunArtifacts(runDir, {
-      manifest, proposals: [],
-      report: reportOf(manifest, [], manifest.failures),
-    })
-    finishRun(stateFile, { ok: false, at: now(), runId, reason })
-    return { ok: false, reason, manifest, proposals: [], runId, outDir: runDir }
+    return await finalize([])
   }
 
   // ① 估算先行：超限直接停，不部分写入，也不调用 analyzer。
@@ -203,11 +216,5 @@ export async function runDream(options = {}) {
     factsBefore: organized?.factsBefore,
     factsAfter: organized?.factsAfter,
   })
-  await writeRunArtifacts(runDir, {
-    manifest,
-    proposals: kept,
-    report: reportOf(manifest, kept, []),
-  })
-  finishRun(stateFile, { ok: true, at: now(), runId })
-  return { ok: true, reason: null, manifest, proposals: kept, runId, outDir: runDir }
+  return await finalize(kept)
 }

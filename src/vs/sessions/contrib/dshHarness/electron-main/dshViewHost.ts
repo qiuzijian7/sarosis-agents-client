@@ -30,6 +30,7 @@ import { decideMainFrameNavigation, isBlankPopupUrl } from '../common/dshViewNav
 import { DSH_VIEW_PARTITION, DSH_VIEW_PARTITION_CHAT_POOL_PREFIX, DSH_VIEW_PARTITION_DESKTOP, DSH_VIEW_PARTITION_DESKTOP_POOL_PREFIX, DshColorScheme, DshViewSurface, IDshViewBounds, IDshViewInfo, surfaceTakesRoute } from '../common/dshHarness.js';
 import { dshDesktopEditingKeys, isDshDesktopMenuAction, type DshDesktopMenuAction } from '../common/dshDesktopMenu.js';
 import { resolveViewUrl } from '../common/dshPluginPage.js';
+import { DshAuthWarmup, sameAuthConnection } from '../common/dshAuthWarmup.js';
 import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
 import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_THEME_SOURCE, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_UPGRADE, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageCommand, DshPageEvent, DshPageThemeSource, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshUpgradeState, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
@@ -592,8 +593,15 @@ export class DshViewHost extends Disposable {
 	private readonly _views = new Map<string, IViewSlot>();
 	/** 认证 cookie 续期定时器（见 `_refreshAuth`；`setConnection` 重挂，断连时清掉）。 */
 	private _authTimer: ReturnType<typeof setInterval> | undefined;
-	/** P0-3：按分区 + origin/authUrl 合并 auth cookie 交换，避免预热与 _load 各做一次。 */
-	private readonly _authExchanges = new Map<Session, Map<string, Promise<boolean>>>();
+	private readonly _authWarmup = this._register(new DshAuthWarmup<Session>({
+		exchange: async (ses, conn, signal) => {
+			const response = await ses.fetch(conn.authUrl, { redirect: 'follow', signal });
+			await response.body?.cancel().catch(() => undefined);
+			return response.ok;
+		},
+		cookies: (ses, origin) => ses.cookies.get({ url: origin }),
+		onEvent: (event, elapsedMs) => this._logService.info(`[dshHarness] auth warmup ${event} (${Math.round(elapsedMs)} ms)`),
+	}));
 	/** 本连接内是否已成功续期过一次（`setConnection` 复位）——只用于"成功也留一行痕" ✓。 */
 	private _authRefreshed = false;
 	private readonly _watchedWindows = new Set<BrowserWindow>();
@@ -826,17 +834,15 @@ export class DshViewHost extends Disposable {
 
 	/** Host 起停或重启（端口会变）时调用；已有视图重新加载到新的 Host，或在 Host 停止时清空页面。 */
 	setConnection(connection: IDshHostConnection | undefined): void {
-		const changed = connection?.origin !== this._connection?.origin;
+		const changed = !sameAuthConnection(connection, this._connection);
 		this._connection = connection;
+		this._authWarmup.setConnection(connection);
 		// 认证 cookie 续期定时器：连接（重）建立就重挂，断开就停 —— 见 `_refreshAuth` 的缘由。
 		if (this._authTimer !== undefined) {
 			clearInterval(this._authTimer);
 			this._authTimer = undefined;
 		}
 		this._authRefreshed = false;
-		if (changed) {
-			this._authExchanges.clear();
-		}
 		if (connection) {
 			this._authTimer = setInterval(() => void this._refreshAuth(), AUTH_REFRESH_INTERVAL_MS);
 			(this._authTimer as { unref?: () => void } | undefined)?.unref?.();
@@ -847,11 +853,8 @@ export class DshViewHost extends Disposable {
 			return;
 		}
 		for (const slot of this._views.values()) {
-			// 换了连接（Host 重启/换端口）= 认证 secret 与 authority 都变了 ⇒ 旧 cookie **必然作废**
-			// （cookie 形如 `v1.<payload>.<hmac(secret)>`，payload 带 authority：`dsh-client-connection/lib/index.js:296-322`；
-			//  而 cookie 按 **domain** 存、不区分端口 ⇒ 新端口的请求会把旧 cookie 一起带上、被判无效 ✗）。
-			// ⇒ 这次重载**直接切到带 token 的 authUrl**，省掉"先 401 再补救"的一跳与那一瞬的认证错误页 ✓。
-			slot.retry = withAuthRetry(resetViewLoadRetry());
+			// 换代已使旧认证证明失效；复用新连接的预热，只有真正的 401/白屏才强制交换。
+			slot.retry = resetViewLoadRetry();
 			if (connection) {
 				void this._load(slot);
 			} else {
@@ -1216,59 +1219,24 @@ export class DshViewHost extends Disposable {
 		await this._refreshAuthIn(this.session, conn);
 	}
 
-	/** 在指定分区里续期 dsh-auth cookie（`_refreshAuth` 的分区版本）。 */
+	/** Refresh through the same session queue so an old Host cannot overwrite a newer exchange. */
 	private async _refreshAuthIn(ses: Session, conn: IDshHostConnection): Promise<void> {
-		try {
-			// ⚠⚠ **必须 `redirect: 'follow'`**（2026-10-12 日志实证的坑）：上一版写 `redirect: 'manual'`，
-			// 而 Electron 的 `net.fetch` 对 manual 的语义是"**取消**这次重定向并 reject"⇒ 每 3 分钟一条
-			// `[dshHarness] auth refresh failed: Redirect was cancelled`，dsh 的 303 **永远走不完**、
-			// `Set-Cookie` 落不到分区 ⇒ 续期形同没写（cookie 一直用旧的 ⇒ 到点就被 dsh 判未认证）✗✗。
-			// 跟随 303 只是多下载一次应用外壳 HTML（本机回环、3 分钟一次，可忽略），换来 cookie 真的续上 ✓。
-			const res = await ses.fetch(conn.authUrl, { redirect: 'follow' });
-			const cookies = await ses.cookies.get({ url: conn.origin }).catch(() => []);
-			const auth = cookies.filter(c => c.name.startsWith('dsh-auth')).length;
-			if (res.status >= 400) {
-				this._logService.warn(`[dshHarness] auth refresh got HTTP ${res.status} (dsh-auth cookies: ${auth})— cookie 可能已失效，页面会显示 authentication required`);
-				return;
-			}
-			// 成功只打一次（每次换连接复位）：这是"续期到底有没有真的落 cookie"的唯一自证 ✓
-			if (!this._authRefreshed) {
-				this._authRefreshed = true;
-				this._logService.info(`[dshHarness] auth cookie refreshed (HTTP ${res.status}, dsh-auth cookies: ${auth})`);
-			}
-		} catch (e) {
-			this._logService.warn(`[dshHarness] auth refresh failed: ${String((e as Error)?.message ?? e)}`);
+		const epoch = this._authWarmup.epoch;
+		const authenticated = await this._ensureAuth(ses, conn, true);
+		if (!this._authWarmup.isCurrent(conn, epoch)) {
+			return;
+		}
+		if (!authenticated) {
+			this._logService.warn('[dshHarness] auth refresh failed: exchange or cookie validation failed');
+		} else if (!this._authRefreshed) {
+			this._authRefreshed = true;
+			this._logService.info('[dshHarness] auth cookie refreshed');
 		}
 	}
 
-	/** P0-3：同一个分区 + 同一个 Host 的 cookie 交换只做一次；force 用于 401/白屏重试。 */
+	/** Reuse a recent successful exchange only while its exact cookie is still present; force bypasses the proof. */
 	private _ensureAuth(ses: Session, conn: IDshHostConnection, force = false): Promise<boolean> {
-		const key = `${conn.origin}|${conn.authUrl}`;
-		let byKey = this._authExchanges.get(ses);
-		if (!byKey) {
-			byKey = new Map();
-			this._authExchanges.set(ses, byKey);
-		}
-		if (force) {
-			byKey.delete(key);
-		}
-		const existing = byKey.get(key);
-		if (existing) {
-			return existing;
-		}
-		const exchange = (async () => {
-			try {
-				await ses.fetch(conn.authUrl, { redirect: 'follow' });
-			} catch { /* 失败交给 resolveViewUrl 的 authUrl 兜底与 401 重试 ✓ */ }
-			const cookies = await ses.cookies.get({ url: conn.origin }).catch(() => []);
-			return cookies.some(c => c.name.startsWith('dsh-auth'));
-		})().finally(() => {
-			if (byKey.get(key) === exchange) {
-				byKey.delete(key);
-			}
-		});
-		byKey.set(key, exchange);
-		return exchange;
+		return this._authWarmup.ensure(ses, conn, force);
 	}
 
 	/** 当前可能承载 dsh 视图的全部分区（主分区 / desktop 独立分区 / 池 / 每个视图自带分区）。 */
@@ -1284,7 +1252,7 @@ export class DshViewHost extends Disposable {
 		return [...out];
 	}
 
-	/** P0-3：URL 行一解析出 authUrl 就预热 cookie；真正导航时复用同一个 in-flight Promise。 */
+	/** Prewarm each partition; navigation reuses the exchange or its short-lived, cookie-validated proof. */
 	prefetchAuth(conn: IDshHostConnection): void {
 		for (const ses of this._authSessions()) {
 			void this._ensureAuth(ses, conn, false).catch(() => undefined);
@@ -1847,12 +1815,14 @@ export class DshViewHost extends Disposable {
 			this._showHostUnavailable(slot);
 			return;
 		}
-		// 这条链"要重新认证"（换 Host/401/白屏看门狗置了 `retriedAuth`）时，由 `_ensureAuth` 强制重走
-		// `session.fetch(authUrl)` 把 cookie 可靠提交进分区；默认则复用早 auth 事件的 in-flight Promise。
-		// ⚠ 一律用**该视图自己的分区**（弹窗是独立分区，用主分区查 cookie 会误判"已登录"⇒ 401 ✗）
+		// 401/白屏强制交换；普通导航复用本分区的预热或短期成功证明。
 		const viewSession = slot.session ?? this.session;
+		const epoch = this._authWarmup.epoch;
 		const tAuth = Date.now();
 		const hasAuth = await this._ensureAuth(viewSession, conn, slot.retry.retriedAuth === true);
+		if (!this._authWarmup.isCurrent(conn, epoch) || this._views.get(slot.id) !== slot || slot.view.webContents.isDestroyed()) {
+			return;
+		}
 		// ★ 2026-10-20：>500ms 就记一行 —— 正常应是几十毫秒，几秒说明 Host 当时忙/慢（见日志时序）。
 		if (Date.now() - tAuth > 500) {
 			this._logService.info(`[dshHarness] view ${slot.id} auth cookie exchange took ${Date.now() - tAuth} ms（hasAuth=${hasAuth}）— 这段发生在页面导航之前`);

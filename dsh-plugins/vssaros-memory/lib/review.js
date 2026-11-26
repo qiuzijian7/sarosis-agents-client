@@ -351,9 +351,9 @@ function normalizeWhitespace(text) {
 
 /**
  * Enqueue one pending suggestion with dedup: same target + overlapping text
- * bump the existing entry's `hits` instead of stacking duplicates. Shared by
- * `memory_suggest` (review) and the memory tool's key-track writes (every
- * key write now requires user confirmation).
+ * bump the existing entry's `hits` instead of stacking duplicates. KEY entries
+ * additionally require the same source cwd. Shared by `memory_suggest`
+ * (review) and queued key-track writes from the memory tool.
  * @param {import('./store.js').SuggestionQueue} queue - the suggestion queue.
  * @param {string} target - 'memory' | 'user' | 'key'.
  * @param {string} content - the suggested entry text.
@@ -363,9 +363,11 @@ function normalizeWhitespace(text) {
  */
 export function enqueueSuggestion(queue, target, content, reason, agent) {
   const now = new Date().toISOString()
+  const cwd = agent?.session?.header?.cwd ?? null
   return queue.mutate((entries) => {
     const normalized = normalizeWhitespace(content)
     const existing = entries.find((entry) => entry.target === target
+      && (target !== 'key' || (entry.cwd ?? null) === cwd)
       && (normalizeWhitespace(entry.content) === normalized
         || normalizeWhitespace(entry.content).includes(normalized)
         || normalized.includes(normalizeWhitespace(entry.content))))

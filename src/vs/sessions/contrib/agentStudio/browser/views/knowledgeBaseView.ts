@@ -3624,9 +3624,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				this.findNodeEl(this.sectionOfPath(p), p)?.classList.add('kb-cut');
 			}
 		}
-		this.notificationService.info(localize(
-			cut ? 'kb.copied.cut' : 'kb.copied.copy',
-			cut ? '已剪切 {0} 项' : '已复制 {0} 项', paths.length));
+		this.notificationService.info(cut
+			? localize('kb.copied.cut', '已剪切 {0} 项', paths.length)
+			: localize('kb.copied.copy', '已复制 {0} 项', paths.length));
 	}
 
 	/** 粘贴到目标目录：剪切=移动（冲突确认），复制=复制（冲突增量命名）。复用 _doMoveFiles 的冲突/undo 逻辑。 */

@@ -7,7 +7,6 @@ import es from 'event-stream';
 import fs from 'fs';
 import cp from 'child_process';
 import glob from 'glob';
-import gulp from 'gulp';
 import path from 'path';
 import crypto from 'crypto';
 import { Stream } from 'stream';
@@ -20,8 +19,9 @@ import fancyLog from 'fancy-log';
 import ansiColors from 'ansi-colors';
 import buffer from 'gulp-buffer';
 import * as jsoncParser from 'jsonc-parser';
+import ts from 'typescript';
 import { getProductionDependencies } from './dependencies.ts';
-import { type IExtensionDefinition, getExtensionStream } from './builtInExtensions.ts';
+import type { IExtensionDefinition } from './builtInExtensions.ts';
 import { fetchUrls, fetchGithub } from './fetch.ts';
 import { createTsgoStream, spawnTsgo } from './tsgo.ts';
 import vzip from 'gulp-vinyl-zip';
@@ -191,20 +191,53 @@ function typeCheckExtensionStream(tsconfigPath: string, forWeb: boolean): Stream
 	return createTsgoStream(tsconfigPath, {
 		taskName: `typechecking extension (tsgo)`,
 		noEmit: true,
-});
+	});
 }
 
-function getBuildRootsForExtension(extensionPath: string): string[] {
+export function typeCheckExtension(tsconfigPath: string, noEmit: boolean): Promise<void> {
+	return spawnTsgo(tsconfigPath, { taskName: 'typechecking extension (tsgo)', noEmit });
+}
+
+export async function esbuildExtensions(taskName: string, isWatch: boolean, configs: readonly { script: string }[]): Promise<void> {
+	await Promise.all(configs.map(({ script }) => new Promise<void>((resolve, reject) => {
+		const args = [script, `--rootDirName=extensions/${path.basename(path.dirname(script))}`];
+		if (isWatch) {
+			args.push('--watch');
+		}
+		const child = cp.fork(path.join(import.meta.dirname, 'esbuild-runner.mjs'), args, {
+			cwd: root,
+			stdio: ['ignore', 'inherit', 'inherit', 'ipc']
+		});
+		child.once('error', reject);
+		child.once('close', code => {
+			if (code === 0) {
+				resolve();
+			} else {
+				reject(new Error(`${taskName} failed for ${script} (exit code ${code})`));
+			}
+		});
+	})));
+}
+
+export function getBuildRootsForExtension(extensionPath: string): string[] {
 	const tsconfigFiles = glob.sync('{src/**,*/,}tsconfig.json', { cwd: extensionPath, ignore: '**/node_modules/**' });
 	return tsconfigFiles
 		.map(file => path.join(extensionPath, file))
 		.filter(filePath => {
-			try {
-				const config = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-				return config.compilerOptions && config.compilerOptions.noEmit !== true;
-			} catch {
-				return false;
+			const fail = (diagnostic: ts.Diagnostic): never => {
+				throw new Error(`${filePath}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`);
+			};
+			const config = ts.getParsedCommandLineOfConfigFile(filePath, {}, {
+				...ts.sys,
+				onUnRecoverableConfigFileDiagnostic: fail
+			});
+			if (!config) {
+				throw new Error(`Unable to parse ${filePath}`);
 			}
+			if (config.errors.length > 0) {
+				fail(config.errors[0]);
+			}
+			return config.options.noEmit !== true;
 		});
 }
 
@@ -509,14 +542,13 @@ const baseHeaders = {
 	'User-Agent': 'VSCode Build',
 };
 
-function fromMarketplace(serviceUrl: string, { name: extensionName, version, sha256, metadata, platforms }: IExtensionDefinition): Stream {
+export function fromMarketplace(serviceUrl: string, { name: extensionName, version, sha256, metadata, platforms }: IExtensionDefinition): Stream {
 	const url = `${serviceUrl}/publishers/${metadata!.publisherId!.publisherName}/vsextensions/${extensionName}/${version}/vspackage`;
 	fancyLog('Downloading extension:', ansiColors.yellow(`${extensionName}@${version}`), '...');
 
 	const options = {
 		base: url,
-		headers: baseHeaders,
-		retries: 3,
+		nodeFetchOptions: { headers: baseHeaders },
 		checksumSha256: sha256
 	};
 
@@ -542,7 +574,10 @@ function fromMarketplace(serviceUrl: string, { name: extensionName, version, sha
 
 	const packageJsonFilter = filter(['**/package.json'], { restore: true });
 
-	return fetchUrls(options)
+	return fetchUrls('', options)
+		.pipe(vzip.src())
+		.pipe(filter('extension/**', { dot: true }))
+		.pipe(rename(p => p.dirname = p.dirname!.replace(/^extension[\\/]?/, '')))
 		.pipe(platformFilter)
 		.pipe(packageJsonFilter)
 		.pipe(buffer())
@@ -554,48 +589,16 @@ function fromMarketplace(serviceUrl: string, { name: extensionName, version, sha
 			f.contents = Buffer.from(JSON.stringify(data));
 			return f;
 		}))
-		.pipe(packageJsonFilter.restore)
-		// Archive extensions slightly so they can be properly unarchived later
-		.pipe(vzip.src())
-		.pipe(filter('extension/**', { dot: true }))
-		.pipe(rename(p => p.dirname = p.dirname!.replace(/^extension\/?/, '')));
-}
-
-function fromMarketplaceOrGithub(extension: IExtensionDefinition): Stream {
-	const { name, platforms } = extension;
-
-	// Check if GITHUB_TOKEN is available; if not, skip GitHub-only extensions
-	const hasGithubToken = !!process.env['GITHUB_TOKEN'];
-	const hasMarketplaceServiceUrl = !!process.env['VSCODE_MARKETPLACE_SERVICE_URL'] || !!process.env['MARKETPLACE_SERVICE_URL'];
-
-	// Some extensions (like js-debug) are only available via GitHub and have no marketplace entry
-	const isGitHubOnly = !extension.metadata && !!extension.repo;
-	if (isGitHubOnly && !hasGithubToken) {
-		fancyLog(`Skipping GitHub-only extension (no GITHUB_TOKEN):`, ansiColors.yellow(name));
-		return es.readArray([]);
-	}
-
-	// Try marketplace first if service URL is available
-	if (hasMarketplaceServiceUrl && extension.metadata) {
-		const serviceUrl = process.env['VSCODE_MARKETPLACE_SERVICE_URL'] || process.env['MARKETPLACE_SERVICE_URL'];
-		return fromMarketplace(serviceUrl!, extension);
-	}
-
-	// Fall back to GitHub
-	if (extension.repo) {
-		return fromGithub(extension);
-	}
-
-	// Local extension (built from source)
-	fancyLog('Using local extension source:', ansiColors.yellow(`${name}@${extension.version}`));
-	return fromLocal(path.join(root, 'extensions', name), false, false);
+		.pipe(packageJsonFilter.restore);
 }
 
 export function packageMarketplaceExtensionsStream(forWeb: boolean): Stream {
 	const hasGithubToken = !!process.env['GITHUB_TOKEN'];
 	const hasMarketplaceServiceUrl = !!process.env['VSCODE_MARKETPLACE_SERVICE_URL'] || !!process.env['MARKETPLACE_SERVICE_URL'];
 
-	const streams = builtInExtensions.map(extension => {
+	const extensions = builtInExtensions.concat(forWeb ? webBuiltInExtensions : [])
+		.filter(extension => !forWeb || !marketplaceWebExtensionsExclude.has(extension.name));
+	const streams = extensions.map(extension => {
 		if (!extension.metadata && !extension.repo) {
 			return fromLocal(path.join(root, 'extensions', extension.name), forWeb, false);
 		}
@@ -629,7 +632,18 @@ export function packageMarketplaceExtensionsStream(forWeb: boolean): Stream {
 	return es.merge(streams.filter((s): s is Stream => s !== null));
 }
 
-function fromGithub(extension: IExtensionDefinition): Stream {
+export function fromVsix(vsixPath: string, extension: IExtensionDefinition): Stream {
+	const contents = fs.readFileSync(vsixPath);
+	if (extension.sha256 && crypto.createHash('sha256').update(contents).digest('hex') !== extension.sha256) {
+		throw new Error(`Checksum mismatch for ${vsixPath}`);
+	}
+	return es.readArray([new File({ path: path.resolve(vsixPath), contents })])
+		.pipe(vzip.src())
+		.pipe(filter('extension/**', { dot: true }))
+		.pipe(rename(p => p.dirname = p.dirname!.replace(/^extension[\\/]?/, '')));
+}
+
+export function fromGithub(extension: IExtensionDefinition): NodeJS.ReadWriteStream {
 	const { name, version, repo, sha256 } = extension;
 	fancyLog('Downloading extension from GitHub:', ansiColors.yellow(`${name}@${version}`), '...');
 
@@ -677,12 +691,13 @@ const webBuiltInExtensions: IExtensionDefinition[] = productJson.webBuiltInExten
 
 type ExtensionKind = 'ui' | 'workspace' | 'web';
 export interface IExtensionManifest {
+	name?: string;
 	main?: string;
 	browser?: string;
 	type?: ExtensionKind;
 	capabilities?: {
-		virtualWorkspaces?: ExtensionKind | boolean;
-		untrustedWorkspaces?: { supported: ExtensionKind | boolean; description?: string } | { description?: string };
+		virtualWorkspaces?: boolean | { supported: boolean | 'limited'; description?: string };
+		untrustedWorkspaces?: { supported?: boolean | 'limited'; description?: string };
 	};
 }
 
@@ -692,6 +707,41 @@ export interface IScannedBuiltinExtension {
 	packageNLS: any | undefined;
 	readmePath: string | undefined;
 	changelogPath: string | undefined;
+}
+
+export function scanBuiltinExtensions(extensionsRoot: string): IScannedBuiltinExtension[] {
+	const result: IScannedBuiltinExtension[] = [];
+	if (!fs.existsSync(extensionsRoot)) {
+		return result;
+	}
+	for (const entry of fs.readdirSync(extensionsRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+		if (!entry.isDirectory() || entry.isSymbolicLink()) {
+			continue;
+		}
+		const extensionPath = path.join(extensionsRoot, entry.name);
+		const manifestPath = path.join(extensionPath, 'package.json');
+		if (!fs.existsSync(manifestPath)) {
+			continue;
+		}
+		const packageJSON = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+		if (!isWebExtension(packageJSON)) {
+			continue;
+		}
+		const packageNLSPath = path.join(extensionPath, 'package.nls.json');
+		const files = fs.readdirSync(extensionPath);
+		const resource = (pattern: RegExp) => {
+			const file = files.find(file => pattern.test(file));
+			return file ? `${entry.name}/${file}` : undefined;
+		};
+		result.push({
+			extensionPath: entry.name,
+			packageJSON,
+			packageNLS: fs.existsSync(packageNLSPath) ? JSON.parse(fs.readFileSync(packageNLSPath, 'utf8')) : undefined,
+			readmePath: resource(/^readme(?:\.md|\.txt)?$/i),
+			changelogPath: resource(/^changelog(?:\.md|\.txt)?$/i)
+		});
+	}
+	return result;
 }
 
 export function isWebExtension(manifest: IExtensionManifest): boolean {
@@ -705,7 +755,9 @@ export function isWebExtension(manifest: IExtensionManifest): boolean {
 		return false;
 	}
 
-	if (manifest.capabilities?.virtualWorkspaces === 'limited' || manifest.capabilities?.virtualWorkspaces === false) {
+	const virtualWorkspaces = manifest.capabilities?.virtualWorkspaces;
+	const virtualSupported = typeof virtualWorkspaces === 'object' ? virtualWorkspaces.supported : virtualWorkspaces;
+	if (virtualSupported === 'limited' || virtualSupported === false) {
 		return false;
 	}
 
@@ -761,19 +813,6 @@ function doPackageLocalExtensionsStream(forWeb: boolean, disableMangle: boolean,
 	);
 
 	return localExtensionsStream;
-}
-
-const userAgentHeaders = {
-	'User-Agent': 'VSCode Build',
-};
-
-function fetchUrl(url: string, options?: { retries?: number; checksumSha256?: string; headers?: Record<string, string> }): Stream {
-	return fetchUrls({
-		base: url,
-		retries: options?.retries || 3,
-		checksumSha256: options?.checksumSha256,
-		headers: options?.headers || userAgentHeaders
-	});
 }
 
 /**

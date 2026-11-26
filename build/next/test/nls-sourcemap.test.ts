@@ -10,7 +10,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { type RawSourceMap, SourceMapConsumer } from 'source-map';
-import { nlsPlugin, createNLSCollector, finalizeNLS, postProcessNLS } from '../nls-plugin.ts';
+import { nlsPlugin, createNLSCollector, finalizeNLS, postProcessNLS, assertNoNLSPlaceholders } from '../nls-plugin.ts';
+import { sourceTypeScriptPlugin } from '../../lib/esbuild.ts';
 import { adjustSourceMap } from '../private-to-property.ts';
 
 // analyzeLocalizeCalls requires the import path to end with `/nls`
@@ -146,6 +147,72 @@ function findColumn(text: string, needle: string): number {
 }
 
 suite('NLS plugin source maps', () => {
+
+	test('source resolution prefers sibling TS but preserves real JS and outside-root imports', async t => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'source-resolve-test-'));
+		t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+		const src = path.join(directory, 'src');
+		fs.mkdirSync(src);
+		fs.mkdirSync(path.join(directory, 'outside'));
+		const files = {
+			'src/main.ts': 'import { value } from "./value.js"; import { runtime } from "./runtime.js"; import { outside } from "../outside/value.js"; export const result = [value, runtime, outside];',
+			'src/value.ts': 'export const value = "SOURCE_TS";',
+			'src/value.js': 'export const stale = "STALE_JS";',
+			'src/runtime.js': 'export const runtime = "RUNTIME_JS";',
+			'outside/value.js': 'export const outside = "OUTSIDE_JS";',
+			'outside/value.ts': 'export const outside = "OUTSIDE_TS";',
+		};
+		for (const [file, content] of Object.entries(files)) {
+			fs.writeFileSync(path.join(directory, file), content);
+		}
+		const result = await esbuild.build({
+			entryPoints: [path.join(src, 'main.ts')], bundle: true, write: false, format: 'esm',
+			plugins: [sourceTypeScriptPlugin(src)],
+		});
+		const js = result.outputFiles![0].text;
+		assert.ok(js.includes('SOURCE_TS'));
+		assert.ok(js.includes('RUNTIME_JS'));
+		assert.ok(js.includes('OUTSIDE_JS'));
+		assert.ok(!js.includes('STALE_JS'));
+		assert.ok(!js.includes('OUTSIDE_TS'));
+	});
+
+	test('NLS validation rejects both unresolved placeholder kinds', () => {
+		for (const prefix of ['NLS', 'NLS2']) {
+			assert.throws(() => assertNoNLSPlaceholders(`localize("%%${prefix}:test#key%%", value)`, 'main.js'), /Unresolved placeholders in main\.js/);
+		}
+		assert.doesNotThrow(() => assertNoNLSPlaceholders('localize(0, null)', 'main.js'));
+	});
+
+	test('dynamic localize messages are caught by the production placeholder gate', async () => {
+		const { js, cleanup } = await bundleWithNLS({
+			'test/dynamic.ts': [
+				'import { localize } from "../vs/nls";',
+				'export function message(value: string) { return localize("key", value); }',
+			].join('\n'),
+		}, 'test/dynamic.ts', { postProcess: true });
+		try {
+			assert.throws(() => assertNoNLSPlaceholders(js, 'dynamic.js'), /Unresolved placeholders in dynamic\.js/);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test('static conditional messages survive production NLS processing', async () => {
+		const { js, cleanup } = await bundleWithNLS({
+			'test/conditional.ts': [
+				'import { localize } from "../vs/nls";',
+				'export function message(cut: boolean) {',
+				'  return cut ? localize("cut", "Cut") : localize("copy", "Copy");',
+				'}',
+			].join('\n'),
+		}, 'test/conditional.ts', { postProcess: true, minify: true });
+		try {
+			assert.doesNotThrow(() => assertNoNLSPlaceholders(js, 'conditional.js'));
+		} finally {
+			cleanup();
+		}
+	});
 
 	test('NLS plugin transforms localize calls into placeholders', async () => {
 		const source = [

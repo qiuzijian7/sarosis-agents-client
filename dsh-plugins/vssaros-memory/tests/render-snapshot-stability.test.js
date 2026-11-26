@@ -8,11 +8,12 @@
  */
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveConfig, renderSnapshot } from '../lib/index.js'
 import { MemoryStore, withLock } from '../lib/store.js'
+import { makeProjectDirResolver } from '../lib/sync/index.js'
 import { setLocale, getLocale } from '../lib/i18n.js'
 
 const previousLocale = getLocale()
@@ -29,11 +30,14 @@ function writeTrack(store, target, entries, agent) {
 function withSnapshot(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-memory-snapshot-'))
   try {
+    const cwd = join(dir, 'repo-a')
+    mkdirSync(join(cwd, '.git'), { recursive: true })
+    writeFileSync(join(cwd, '.git', 'HEAD'), 'ref: refs/heads/main\n')
     const store = new MemoryStore(dir, {
       botKeyResolver: () => 'code-explorer',
-      projectDirResolver: () => join(dir, 'projects', 'p-test'),
+      projectDirResolver: makeProjectDirResolver({ memoryDir: dir, syncEnabled: false }),
     })
-    const agent = { id: 'a1', session: { id: 's1', header: { cwd: '/work/p' } } }
+    const agent = { id: 'a1', session: { id: 's1', header: { cwd } } }
     const config = resolveConfig({ memoryDir: dir, reviewEnabled: false })
     const snap = (extra = {}) => renderSnapshot({ ...config, ...extra }, store, agent, undefined, null, null)
     return fn({ dir, store, agent, config, snap })
@@ -54,6 +58,61 @@ function seed(store, agent) {
 test('同一输入连渲两次逐字节相等（前缀缓存友好的前提）', () => withSnapshot(({ snap, store, agent }) => {
   seed(store, agent)
   assert.equal(snap(), snap())
+}))
+
+test('真实写入 project/daily 后快照逐字不变', () => withSnapshot(({ snap, store, agent }) => {
+  seed(store, agent)
+  const before = snap()
+  for (const target of ['project', 'daily']) {
+    assert.equal(store.add(target, `${target} 新增日志`, agent).ok, true)
+    assert.equal(snap(), before, `${target} 写入不能使稳定快照失效`)
+    assert.equal(snap(), before)
+  }
+}))
+
+test('慢变轨写入后快照更新，随后重复读取仍稳定', () => withSnapshot(({ snap, store, agent }) => {
+  seed(store, agent)
+  for (const target of ['memory', 'user', 'key']) {
+    const before = snap()
+    const content = `${target} 新增长期事实`
+    assert.equal(store.add(target, content, agent).ok, true)
+    const after = snap()
+    assert.notEqual(after, before)
+    assert.ok(after.includes(content))
+    assert.equal(snap(), after)
+  }
+}))
+
+test('同一会话切换 Git HEAD 时实时过滤 KEY，detached HEAD 保守显示全部', () => withSnapshot(({ snap, store, agent }) => {
+  writeTrack(store, 'key', ['跨分支事实', '[branch:main] 主线事实', '[branch:dev] 开发事实', '[branch:main,dev] 共享事实'], agent)
+  const head = join(agent.session.header.cwd, '.git', 'HEAD')
+  const markers = ['跨分支事实', '主线事实', '开发事实', '共享事实']
+  const visible = (text) => markers.filter((marker) => text.includes(marker))
+  assert.deepEqual(visible(snap()), ['跨分支事实', '主线事实', '共享事实'])
+  writeFileSync(head, 'ref: refs/heads/dev\n')
+  const dev = snap()
+  assert.deepEqual(visible(dev), ['跨分支事实', '开发事实', '共享事实'])
+  assert.equal(snap(), dev)
+  assert.deepEqual(visible(snap({ keyBranchFilter: false })), markers)
+  writeFileSync(head, `${'a'.repeat(40)}\n`)
+  assert.deepEqual(visible(snap()), markers)
+}))
+
+test('复用同一 agent/store 切换项目，KEY 不串味，切回后快照恢复', () => withSnapshot(({ dir, snap, store, agent }) => {
+  const cwdA = agent.session.header.cwd
+  writeTrack(store, 'key', ['项目 A 独有事实'], agent)
+  const before = snap()
+  const cwdB = join(dir, 'repo-b')
+  mkdirSync(join(cwdB, '.git'), { recursive: true })
+  writeFileSync(join(cwdB, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+  agent.session.header.cwd = cwdB
+  assert.deepEqual(store.entriesOf('key', agent), [])
+  writeTrack(store, 'key', ['项目 B 独有事实'], agent)
+  const b = snap()
+  assert.ok(b.includes('项目 B 独有事实'))
+  assert.ok(!b.includes('项目 A 独有事实'))
+  agent.session.header.cwd = cwdA
+  assert.equal(snap(), before)
 }))
 
 test('段顺序固定：session → memory → user → bot → key，且用空行分隔', () => withSnapshot(({ snap, store, agent }) => {

@@ -1,6 +1,18 @@
-﻿# 生产编译 compile-build-with-mangling
+﻿# 生产编译；默认关闭 mangling，可用 -Mangle 或 SAROS_BUILD_MANGLE=1 开启。
+param([switch]$Mangle)
+
 $repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
+
+if ($env:SAROS_BUILD_MANGLE -and $env:SAROS_BUILD_MANGLE -notin @('0', '1')) {
+  Write-Error 'SAROS_BUILD_MANGLE must be 0 or 1'
+  exit 1
+}
+$compileTask = 'compile-build-without-mangling'
+if ($Mangle -or $env:SAROS_BUILD_MANGLE -eq '1') {
+  $compileTask = 'compile-build-with-mangling'
+}
+Write-Host ('[compile] task: ' + $compileTask)
 
 $nodeVersion = "22.22.1"
 $installed = nvm list 2>$null | Select-String $nodeVersion
@@ -45,9 +57,9 @@ Write-Host ('[clean] removed ' + $removed + ' tsbuildinfo files, starting gulp..
 # 直接调用本地 gulp，绕开 npx（npx 找不到本地包时会交互式询问 "Ok to proceed?"，CI 无 stdin 导致无限挂起）
 $gulp = Join-Path $repoRoot 'node_modules\.bin\gulp.cmd'
 if (-not (Test-Path $gulp)) { Write-Error "local gulp not found at $gulp"; exit 1 }
-& $gulp compile-build-with-mangling --verbose
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "compile-build-with-mangling failed, fallback to dev compile..."
-  npm run compile
-  if ($LASTEXITCODE -ne 0) { Write-Error "Compile failed"; exit 1 }
+& $gulp $compileTask --verbose
+$compileExit = $LASTEXITCODE
+if ($compileExit -ne 0) {
+  Write-Error ($compileTask + ' failed; production compilation aborted')
+  exit $compileExit
 }

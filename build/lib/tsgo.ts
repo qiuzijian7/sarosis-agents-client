@@ -10,7 +10,7 @@ import fancyLog from 'fancy-log';
 import * as path from 'path';
 
 const root = path.dirname(path.dirname(import.meta.dirname));
-const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+const tsgo = path.join(root, 'node_modules/@typescript/native-preview/bin/tsgo.js');
 const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 const timestampRegex = /^\[\d{2}:\d{2}:\d{2}\]\s*/;
 
@@ -24,16 +24,15 @@ export function spawnTsgo(projectPath: string, config: { taskName: string; noEmi
 		}
 	}
 
-	const args = ['tsgo', '--project', projectPath, '--pretty', 'false', '--incremental'];
+	const args = [tsgo, '--project', projectPath, '--pretty', 'false', '--incremental'];
 	if (config.noEmit) {
 		args.push('--noEmit');
 	} else {
 		args.push('--sourceMap', '--inlineSources');
 	}
-	const child = cp.spawn(npx, args, {
+	const child = cp.spawn(process.execPath, args, {
 		cwd: root,
-		stdio: ['ignore', 'pipe', 'pipe'],
-		shell: true
+		stdio: ['ignore', 'pipe', 'pipe']
 	});
 
 	let stdoutData = '';
@@ -47,7 +46,7 @@ export function spawnTsgo(projectPath: string, config: { taskName: string; noEmi
 	});
 
 	return new Promise<void>((resolve, reject) => {
-		child.on('exit', code => {
+		child.on('close', code => {
 			const allOutput = stdoutData + '\n' + stderrData;
 			const lines = allOutput
 				.split(/\r?\n/)
@@ -58,14 +57,11 @@ export function spawnTsgo(projectPath: string, config: { taskName: string; noEmi
 
 			runReporter(lines.join('\n'));
 
-		if (code === 0) {
-			Promise.resolve(onComplete?.()).then(() => resolve(), reject);
-		} else {
-			// tsgo type-check errors are non-fatal — log but don't reject.
-			// This prevents individual extension type errors from failing the entire build.
-			fancyLog(ansiColors.yellow(`tsgo exited with code ${code ?? 'unknown'} for ${projectPath} — type errors logged above (non-fatal)`));
-			Promise.resolve(onComplete?.()).then(() => resolve(), reject);
-		}
+			if (code === 0) {
+				Promise.resolve().then(() => onComplete?.()).then(() => resolve(), reject);
+			} else {
+				reject(new Error(`tsgo exited with code ${code ?? 'unknown'} for ${projectPath}\n${lines.join('\n')}`));
+			}
 		});
 
 		child.on('error', err => {
