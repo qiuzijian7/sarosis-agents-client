@@ -839,8 +839,10 @@ test('installer pipelines propagate build failure and only archive after success
 		const { build, archive, run } = installerPipelineSteps(file, buildName);
 		assert.match(build, /continue-on-error: false/);
 		assert.equal(run.trim(), `powershell -ExecutionPolicy Bypass -File ${script}\nexit $LASTEXITCODE`);
-		// 蓝盾 PAC 不接受步骤级 `if: null`（流水线更新报 yaml 不合法）；无条件步骤必须省略 if。
-		assert.doesNotMatch(archive, /^\s*if:/m);
+		// BK-CI V3 step.if 只接受字符串/对象；`if: null` 会让 PAC schema 校验失败。
+		// “仅前序成功后归档”必须显式写成 success()。
+		assert.match(archive, /if: success\(\)/);
+		assert.doesNotMatch(archive, /if: null/);
 		assert.match(archive, /continue-on-error: false/);
 		assert.match(archive, /filePath: \.build\/win32-x64\/user-setup\/VsSarosUserSetup\.exe/);
 	}
