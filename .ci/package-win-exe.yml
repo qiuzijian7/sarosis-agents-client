@@ -242,8 +242,7 @@ stages:
         shell: powershell
       - name: Archive installers
         id: Rz97AF
-        # BK-CI V3 step.if 只接受字符串/对象；用 null 表达“前序成功”会导致 PAC schema 校验失败。
-        if: success()
+        # 使用 BK-CI 默认的前序成功运行条件，避免不受支持的 success() 表达式。
         continue-on-error: false
         uses: UploadArtifactory@8.*
         with:

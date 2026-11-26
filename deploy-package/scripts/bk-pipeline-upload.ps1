@@ -16,6 +16,24 @@ $ErrorActionPreference = "Stop"
 # Disable Expect: 100-continue for any .NET HTTP calls
 [System.Net.ServicePointManager]::Expect100Continue = $false
 
+function Invoke-UploadCurl {
+    param([string]$Executable, [string[]]$Arguments)
+
+    $savedPreference = [System.Management.Automation.ActionPreference]::Stop
+    $currentPreference = Get-Variable -Name ErrorActionPreference -ValueOnly -ErrorAction SilentlyContinue
+    if ($null -ne $currentPreference) {
+        $savedPreference = [System.Management.Automation.ActionPreference]$currentPreference
+    }
+    $ErrorActionPreference = 'Continue'
+    try {
+        $commandOutput = & $Executable @Arguments 2>&1
+        $commandExitCode = $LASTEXITCODE
+        return [pscustomobject]@{ Output = @($commandOutput); ExitCode = $commandExitCode }
+    } finally {
+        $ErrorActionPreference = $savedPreference
+    }
+}
+
 # ---- Config ----
 $UpdateServer = $env:SAROS_UPDATE_SERVER
 if (-not $UpdateServer) { $UpdateServer = "http://zijianqiu-any1.devcloud.woa.com:3030" }
@@ -174,14 +192,9 @@ foreach ($pkg in $packages) {
         # PowerShell 5.1 会把本机命令的 stderr 转成 ErrorRecord；在 $ErrorActionPreference=Stop
         # 下 curl 的任何告警都会抛 NativeCommandError 并终止整个脚本 —— 3 次重试和第二个
         # 安装包都跑不到。调用期间临时降级为 Continue，让重试与错误汇总真正生效。
-        $prevErrorAction = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            $output = & $curlExe @curlArgs 2>&1
-            $exitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $prevErrorAction
-        }
+        $curlResult = Invoke-UploadCurl -Executable $curlExe -Arguments $curlArgs
+        $output = $curlResult.Output
+        $exitCode = $curlResult.ExitCode
 
         # Extract HTTP status code from last line of output
         $lines = ($output -join "`n").Trim().Split("`n")

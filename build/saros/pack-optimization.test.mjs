@@ -218,7 +218,7 @@ test('CLI rejects unknown targets and publication gates missing artifacts before
 	const release = fs.readFileSync(path.join(ROOT, 'build/saros/create-release.cjs'), 'utf8');
 	assertOrdered(release, "'--check-exes'", 'const changelog = buildChangelog');
 	const upload = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
-	assertOrdered(upload, '--check-exes', '& $curlExe');
+	assertOrdered(upload, '--check-exes', '$curlResult = Invoke-UploadCurl');
 });
 
 test('staging requires successful packaging, current identity and unchanged entry hashes', t => {
@@ -875,6 +875,55 @@ test('product installer entry points reject system before any build or manifest 
 	}
 });
 
+test('upload curl isolates error preference and preserves exit codes even when the snapshot is null', { skip: process.platform !== 'win32' }, () => {
+	const file = path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1').replace(/'/g, "''");
+	const script = `
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile('${file}', [ref]$tokens, [ref]$errors)
+if ($errors.Count -ne 0) { throw 'Invalid upload script syntax' }
+$fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-UploadCurl' }, $true)
+if (-not $fn) { throw 'Missing upload curl helper' }
+. ([scriptblock]::Create($fn.Extent.Text))
+$script:nullSnapshot = $false
+function Get-Variable {
+    param($Name, [switch]$ValueOnly, $ErrorAction)
+    if ($script:nullSnapshot) { return $null }
+    return Microsoft.PowerShell.Utility\\Get-Variable -Name $Name -ValueOnly
+}
+function Invoke-FakeCurl {
+    if ($ErrorActionPreference -ne 'Continue') { throw 'Curl stderr would abort upload' }
+    Write-Error 'fake native stderr'
+    Write-Output '200'
+    $global:LASTEXITCODE = $script:fakeExit
+}
+foreach ($preference in @('Stop', 'Continue')) {
+    foreach ($empty in @($false, $true)) {
+        foreach ($code in @(0, 55)) {
+            $ErrorActionPreference = $preference
+            $script:nullSnapshot = $empty
+            $script:fakeExit = $code
+            $value = Invoke-UploadCurl -Executable 'Invoke-FakeCurl' -Arguments @('dummy')
+            if ($value -isnot [pscustomobject] -or $value.ExitCode -ne $code) { throw 'Curl exit code lost' }
+            if (@($value.Output).Count -ne 2 -or $value.Output[-1] -ne '200') { throw 'Curl stderr or stdout lost' }
+            if ($ErrorActionPreference -ne $preference) { throw 'Caller preference changed' }
+        }
+    }
+}
+function Invoke-ThrowingCurl { throw 'transport failed' }
+try { Invoke-UploadCurl -Executable 'Invoke-ThrowingCurl' -Arguments @(); throw 'Expected transport error' } catch {
+    if ($_.Exception.Message -notmatch 'transport failed') { throw }
+}
+Write-Output 'UPLOAD_CURL_SCOPE_OK'
+`;
+	const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 30000 });
+	assert.equal(result.status, 0, result.stderr || result.error?.message);
+	assert.match(result.stdout, /UPLOAD_CURL_SCOPE_OK/);
+	const source = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
+	assert.match(source, /\$curlResult = Invoke-UploadCurl/);
+	assert.doesNotMatch(source, /\$prevErrorAction/);
+});
+
 function installerPipelineSteps(file, buildName) {
 	const source = fs.readFileSync(path.join(ROOT, file), 'utf8').replace(/\r\n/g, '\n');
 	const buildStart = source.indexOf(`name: ${buildName}`);
@@ -900,10 +949,7 @@ test('installer pipelines propagate build failure and only archive after success
 		const { build, archive, run } = installerPipelineSteps(file, buildName);
 		assert.match(build, /continue-on-error: false/);
 		assert.equal(run.trim(), `powershell -ExecutionPolicy Bypass -File ${script}\nexit $LASTEXITCODE`);
-		// BK-CI V3 step.if 只接受字符串/对象；`if: null` 会让 PAC schema 校验失败。
-		// “仅前序成功后归档”必须显式写成 success()。
-		assert.match(archive, /if: success\(\)/);
-		assert.doesNotMatch(archive, /if: null/);
+		assert.doesNotMatch(archive, /^\s*if:/m, 'BK-CI archive must use the default previous-success condition');
 		assert.match(archive, /continue-on-error: false/);
 		assert.match(archive, /filePath: \.build\/win32-x64\/user-setup\/VsSarosUserSetup\.exe/);
 	}

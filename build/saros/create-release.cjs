@@ -109,9 +109,9 @@ function parseCurlResponse(out) {
 function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSec = 600, fallbackBearer = false } = {}) {
 	/** 构造 curl 参数（★ 把"参数拼装"抽出来，重试时才能用**不同的头**重建一份）。 */
 	const buildArgs = (hdrs) => {
-		const a = ['-sS', '-X', method, '--globoff',
+		const a = ['-q', '-sS', '-X', method, '--globoff',
 			'--connect-timeout', '30', '--max-time', String(timeoutSec),
-			'-H', 'Expect:', '-w', '\n%{http_code}'];
+			'-H', 'Expect:', '-w', `@${statusFormatFile.replace(/\\/g, '/')}`];
 		for (const [k, v] of Object.entries(hdrs)) { a.push('-H', `${k}: ${v}`); }
 		if (json !== undefined) {
 			// ★★ 2026-10-21 **关键修复**：请求体必须真的送到 API。
@@ -137,28 +137,42 @@ function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSe
 		return a;
 	};
 
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'saros-release-curl-'));
+	const statusFormatFile = path.join(tempDir, 'http-status.txt');
 	let tmpFile = null;
-	if (json !== undefined) {
-		tmpFile = path.join(os.tmpdir(), `saros-release-${process.pid}-${Date.now()}.json`);
-		fs.writeFileSync(tmpFile, JSON.stringify(json), 'utf8');
-	}
 
 	const run = (args) => {
 		let out;
 		try {
 			out = execFileSync(CURL_BIN, args, {
-				encoding: 'utf8', timeout: (timeoutSec + 60) * 1000, maxBuffer: 32 * 1024 * 1024,
+				encoding: 'utf8', timeout: (timeoutSec + 60) * 1000, maxBuffer: 32 * 1024 * 1024, shell: false,
+				stdio: ['pipe', 'pipe', 'pipe'],
 			});
 		} catch (e) {
-			const detail = [e?.stderr, e?.stdout, e?.message]
+			let detail = [e?.stderr, e?.stdout, e?.message]
 				.map(value => typeof value === 'string' ? value.trim() : '')
 				.filter(Boolean).join('\n');
+			for (const [name, value] of Object.entries(headers)) {
+				if (/token|authorization/i.test(name) && value) {
+					detail = detail.split(String(value)).join('[redacted]');
+					detail = detail.split(String(value).replace(/^Bearer\s+/i, '')).join('[redacted]');
+				}
+			}
 			throw new Error(`curl ${method} ${url} failed: ${detail}`);
 		}
-		return parseCurlResponse(out);
+		const response = parseCurlResponse(out);
+		if (response.status < 100 || response.status > 599) {
+			throw new Error(`curl ${method} ${url} returned no valid HTTP status (binary: ${CURL_BIN})`);
+		}
+		return response;
 	};
 
 	try {
+		fs.writeFileSync(statusFormatFile, '\\n%{http_code}', 'utf8');
+		if (json !== undefined) {
+			tmpFile = path.join(tempDir, 'request.json');
+			fs.writeFileSync(tmpFile, JSON.stringify(json), 'utf8');
+		}
 		const first = run(buildArgs(headers));
 		// ★ 2026-10-21：工蜂的令牌有两种形态 —— 私人令牌走 `PRIVATE-TOKEN`，OAuth/Bearer 令牌走
 		//   `Authorization: Bearer`（同一个令牌用错头就是 401）。CI 的 WOA_GITLAB_TOKEN 是前者，
@@ -175,7 +189,7 @@ function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSe
 		}
 		return first;
 	} finally {
-		if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch { /* ignore */ } }
+		fs.rmSync(tempDir, { recursive: true, force: true });
 	}
 }
 
