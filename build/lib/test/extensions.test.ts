@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { test, type TestContext } from 'node:test';
 import es from 'event-stream';
 import File from 'vinyl';
@@ -120,6 +121,25 @@ test('esbuild wrapper forwards watch and propagates configuration failure', asyn
 	assert.ok(JSON.parse(fs.readFileSync(capture, 'utf8')).includes('--watch'));
 	fs.writeFileSync(config, 'process.exit(19);');
 	await assert.rejects(esbuildExtensions('fixture', false, [{ script: config }]), /exit code 19/);
+});
+
+test('noEmit gates refresh cached diagnostics after type roots change', async t => {
+	const directory = fixture(t);
+	const project = path.join(directory, 'tsconfig.json');
+	const source = path.join(directory, 'index.ts');
+	const config = { compilerOptions: { target: 'es2024', types: [] as string[], typeRoots: ['./types'] }, files: ['index.ts'] };
+	fs.writeFileSync(project, JSON.stringify(config));
+	fs.writeFileSync(source, 'export const value: string = fixtureGlobal;');
+	const compiler = path.resolve(import.meta.dirname, '../../../node_modules/@typescript/native-preview/bin/tsgo.js');
+	const seeded = spawnSync(process.execPath, [compiler, '--project', project, '--incremental', '--noEmit'], { encoding: 'utf8', timeout: 60000 });
+	assert.equal(seeded.status, 2, seeded.stderr || seeded.error?.message);
+	assert.match(seeded.stdout, /TS2304/);
+	fs.mkdirSync(path.join(directory, 'types/custom'), { recursive: true });
+	fs.writeFileSync(path.join(directory, 'types/custom/index.d.ts'), 'declare const fixtureGlobal: string;');
+	config.compilerOptions.types = ['custom'];
+	fs.writeFileSync(project, JSON.stringify(config));
+	await spawnTsgo(project, { taskName: 'fresh type roots', noEmit: true });
+	assert.equal(fs.existsSync(path.join(directory, 'index.js')), false);
 });
 
 test('tsgo errors reject without invoking completion and spaced project paths work', async t => {

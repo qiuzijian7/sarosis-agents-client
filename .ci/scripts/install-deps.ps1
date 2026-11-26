@@ -213,6 +213,11 @@ foreach ($extDir in $extRoots) {
     Pop-Location
   }
 }
+$markdownNodeTypes = 'extensions\markdown-math\node_modules\@types\node\index.d.ts'
+if (-not (Test-Path $markdownNodeTypes -PathType Leaf)) {
+  Write-Error ('Markdown notebook Node type dependency missing: ' + $markdownNodeTypes)
+  exit 1
+}
 Write-Host "[OK] Extension dependencies installed"
 
 # ===== 8b. Install .vscode/extensions dependencies =====

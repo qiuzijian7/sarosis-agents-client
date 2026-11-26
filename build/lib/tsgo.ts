@@ -24,11 +24,11 @@ export function spawnTsgo(projectPath: string, config: { taskName: string; noEmi
 		}
 	}
 
-	const args = [tsgo, '--project', projectPath, '--pretty', 'false', '--incremental'];
+	const args = [tsgo, '--project', projectPath, '--pretty', 'false'];
 	if (config.noEmit) {
-		args.push('--noEmit');
+		args.push('--noEmit', '--incremental', 'false');
 	} else {
-		args.push('--sourceMap', '--inlineSources');
+		args.push('--incremental', '--sourceMap', '--inlineSources');
 	}
 	const child = cp.spawn(process.execPath, args, {
 		cwd: root,
