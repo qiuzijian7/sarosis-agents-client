@@ -22,11 +22,12 @@
  */
 'use strict';
 
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { ensureReleaseLinks, assertExpectedLinks, assertReleaseVersion, assertTagCommit } = require('./release-links.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -50,14 +51,37 @@ const MAC_ARCH = process.env.SAROS_MAC_ARCH || (process.arch === 'arm64' ? 'arm6
  * 还出现 `bad range` / `%http_cod` 等怪象；原生 curl 没有这类参数兼容问题。
  * 可用 SAROS_CURL_BIN 显式指定；macOS/Linux 仍用系统 curl。
  */
-function resolveCurlBin() {
+function curlCandidates() {
 	const override = String(process.env.SAROS_CURL_BIN || '').trim();
-	if (override) { return override; }
-	if (!IS_WIN) { return 'curl'; }
-	const native = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'curl.exe');
-	return fs.existsSync(native) ? native : 'curl.exe';
+	const command = override || (IS_WIN ? 'curl.exe' : 'curl');
+	const searchPath = String(process.env.PATH || process.env.Path || '').split(path.delimiter)
+		.map(dir => dir.trim().replace(/^"|"$/g, '')).filter(dir => dir && path.isAbsolute(dir));
+	if (override && (path.isAbsolute(command) || /[\\/]/.test(command))) { return [path.resolve(command)]; }
+	const candidates = [];
+	if (IS_WIN && !override) {
+		candidates.push(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'curl.exe'));
+		for (const dir of searchPath) {
+			if (/[\\/]Git[\\/]usr[\\/]bin[\\/]?$/i.test(dir)) {
+				candidates.push(path.resolve(dir, '..', '..', 'mingw64', 'bin', 'curl.exe'));
+			}
+		}
+		for (const base of [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean)) {
+			candidates.push(path.join(base, 'Git', 'mingw64', 'bin', 'curl.exe'));
+		}
+	}
+	candidates.push(...searchPath.map(dir => path.join(dir, command)));
+	return [...new Set(candidates)].filter(file => {
+		try { return fs.statSync(file).isFile(); } catch { return false; }
+	});
 }
-const CURL_BIN = resolveCurlBin();
+
+function resolveCurlBin() {
+	const candidates = curlCandidates();
+	if (!candidates.length) { throw new Error('找不到 curl 可执行文件；请安装原生 curl，并通过 SAROS_CURL_BIN 指定绝对路径'); }
+	return candidates[0];
+}
+let CURL_BIN = resolveCurlBin();
+const CURL_STATUS_FORMAT = '\\n%{http_code}';
 
 /**
  * 发布资产：Windows 仅出 User Inno 安装包；macOS 出 dmg（对外分发）+ zip（**自动更新用**）。
@@ -74,10 +98,11 @@ function log(msg) { console.log(`[release] ${msg}`); }
 function warn(msg) { console.warn(`[release][WARN] ${msg}`); }
 
 function parseArgs(argv) {
-	const args = { version: null, dryRun: false };
+	const args = { version: null, dryRun: false, checkCurl: false };
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === '--version') { args.version = argv[++i]; }
 		else if (argv[i] === '--dry-run') { args.dryRun = true; }
+		else if (argv[i] === '--check-curl') { args.checkCurl = true; }
 	}
 	return args;
 }
@@ -102,6 +127,60 @@ function parseCurlResponse(out) {
 	return { status, data };
 }
 
+/** Remove credential values before truncating diagnostics, including tokens split across output boundaries. */
+function redactCurlDiagnostic(value, headers = {}) {
+	let text = Buffer.isBuffer(value) ? value.toString('utf8') : String(value ?? '');
+	const secrets = Object.entries(headers).filter(([name]) => /token|authorization|cookie|api.?key/i.test(name))
+		.flatMap(([, secret]) => [String(secret), String(secret).replace(/^Bearer\s+/i, '')]).filter(Boolean);
+	for (const secret of secrets.sort((a, b) => b.length - a.length)) {
+		for (const variant of new Set([secret, encodeURIComponent(secret)])) { text = text.split(variant).join('[redacted]'); }
+	}
+	text = text.replace(/(Bearer\s+)[^\s"',;]+/gi, '$1[redacted]')
+		.replace(/((?:PRIVATE-TOKEN|Authorization|Cookie|Set-Cookie)\s*:\s*)[^\r\n]+/gi, '$1[redacted]')
+		.replace(/([?&](?:access_token|refresh_token|token|password|secret|api_key)=)[^\s&#"']+/gi, '$1[redacted]')
+		.replace(/("(?:access_token|refresh_token|token|password|secret)"\s*:\s*")[^"]*(")/gi, '$1[redacted]$2')
+		.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '?');
+	return text.length <= 2_000 ? text : `${text.slice(0, 1_200)}\n…（诊断已截断）…\n${text.slice(-600)}`;
+}
+
+/** Local-only probe: check the selected implementation and exact stdin/output-file transport before any HTTP request. */
+function curlPreflight() {
+	const failures = [];
+	for (const binary of curlCandidates()) {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'saros-curl-probe-'));
+		try {
+			const version = spawnSync(binary, ['-q', '--version'], { encoding: 'utf8', timeout: 5_000, shell: false, windowsHide: true });
+			const banner = String(version.stdout || '').split(/\r?\n/)[0];
+			if (version.error || version.status !== 0 || !/^curl \d+\.\d+/i.test(banner)
+				|| (IS_WIN && /cygwin|msys/i.test(banner)) || !/^Protocols:.*\bhttps\b/im.test(String(version.stdout))) {
+				throw new Error(`不兼容的 curl 实现：${banner || '(no version)'}; ${version.error?.code || ''} ${version.stderr || ''}`);
+			}
+			const inputFile = path.join(tempDir, 'input.txt');
+			const outputFile = path.join(tempDir, 'output.txt');
+			const payload = 'curl 状态格式自检 &';
+			fs.writeFileSync(inputFile, payload, 'utf8');
+			const probe = spawnSync(binary, ['-q', '-sS', '--globoff', '--proto', '=file', '--max-time', '5',
+				'-o', outputFile.replace(/\\/g, '/'), '-w', '@-', pathToFileURL(inputFile).href], {
+				encoding: 'utf8', input: CURL_STATUS_FORMAT, timeout: 10_000, shell: false, windowsHide: true,
+			});
+			if (probe.error || probe.status !== 0 || String(probe.stdout || '').trim() !== '000'
+				|| !fs.existsSync(outputFile) || fs.readFileSync(outputFile, 'utf8') !== payload) {
+				throw new Error(`curl 标准输入状态格式/文件路径自检失败；exit=${probe.status}; stdout=${probe.stdout || '(empty)'}; stderr=${probe.stderr || '(empty)'}`);
+			}
+			CURL_BIN = binary;
+			log(`curl=${binary}`);
+			log(`curl version: ${redactCurlDiagnostic(banner)}`);
+			log('curl local transport preflight passed (stdin write-out + separate response file)');
+			return { binary, version: banner };
+		} catch (error) {
+			failures.push(`${binary}: ${error.message}`);
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	}
+	throw new Error(redactCurlDiagnostic(`没有通过兼容性自检的 curl；请通过 SAROS_CURL_BIN 指定原生 curl 绝对路径。\n${failures.join('\n')}`));
+}
+
 /**
  * HTTP via curl. Returns { status, data }.
  * Exactly one of json / formFile / uploadFile may be set.
@@ -111,7 +190,7 @@ function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSe
 	const buildArgs = (hdrs) => {
 		const a = ['-q', '-sS', '-X', method, '--globoff',
 			'--connect-timeout', '30', '--max-time', String(timeoutSec),
-			'-H', 'Expect:', '-w', `@${statusFormatFile.replace(/\\/g, '/')}`];
+			'-H', 'Expect:', '-o', responseFile.replace(/\\/g, '/'), '-w', '@-'];
 		for (const [k, v] of Object.entries(hdrs)) { a.push('-H', `${k}: ${v}`); }
 		if (json !== undefined) {
 			// ★★ 2026-10-21 **关键修复**：请求体必须真的送到 API。
@@ -131,44 +210,44 @@ function curl(method, url, { headers = {}, json, formFile, uploadFile, timeoutSe
 			const formPath = String(formFile.path).replace(/\\/g, '/');
 			a.push('-F', `file=@${formPath};type=application/octet-stream;filename=${formFile.name}`);
 		} else if (uploadFile) {
-			a.push('-H', 'Content-Type: application/octet-stream', '--upload-file', uploadFile);
+			a.push('-H', 'Content-Type: application/octet-stream', '--upload-file', String(uploadFile).replace(/\\/g, '/'));
 		}
 		a.push(url);
 		return a;
 	};
 
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'saros-release-curl-'));
-	const statusFormatFile = path.join(tempDir, 'http-status.txt');
+	const responseFile = path.join(tempDir, 'response.json');
 	let tmpFile = null;
 
 	const run = (args) => {
-		let out;
+		fs.writeFileSync(responseFile, '', 'utf8');
+		let result;
 		try {
-			out = execFileSync(CURL_BIN, args, {
-				encoding: 'utf8', timeout: (timeoutSec + 60) * 1000, maxBuffer: 32 * 1024 * 1024, shell: false,
-				stdio: ['pipe', 'pipe', 'pipe'],
+			result = spawnSync(CURL_BIN, args, {
+				encoding: 'utf8', input: CURL_STATUS_FORMAT, timeout: (timeoutSec + 60) * 1000,
+				maxBuffer: 32 * 1024 * 1024, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
 			});
-		} catch (e) {
-			let detail = [e?.stderr, e?.stdout, e?.message]
-				.map(value => typeof value === 'string' ? value.trim() : '')
-				.filter(Boolean).join('\n');
-			for (const [name, value] of Object.entries(headers)) {
-				if (/token|authorization/i.test(name) && value) {
-					detail = detail.split(String(value)).join('[redacted]');
-					detail = detail.split(String(value).replace(/^Bearer\s+/i, '')).join('[redacted]');
-				}
-			}
-			throw new Error(`curl ${method} ${url} failed: ${detail}`);
+		} catch (error) {
+			throw new Error(redactCurlDiagnostic(`curl ${method} ${url} failed: ${error.message}`, headers));
 		}
-		const response = parseCurlResponse(out);
-		if (response.status < 100 || response.status > 599) {
-			throw new Error(`curl ${method} ${url} returned no valid HTTP status (binary: ${CURL_BIN})`);
+		const out = String(result.stdout ?? '').trim();
+		const status = /^\d{3}$/.test(out) ? Number(out) : 0;
+		if (result.error || result.status !== 0 || status < 100 || status > 599) {
+			const reason = result.error || result.status !== 0 ? 'failed' : 'returned no valid HTTP status';
+			const detail = `curl ${method} ${url} ${reason} (binary: ${CURL_BIN}; exit: ${result.status ?? 'none'}; signal: ${result.signal ?? 'none'}; HTTP: ${out || 'missing'})`
+				+ `\nstdout: ${result.stdout || '(empty)'}\nstderr: ${result.stderr || '(empty)'}`
+				+ (result.error ? `\nspawn: ${result.error.code || ''} ${result.error.message}` : '')
+				+ '\n请运行 --check-curl 检查 curl 路径及格式能力；不会自动重发状态不明的写请求。';
+			throw new Error(redactCurlDiagnostic(detail, headers));
 		}
-		return response;
+		const body = fs.readFileSync(responseFile, 'utf8');
+		let data;
+		try { data = JSON.parse(body); } catch { data = body; }
+		return { status, data };
 	};
 
 	try {
-		fs.writeFileSync(statusFormatFile, '\\n%{http_code}', 'utf8');
 		if (json !== undefined) {
 			tmpFile = path.join(tempDir, 'request.json');
 			fs.writeFileSync(tmpFile, JSON.stringify(json), 'utf8');
@@ -622,6 +701,8 @@ async function githubCreateRelease(tag, changelog, dryRun) {
 // ---------- main ----------
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
+	if (args.checkCurl) { curlPreflight(); return; }
+	if (!args.dryRun) { curlPreflight(); }
 	const version = resolveVersion(args);
 	const tag = `v${version}`;
 	log(`version=${version} tag=${tag}${args.dryRun ? ' (dry-run)' : ''}`);
@@ -665,4 +746,4 @@ if (require.main === module) {
 }
 
 // 仅供回归测试复用；直接 `node create-release.cjs` 时仍只执行 main。
-module.exports = { curl, gitlabPreflight, gitlabToken, parseCurlResponse, resolveCurlBin };
+module.exports = { curl, curlPreflight, gitlabPreflight, gitlabToken, parseCurlResponse, redactCurlDiagnostic, resolveCurlBin };
