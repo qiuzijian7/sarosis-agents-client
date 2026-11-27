@@ -287,6 +287,22 @@ test('真实apply的兜底等待appReady，慢启动60秒也不提前扫描', as
 	assert.equal(presets.definitions.size, 0);
 });
 
+test('真实rescan日志区分触发来源、签名扫描、最近会话与花名册读取', async t => {
+	const config = await fixture(t);
+	await writeAgent(join(config.dataRoot, 'agents'), 'timed-helper', '计时助手');
+	const host = hostFixture(presetFixture(), { onReady() { return () => {}; } });
+	beforeFixtureRemove(config, host.close);
+	const records = [];
+	t.mock.method(console, 'log', value => records.push(String(value)));
+	const { apply } = await import('../lib/index.js');
+	apply(host.ctx, config);
+	await host.services.get('vssarosAgents').rescan();
+	for (const phase of ['source-signature', 'agent-scan', 'recent-sessions', 'preset-roster']) {
+		assert.ok(records.some(line => line.includes(`phase=${phase} reason=service-rescan`) && /outcome=ok durationMs=\d+/.test(line)), phase);
+	}
+	await host.close();
+});
+
 test('服务注册等待在飞同步；lazy 下插件立即可用，附件与异步撤销共享事实', async (t) => {
 	const config = await fixture(t);
 	for (let i = 0; i < 4; i++) { await writeAgent(join(config.dataRoot, 'agents'), `user-${i}`, `用户${i}`); }

@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 window.__ModuleLoader__.load({
+	id: "@vssaros/dsh-chat-surface",
 	chunk: "client.interactionRecovery.js",
 	factory: require => {
 		const react = require("react");

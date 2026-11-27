@@ -151,19 +151,22 @@ function bundledMediaBinDir(): string | undefined {
 }
 
 /** 在指定根下有限深度找某个文件，返回所在目录。 */
-function findMediaBinDir(root: string, fileName: string, depth = 5): string | undefined {
-	if (depth < 0 || !existsSync(root)) { return undefined; }
-	let entries: { name: string; isFile(): boolean; isDirectory(): boolean }[];
-	try { entries = readdirSync(root, { withFileTypes: true }); } catch { return undefined; }
-	for (const entry of entries) {
-		const child = join(root, entry.name);
-		if (entry.isFile() && entry.name.toLowerCase() === fileName.toLowerCase()) { return root; }
-		if (entry.isDirectory()) {
-			const found = findMediaBinDir(child, fileName, depth - 1);
-			if (found) { return found; }
+export function findMediaBinDirs(root: string, fileNames: readonly string[], depth = 5): Map<string, string> {
+	const found = new Map<string, string>();
+	const wanted = new Set(fileNames.map(name => name.toLowerCase()));
+	const visit = (dir: string, remaining: number): void => {
+		if (remaining < 0 || found.size === wanted.size) { return; }
+		let entries: { name: string; isFile(): boolean; isDirectory(): boolean }[];
+		try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+		for (const entry of entries) {
+			const name = entry.name.toLowerCase();
+			if (entry.isFile() && wanted.has(name) && !found.has(name)) { found.set(name, dir); }
+			else if (entry.isDirectory()) { visit(join(dir, entry.name), remaining - 1); }
+			if (found.size === wanted.size) { return; }
 		}
-	}
-	return undefined;
+	};
+	visit(root, depth);
+	return found;
 }
 
 /**
@@ -194,10 +197,9 @@ function mediaBinDirsForHost(componentRoot: string | undefined): string[] {
 				for (const entry of entries) {
 					if (!entry.isDirectory() || !/ffmpeg|yt-dlp/i.test(entry.name)) { continue; }
 					const root = join(packages, entry.name);
-					for (const file of ['ffmpeg.exe', 'yt-dlp.exe']) {
-						const found = findMediaBinDir(root, file);
-						if (found) { push(found); }
-					}
+					const files = ['ffmpeg.exe', 'yt-dlp.exe'];
+					const found = findMediaBinDirs(root, files);
+					for (const file of files) { push(found.get(file)); }
 				}
 			}
 			if (process.env.ProgramFiles) { push(join(process.env.ProgramFiles, 'ffmpeg', 'bin')); }
@@ -1290,7 +1292,7 @@ export class DshHostSupervisor extends Disposable {
 			//     实测 Electron 跑 `pnpm install` 会在并发安装阶段崩（见 `injectBundledPnpm` 的注释）。
 			// ★ 2026-11-21：传 app 根 + 日志 ⇒ PATH 上不是 pin 版本时也强制锁到随包那份
 			//   （启动装插件与运行时装插件若各用一个 pnpm 版本，会交替重算整棵 profile 依赖树）。
-			injectBundledPnpm(env, node.path, this._appRoot(), line => this._appendLog(line));
+			await trace.measure('pnpm-inject', () => injectBundledPnpm(env, node.path, this._appRoot(), line => this._appendLog(line)));
 			// ★ 2026-10-15：把**随包媒体二进制目录**（ffmpeg / ffprobe / yt-dlp / whisper…，打包管线
 			//   `build/saros/strip-before-pack.mjs` 的 ensureOptionalBin 段）注入 Host 的 PATH ⇒
 			//   dsh 会话里的 shell 工具（execute_code / bash / pwsh）能直接用**裸命令名**解析它们。
@@ -1300,7 +1302,7 @@ export class DshHostSupervisor extends Disposable {
 			//   想用自己的版本 ⇒ 设 `FFMPEG_PATH` / `YTDLP_PATH`（IDE 侧媒体工具认得它们，Host 原样继承 ✓）。
 			//   ⚠ Windows 的 PATH 键大小写不固定（`Path` / `PATH` 都有）⇒ 必须**按现有键的原样大小写**改，
 			//   否则子进程会同时拿到两个键、行为未定义 ✗。
-			const mediaBinDirs = mediaBinDirsForHost(this._opts.componentRoot);
+			const mediaBinDirs = await trace.measure('media-bin-scan', () => mediaBinDirsForHost(this._opts.componentRoot));
 			if (mediaBinDirs.length > 0) {
 				const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
 				env[pathKey] = `${mediaBinDirs.join(delimiter)}${delimiter}${env[pathKey] ?? ''}`;
@@ -2057,9 +2059,9 @@ export class DshHostSupervisor extends Disposable {
 				let hostLogFile: string | undefined;
 				let child;
 				if (this._keepAlive) {
-					await fsp.mkdir(this._opts.runDir, { recursive: true });
+					await trace.measure('host-log-dir', () => fsp.mkdir(this._opts.runDir, { recursive: true }));
 					hostLogFile = join(this._opts.runDir, `host-${randomBytes(4).toString('hex')}.log`);
-					const fd = await fsp.open(hostLogFile, 'a');
+					const fd = await trace.measure('host-log-open', () => fsp.open(hostLogFile!, 'a'));
 					// detached：独立进程组。**实测必需**——本机（Windows + Electron 父进程）里普通 spawn 的
 					// 子进程会随父进程退出被一并结束（对照实验：plain 死 / detached 活），
 					// 那样 keepAlive 只是"日志打了、Host 照样没了"。unref 让父进程不因它而保持存活。

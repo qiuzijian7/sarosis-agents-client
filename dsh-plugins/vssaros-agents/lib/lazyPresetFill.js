@@ -11,11 +11,11 @@ export function createLazyPresetFill(run, { delayMs = 15_000, setTimer = setTime
 	const cancelTimer = () => {
 		if (timer !== undefined) { clearTimer(timer); timer = undefined; }
 	};
-	const fillNow = () => {
+	const fillNow = (reason = 'preset-use') => {
 		if (disposed) { return Promise.resolve(); }
 		if (pending) { return pending; }
 		cancelTimer();
-		const attempt = Promise.resolve().then(() => disposed ? undefined : run());
+		const attempt = Promise.resolve().then(() => disposed ? undefined : run(reason));
 		pending = attempt;
 		void attempt.catch(() => { if (pending === attempt) { pending = undefined; } });
 		return attempt;
@@ -24,7 +24,7 @@ export function createLazyPresetFill(run, { delayMs = 15_000, setTimer = setTime
 		fillNow,
 		arm() {
 			if (disposed || pending || timer !== undefined) { return; }
-			timer = setTimer(() => { void fillNow().catch(() => undefined); }, delayMs);
+			timer = setTimer(() => { void fillNow('ready-fallback').catch(() => undefined); }, delayMs);
 			timer?.unref?.();
 		},
 		dispose() {

@@ -94,6 +94,19 @@ test('a failed first use can be retried instead of caching a permanent rejection
 	await f.fill.dispose();
 });
 
+test('fallback and explicit first use have distinct reason tags without changing coalescing', async () => {
+	const reasons = [];
+	const fallback = fixture(async reason => reasons.push(reason));
+	fallback.fill.arm(); fallback.fire();
+	await fallback.fill.fillNow('page-request');
+	assert.deepEqual(reasons, ['ready-fallback']);
+	await fallback.fill.dispose();
+	const explicit = fixture(async reason => reasons.push(reason));
+	await explicit.fill.fillNow('page-request');
+	assert.deepEqual(reasons, ['ready-fallback', 'page-request']);
+	await explicit.fill.dispose();
+});
+
 test('actual plugin wiring waits for appReady, retains on-demand gate and packages the helper', () => {
 	const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
 	assert.match(source, /ready\.onReady\(\(\) => fill\.arm\(\)\)/);

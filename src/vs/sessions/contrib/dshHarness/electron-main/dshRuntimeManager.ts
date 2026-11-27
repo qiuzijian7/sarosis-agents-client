@@ -24,7 +24,9 @@
  *   ⇒ 不再读写 `state.json`，不再有 `current` / `history` / `install()` / `setCurrent()`。
  */
 
-import { execFile, execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { createHash } from 'crypto';
+import { DshRuntimeProbeCache } from './dshRuntimeProbeCache.js';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { delimiter, dirname, join, resolve } from '../../../../base/common/path.js';
@@ -185,7 +187,7 @@ function bundledPnpmEntry(appRoot: string | undefined): IBundledPnpm | undefined
 			continue;
 		}
 		const pin = readPkgString(join(dirname(dirname(dir)), 'package.json'), 'devDependencies', 'pnpm');
-		if (pin && pin !== version) {
+		if (!pin || pin !== version || readPkgString(join(dirname(dirname(dir)), 'package.json'), 'packageManager') !== `pnpm@${pin}`) {
 			continue;
 		}
 		return { entry, version };
@@ -215,36 +217,13 @@ function hasPnpmOnPath(pathValue: string): boolean {
 }
 
 /**
- * 探测 PATH 上那份 pnpm 的版本。失败/超时返回 undefined ⇒ 按「版本未知」处理，仍注入 pin 版。
- * 按 PATH 缓存：一次会话里启动路径与安装路径各调一次 `injectBundledPnpm`，不必起两次进程。
- */
-let pnpmVersionCache: { key: string; version: string | undefined } | undefined;
-function pnpmVersionOnPath(pathValue: string, file: string): string | undefined {
-	const key = `${pathValue}\0${file}`;
-	if (pnpmVersionCache?.key === key) {
-		return pnpmVersionCache.version;
-	}
-	let version: string | undefined;
-	try {
-		const out = execFileSync(file, ['--version'], {
-			encoding: 'utf8', shell: isWindows, windowsHide: true, timeout: 4_000,
-		});
-		version = String(out).trim().split(/\s+/)[0] || undefined;
-	} catch {
-		version = undefined;
-	}
-	pnpmVersionCache = { key, version };
-	return version;
-}
-
-/**
  * 把**仓库 pin 的那份 pnpm** 前置到子进程 PATH：系统没有 pnpm，或系统版本不是 pin 版本时都做。
  *
  * ★★ 2026-10-29（真机：别人机器上 `'pnpm' 不是内部或外部命令` ⇒ 35 个随包插件全没装上 ⇒
  *   界面只剩 dsh 官方页）：「启动时装插件」已有直装兜底，但运行时（页面里装第三方插件/技能、
  *   `dsh plugin add`）仍要 pnpm ⇒ 产物必须自带一份。
- * ★★ 2026-11-21：**只在 PATH 上恰好是 pin 版本时才「尊重用户环境」**，其余一律锁到 pin
- *   ⇒ 启动路径与安装路径不会再各用一个版本交替重算 profile 的依赖树（见 bundledPnpmEntry 注释）。
+ * 有效的随包 pin 工具直接优先，不为未使用的 PATH 工具同步起版本探测进程。
+ * 启动与安装路径共用同一工具，缺 pin 或包不完整时保留诊断，不把错误版本当成已验证。
  *
  * shim 用 **Host 自己的 `node.path`** 跑 ⇒ 用户机器不需要装 node（dshNodeInstaller 会托管
  * 一个 ≥24.9.0 的 Node，满足 pnpm 11 的 ≥22.13 门槛）✓。
@@ -261,25 +240,16 @@ export function injectBundledPnpm(
 	const key = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
 	const current = env[key] ?? '';
 	const bundled = bundledPnpmEntry(appRoot);
-	const onPath = pnpmOnPath(current);
-	const onPathVersion = onPath ? pnpmVersionOnPath(current, onPath) : undefined;
 	if (!bundled) {
 		if (hasPnpmOnPath(current)) {
-			log(`⚠ 找不到仓库 pin 的 pnpm 整包 ⇒ 无法把 PATH 上的 ${onPathVersion ?? '未知版本'} 锁到 pin（dsh plugin add 可能重物化 profile 依赖树）`);
+			log('⚠ 找不到仓库 pin 的 pnpm 整包 ⇒ 无法锁定 PATH 上的 pnpm（dsh plugin add 可能重物化 profile 依赖树）');
 		}
 		return;
 	}
-	if (hasPnpmOnPath(current) && onPathVersion === bundled.version) {
-		return; // PATH 上已经是 pin 版本 ⇒ 尊重用户环境
-	}
-	if (!nodeExe) {
-		return;
-	}
-	if (onPathVersion && onPathVersion !== bundled.version) {
-		log(`pnpm 版本锁定：PATH 上是 ${onPathVersion}，已前置仓库 pin 的 ${bundled.version}（避免 dsh plugin add 重算整棵依赖树）`);
-	}
+	if (!nodeExe) { return; }
 	try {
-		const dir = join(tmpdir(), 'vssaros-pnpm-shim');
+		const identity = createHash('sha256').update(nodeExe).update('\0').update(bundled.entry).update('\0').update(bundled.version).digest('hex').slice(0, 16);
+		const dir = join(tmpdir(), 'vssaros-pnpm-shim', identity);
 		mkdirSync(dir, { recursive: true });
 		// 每次启动都重写（tmp 可能被清理；幂等且只有几百字节）
 		//
@@ -342,6 +312,7 @@ function run(file: string, args: readonly string[], opts: { timeout?: number; en
 }
 
 export class DshRuntimeManager {
+	private readonly _probeCache = new DshRuntimeProbeCache();
 
 	constructor(
 		/** 用户数据根：收敛后只剩「托管便携 Node」一个用途（`<userData>/dsh-runtime/node/`）；不再是 dsh 版本池。 */
@@ -407,7 +378,9 @@ export class DshRuntimeManager {
 
 		const rejected: string[] = [];
 		for (const c of candidates) {
-			const r = await run(c.path, ['-p', 'process.version + "\\n" + process.execPath'], { timeout: 10_000 });
+			const r = await this._probeCache.run([c.path],
+				() => run(c.path, ['-p', 'process.version + "\\n" + process.execPath'], { timeout: 10_000 }),
+				value => value.code === 0 && isSupportedNodeVersion(value.stdout.trim().split(/\r?\n/)[0]));
 			const [version, execPath] = r.stdout.trim().split(/\r?\n/);
 			if (r.code !== 0 || !version) {
 				rejected.push(`${c.path}: 无法执行`);
@@ -424,6 +397,7 @@ export class DshRuntimeManager {
 
 	/** 下载并安装托管便携 Node（`<managedRoot>/node/`）。 */
 	installNode(fetchImpl: FetchLike, opts: { mirror?: string; version?: string } = {}): Promise<INodeInstallResult> {
+		this._probeCache.clear();
 		return installManagedNode({ managedRoot: this.managedRoot, fetch: fetchImpl, log: this._log, ...opts });
 	}
 
@@ -474,7 +448,9 @@ export class DshRuntimeManager {
 	}
 
 	private async _probeDshVersion(node: IResolvedNode, bin: string): Promise<string> {
-		const r = await run(node.path, [bin, '--version'], { timeout: 20_000 });
+		const r = await this._probeCache.run([node.path, bin],
+			() => run(node.path, [bin, '--version'], { timeout: 20_000 }),
+			value => value.code === 0 && !!value.stdout.trim());
 		const v = r.stdout.trim().split(/\r?\n/).pop() ?? '';
 		if (r.code !== 0 || !v) {
 			throw new Error(`dsh --version 失败（${bin}）：${(r.stderr || r.stdout).trim().slice(-400)}`);

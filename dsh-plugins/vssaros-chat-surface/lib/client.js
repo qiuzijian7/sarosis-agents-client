@@ -796,7 +796,10 @@ window.__ModuleLoader__.load({
 			// ★ 2026-11-03（用户要求）：右上角「Bot ⚙」（client.botSettingsBtn.js）已删 —— bot 配置统一进
 			//   会话视图的「设置」页签（client.conversationViews.js，order 60，与记忆设置合并）。
 			Promise.resolve().then(() => require.async("./client.promptTransport.js"))
-				.then(part => part.install(ctx, { bridge, state }))
+				.then(async part => {
+					await part.install(ctx, { bridge, state });
+					if (state.partErrors) { delete state.partErrors["client.promptTransport.js"]; }
+				})
 				.catch(error => {
 					state.partErrors = Object.assign({}, state.partErrors, { "client.promptTransport.js": String(error?.message || error) });
 					console.error("[vssaros] prompt transport failed to load", error);

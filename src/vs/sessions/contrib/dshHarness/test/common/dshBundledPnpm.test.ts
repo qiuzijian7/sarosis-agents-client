@@ -92,12 +92,12 @@ suite('产物自带 pnpm', () => {
 		// dist 的完整性检查在 bundledPnpmEntry() 里（不在 injectBundledPnpm 的函数体内）⇒ 查全文
 		assert.match(runtime, /dist[\s\S]{0,120}?pnpm\.mjs/,
 			'必须同时确认 dist/pnpm.mjs 在位（pnpm 11 是目录分发，缺它会 ERR_MODULE_NOT_FOUND）');
-		assert.match(body, /hasPnpmOnPath\(/,
-			'必须先判 PATH 上有没有 pnpm（只在这里才谈得上「尊重用户环境」）');
-		// ★ 2026-11-21：版本比较必须是**真的**，只查常量名会被「常量还在、比较改成 >= 0」骗过
-		assert.match(body, /pnpmVersionOnPath\(/, '必须真去探测 PATH 上那份 pnpm 的版本');
-		assert.match(body, /onPathVersion === bundled\.version/,
-			'必须与 pin 版本做真实相等比较（只有版本一致才不注入；12.18.0 漂移不得无条件放行）');
+		assert.ok(!body.includes('pnpmVersionOnPath(') && !runtime.includes('execFileSync'),
+			'有固定随包工具时不许同步启动未使用的 PATH pnpm 探测进程');
+		assert.match(runtime, /!pin \|\| pin !== version/,
+			'自带工具必须真的匹配精确 pin，缺 pin 不能接受');
+		assert.match(runtime, /'packageManager'\) !== `pnpm@\$\{pin\}`/,
+			'packageManager 必须匹配 devDependencies pin');
 		assert.match(runtime, /'devDependencies', 'pnpm'/,
 			'必须拿根 package.json 的 pin 校验自带那份，别把本机装错的版本冒充 pin');
 		assert.match(body, /nodeExe/,

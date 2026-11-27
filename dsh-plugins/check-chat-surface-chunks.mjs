@@ -27,7 +27,7 @@ const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z
 const PLUGIN_DIR = path.join(HERE, 'vssaros-chat-surface');
 const LIB = path.join(PLUGIN_DIR, 'lib');
 
-execFileSync(process.execPath, ['--test', path.join(PLUGIN_DIR, 'test', 'prompt-transport.test.mjs'), path.join(PLUGIN_DIR, 'test', 'interaction-recovery.test.mjs'), path.join(PLUGIN_DIR, 'test', 'submission-controls.test.mjs')], { stdio: 'inherit' });
+execFileSync(process.execPath, ['--test', path.join(PLUGIN_DIR, 'test', 'client-registration.test.mjs'), path.join(PLUGIN_DIR, 'test', 'prompt-transport.test.mjs'), path.join(PLUGIN_DIR, 'test', 'interaction-recovery.test.mjs'), path.join(PLUGIN_DIR, 'test', 'submission-controls.test.mjs')], { stdio: 'inherit' });
 
 /** 官方占位（真源：官方包里 registration 原文，行号写在这里，便于 dsh 升级后复核）。 */
 const OFFICIAL_ENTRIES = [

@@ -171,12 +171,12 @@ function scheduleLazyFill(state, config, total) {
 	if (state.lazyFill) {
 		return;
 	}
-	state.lazyFill = createLazyPresetFill(async () => {
+	state.lazyFill = createLazyPresetFill(async reason => {
 		state.lazyFilled = true;
 		state.lazyFillDone = false;
 		let completed = false;
 		try {
-			await syncSerial(state, state.presets, config, { force: true });
+			await syncSerial(state, state.presets, config, { force: true, reason });
 			completed = true;
 			console.warn(`[vssaros-agents] lazy 补齐完成：preset 共 ${state.registered.size} 个`);
 		} catch (e) {
@@ -666,13 +666,19 @@ async function disposeAllPresets(state) {
  */
 async function syncPresets(state, presets, config, options = {}) {
 	const { force = false } = options;
-	// ★ 2026-11-02 启动计时探针（只记录，不改行为）：拆 syncPresets 内部各段耗时。
-	const syncT0 = Date.now();
-	const mark = (label) => console.log(`[vssaros-agents] 计时 syncPresets ${label}：+${Date.now() - syncT0}ms（进程启动后 ${Math.round(process.uptime() * 1000)}ms）`);
+	const reason = /^[a-z-]{1,40}$/.test(options.reason ?? '') ? options.reason : 'internal';
+	const syncT0 = performance.now();
+	const mark = (label) => console.log(`[vssaros-agents] 计时 syncPresets ${label}：+${Math.round(performance.now() - syncT0)}ms（进程启动后 ${Math.round(process.uptime() * 1000)}ms；reason=${reason}）`);
+	const measure = async (phase, operation) => {
+		const started = performance.now();
+		let outcome = 'error';
+		try { const value = await operation(); outcome = 'ok'; return value; }
+		finally { console.log(`[vssaros-agents] sync phase=${phase} reason=${reason} force=${force} outcome=${outcome} durationMs=${Math.round(performance.now() - started)}`); }
+	};
 	mark('开始');
 	const provider = typeof config.defaultProvider === 'string' ? config.defaultProvider.trim() : '';
 	// ★ P0-2：签名只做 stat（不读正文），命中时连 scan/definition/register 全跳过。
-	const sourceSig = await quickScanSignatureOf(config);
+	const sourceSig = await measure('source-signature', () => quickScanSignatureOf(config));
 	const r = state.registrar;
 	const cache = r.cache;
 	if (!force && sourceSig && r.sourceSig === sourceSig && cache && state.registered.size > 0) {
@@ -684,7 +690,7 @@ async function syncPresets(state, presets, config, options = {}) {
 		mark('跳过（扫描签名未变）');
 		return cache.scan;
 	}
-	const scan = await scanAgentsFromConfig(config, undefined);
+	const scan = await measure('agent-scan', () => scanAgentsFromConfig(config, undefined));
 	mark(`扫描完成（${scan.agents.length} 个 agent）`);
 	const errors = [...scan.errors];
 	const diagnostics = [];
@@ -838,7 +844,7 @@ async function syncPresets(state, presets, config, options = {}) {
 	//     （supervisor 已改为 ready 后继续读）。
 	const lazyRequested = config?.presetMode !== 'eager' && process.env.VSSAROS_DSH_PRESET_MODE !== 'off';
 	const lazyMode = lazyRequested && !state.lazyFilled;
-	const recentPresets = (lazyMode ? await recentSessionPresetIds(config, { limit: 8 }) : []);
+	const recentPresets = (lazyMode ? await measure('recent-sessions', () => recentSessionPresetIds(config, { limit: 8 })) : []);
 	mark(`定义构造 + 最近会话读取完成（wanted ${wantedKeys.length}，missing ${missingKeys.length}，recent ${recentPresets.length}）`);
 	const eagerKeys = lazyMode
 		? pickLazyEagerKeys(wantedKeys, { delegatable: delegatablePresetIds, recent: recentPresets, max: LAZY_EAGER_MAX })
@@ -892,7 +898,7 @@ async function syncPresets(state, presets, config, options = {}) {
 		diagnostics.push({ agentId: key, presetId: entry.presetId, rows: 0, notes: ['源文件已消失 → 已注销该 preset'], changed: true });
 	}
 	try {
-		const roster = await presets.list();
+		const roster = await measure('preset-roster', () => presets.list());
 		state.roster = roster.map(p => p.id).filter(id => typeof id === 'string').sort();
 	} catch (e) {
 		errors.push(`读取花名册失败：${String(e?.message ?? e)}`);
@@ -954,6 +960,7 @@ async function syncSerial(state, presets, config, options = {}) {
  * 变了才排队真扫。写操作仍直接 `syncSerial(... wait)`，保证回包看到最新 registered。
  */
 async function scheduleSync(state, config, options = {}) {
+	options = { reason: 'page-read', ...options };
 	const presets = state.presets;
 	if (!presets) { return null; }
 	const r = state.registrar;
@@ -1529,7 +1536,7 @@ function applyTopLevel(ctx, config) {
 		if (!ready?.onReady) { fill.arm(); }
 		agentsBootSyncHook = (reason) => {
 			console.log(`[vssaros-agents] 延后首轮 preset 同步开始（${reason}）`);
-			return state.lazyFill?.fillNow() ?? Promise.resolve();
+			return state.lazyFill?.fillNow(reason) ?? Promise.resolve();
 		};
 		return async () => {
 			agentsBootSyncHook = null;
@@ -1589,7 +1596,7 @@ function applyTopLevel(ctx, config) {
 			const ids = parsed.agents.map(agent => agent.id);
 			sourceWithdrawals.add(withdraw);
 			try {
-				await syncSerial(state, state.presets, config);
+				await syncSerial(state, state.presets, config, { reason: 'source-register' });
 				if (!state.presets || !sourceWithdrawals.has(withdraw)) { throw new Error('agentPresets 服务已卸载'); }
 				const missing = ids.filter(id => !state.registered.has(id));
 				if (missing.length) { throw new Error(`插件 Bot 注册 preset 失败：${missing.join(', ')}；${state.errors.join('；')}`); }
@@ -1618,7 +1625,7 @@ function applyTopLevel(ctx, config) {
 			if (!state.presets) {
 				throw new Error('agentPresets 服务还没就绪（Host 还在启动）');
 			}
-			await syncSerial(state, state.presets, config);
+			await syncSerial(state, state.presets, config, { reason: 'service-rescan' });
 			return {
 				ok: true,
 				agentsRoot: agentsRootOf(config),
