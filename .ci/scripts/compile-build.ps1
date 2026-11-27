@@ -4,6 +4,11 @@ param([switch]$Mangle)
 $repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
+try {
+  . (Join-Path $PSScriptRoot 'extension-dependencies.ps1')
+  Assert-ExtensionBuildDependencies -RepoRoot $repoRoot
+} catch { Write-Error $_; exit 1 }
+
 if ($env:SAROS_BUILD_MANGLE -and $env:SAROS_BUILD_MANGLE -notin @('0', '1')) {
   Write-Error 'SAROS_BUILD_MANGLE must be 0 or 1'
   exit 1

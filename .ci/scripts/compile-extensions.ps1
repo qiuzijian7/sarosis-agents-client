@@ -2,6 +2,11 @@
 $repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
+try {
+  . (Join-Path $PSScriptRoot 'extension-dependencies.ps1')
+  Assert-ExtensionBuildDependencies -RepoRoot $repoRoot
+} catch { Write-Error $_; exit 1 }
+
 # 依赖完整性自愈：install-deps.ps1 会先 rd /s /q build\node_modules 再在末段重装；
 # 若它在中途（如 native rebuild）失败 exit 1，蓝盾并不会中断 Job，build/node_modules 便一直是空的，
 # 于是这里的 gulp bundle-extensions-build 在 118ms 内报 Cannot find module '@vscode/vsce'

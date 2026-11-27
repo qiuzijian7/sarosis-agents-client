@@ -201,23 +201,29 @@ if (-not (Test-Path $mainRg)) {
 # 它们全是 npm 包而非扩展）。这些越权 install 正是 extensions/*/node_modules 里
 # balanced-match\node_modules\@shikijs 这类脏依赖的来源——直接导致 gulp 遍历时 EMFILE。
 # 同时 out/ 是编译产物，其 package.json 是构建脚本写入的 {"type":"commonjs"}，对它 install 同样有害。
+try {
+  . (Join-Path $PSScriptRoot 'extension-dependencies.ps1')
+} catch { Write-Error $_; exit 1 }
+$requiredExtensions = @('markdown-math', 'mermaid-chat-features')
 $extRoots = Get-ChildItem extensions -Directory -Recurse -Depth 2 -EA SilentlyContinue |
   Where-Object { $_.FullName -notmatch '\\node_modules(\\|$)' -and $_.FullName -notmatch '\\(out|dist)(\\|$)' }
 foreach ($extDir in $extRoots) {
   if (Test-Path ($extDir.FullName + '/package.json')) {
-    Push-Location $extDir.FullName
-    npm install --ignore-scripts
-    if ($LASTEXITCODE -ne 0) {
-      Write-Host ('[WARN] ' + $extDir.FullName + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
+    if ($requiredExtensions -contains $extDir.Name) {
+      try { Install-RequiredExtensionDependencies -Directory $extDir.FullName }
+      catch { Write-Error $_; exit 1 }
+    } else {
+      Push-Location $extDir.FullName
+      npm install --ignore-scripts
+      if ($LASTEXITCODE -ne 0) {
+        Write-Host ('[WARN] ' + $extDir.FullName + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
+      }
+      Pop-Location
     }
-    Pop-Location
   }
 }
-$markdownNodeTypes = 'extensions\markdown-math\node_modules\@types\node\index.d.ts'
-if (-not (Test-Path $markdownNodeTypes -PathType Leaf)) {
-  Write-Error ('Markdown notebook Node type dependency missing: ' + $markdownNodeTypes)
-  exit 1
-}
+try { Assert-ExtensionBuildDependencies -RepoRoot $repoRoot }
+catch { Write-Error $_; exit 1 }
 Write-Host "[OK] Extension dependencies installed"
 
 # ===== 8b. Install .vscode/extensions dependencies =====

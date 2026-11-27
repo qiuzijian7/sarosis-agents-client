@@ -21,6 +21,13 @@ import { scanFiles, auditStaging, cleanStaging, recordInstallers, verifyInstalle
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIB = 1024 * 1024;
+function extensionDependencyFixture(t) {
+	const f = fixture(t);
+	const helper = fs.readFileSync(path.join(ROOT, '.ci/scripts/extension-dependencies.ps1'), 'utf8');
+	f.write('repo/.ci/scripts/extension-dependencies.ps1', helper);
+	for (const [, file] of helper.matchAll(/^\s*'((?:extensions|dsh-plugins)\\[^']+)'/gm)) { f.write(`repo/${file.replace(/\\/g, '/')}`); }
+	return f;
+}
 
 function cleanupFixture(root, remove = fs.promises.rm) {
 	return remove(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
@@ -54,6 +61,29 @@ function assertOrdered(source, first, second, message = 'required tokens are mis
 	const a = source.indexOf(first);
 	const b = source.indexOf(second);
 	assert.ok(a >= 0 && b >= 0 && a < b, `${message}: ${first}@${a}, ${second}@${b}`);
+}
+
+/** Each wrapper remains a real isolated process; cap concurrent subprocesses and drain on failure. */
+async function checkPowerShellWrappers(cases) {
+	let next = 0;
+	let failure;
+	await Promise.all(Array.from({ length: Math.min(3, cases.length) }, async () => {
+		for (;;) {
+			const entry = cases[next++];
+			if (!entry) { return; }
+			const { run, code } = entry;
+			const child = Buffer.from(`exit ${code}`, 'utf16le').toString('base64');
+			const wrapper = run.replace(/^powershell [^\r\n]+/, `powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand ${child}`);
+			let status = 0;
+			let detail;
+			try {
+				const result = await promisify(execFile)('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(wrapper, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 15000, windowsHide: true });
+				detail = result.stderr;
+			} catch (error) { status = error.code; detail = error.stderr || error.message; }
+			try { assert.equal(status, code, detail); } catch (error) { failure ??= error; }
+		}
+	}));
+	if (failure) { throw failure; }
 }
 
 test('fixture cleanup waits for bounded asynchronous removal', async () => {
@@ -275,7 +305,7 @@ test('baseline errors invalidate previous success and verification enforces grow
 });
 
 test('production compile defaults to no mangling, supports opt-in and propagates failure in PowerShell 5.1', { skip: process.platform !== 'win32' }, t => {
-	const f = fixture(t);
+	const f = extensionDependencyFixture(t);
 	const source = fs.readFileSync(path.join(ROOT, '.ci/scripts/compile-build.ps1'), 'utf8');
 	const script = f.write('repo/.ci/scripts/compile-build.ps1', '\uFEFF' + source.replace(/^\uFEFF/, ''));
 	const commands = path.join(f.root, 'commands');
@@ -324,27 +354,6 @@ test('markdown notebook type dependencies are declared, locked and pass native t
 	]) {
 		const result = spawnSync(process.execPath, [path.join(ROOT, 'node_modules/@typescript/native-preview/bin/tsgo.js'), '--project', path.join(ROOT, project), '--noEmit', '--incremental', 'false'], { cwd: ROOT, encoding: 'utf8', timeout: 60000 });
 		assert.equal(result.status, 0, `${project}: ${result.stdout || result.stderr || result.error?.message}`);
-	}
-});
-
-test('dependency preflight stops before compilation when notebook Node types are absent', { skip: process.platform !== 'win32' }, () => {
-	const file = path.join(ROOT, '.ci/scripts/install-deps.ps1').replace(/'/g, "''");
-	for (const exists of [true, false]) {
-		const script = `
-$tokens = $null; $errors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile('${file}', [ref]$tokens, [ref]$errors)
-if ($errors.Count -ne 0) { throw 'Invalid install-deps.ps1 syntax' }
-$assign = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$markdownNodeTypes' }, $true)
-$guard = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.StartsWith('if (-not (Test-Path $markdownNodeTypes') }, $true)
-if (-not $assign -or -not $guard) { throw 'Missing notebook dependency guard' }
-function Test-Path { param($Path, $PathType) if ($Path -ne 'extensions\\markdown-math\\node_modules\\@types\\node\\index.d.ts' -or $PathType -ne 'Leaf') { throw 'Wrong dependency path' }; return $${exists ? 'true' : 'false'} }
-. ([scriptblock]::Create($assign.Extent.Text + [Environment]::NewLine + $guard.Extent.Text))
-Write-Output 'DEPENDENCY_GUARD_OK'
-`;
-		const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 15000 });
-		assert.equal(result.status, exists ? 0 : 1, result.stderr || result.error?.message);
-		if (exists) { assert.match(result.stdout, /DEPENDENCY_GUARD_OK/); }
-		else { assert.match(result.stderr, /Node type dependency missing/); }
 	}
 });
 
@@ -819,20 +828,16 @@ test('Windows CI executable steps use ASCII names and explicit UTF8 charset', ()
 	}
 });
 
-test('all Windows pipeline PowerShell wrappers preserve child success and failure', { skip: process.platform !== 'win32' }, () => {
+test('all Windows pipeline PowerShell wrappers preserve child success and failure', { skip: process.platform !== 'win32' }, async () => {
 	const source = fs.readFileSync(path.join(ROOT, '.ci/package-win-exe.yml'), 'utf8');
 	const steps = source.split(/\n\s{6}-\s/).slice(1).filter(block => /\n\s+run:/.test(block));
 	assert.equal(steps.length, 15);
-	for (const step of steps) {
+	const cases = steps.flatMap(step => {
 		const run = step.match(/run: \|\r?\n((?:          [^\r\n]*\r?\n)+)/)?.[1]?.replace(/^          /gm, '');
 		assert.ok(run);
-		for (const code of [0, 23]) {
-			const child = Buffer.from(`exit ${code}`, 'utf16le').toString('base64');
-			const wrapper = run.replace(/^powershell [^\r\n]+/, `powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand ${child}`);
-			const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(wrapper, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 15000 });
-			assert.equal(result.status, code, result.stderr || result.error?.message);
-		}
-	}
+		return [0, 23].map(code => ({ run, code }));
+	});
+	await checkPowerShellWrappers(cases);
 });
 
 test('PowerShell target CLI output is ASCII-only and contains no localization fields', () => {
@@ -1124,16 +1129,12 @@ test('installer pipelines propagate build failure and only archive after success
 	}
 });
 
-test('actual installer PowerShell wrappers preserve child exit codes', { skip: process.platform !== 'win32' }, () => {
-	for (const [file, buildName] of installerPipelines) {
+test('actual installer PowerShell wrappers preserve child exit codes', { skip: process.platform !== 'win32' }, async () => {
+	const cases = installerPipelines.flatMap(([file, buildName]) => {
 		const { run } = installerPipelineSteps(file, buildName);
-		for (const code of [0, 7]) {
-			const child = Buffer.from(`exit ${code}`, 'utf16le').toString('base64');
-			const wrapper = run.replace(/^powershell [^\r\n]+/, `powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand ${child}`);
-			const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(wrapper, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 15000 });
-			assert.equal(result.status, code, result.stderr || result.error?.message);
-		}
-	}
+		return [0, 7].map(code => ({ run, code }));
+	});
+	await checkPowerShellWrappers(cases);
 });
 
 test('mangler preserves exports from generated files imported by compiled sources', () => {
