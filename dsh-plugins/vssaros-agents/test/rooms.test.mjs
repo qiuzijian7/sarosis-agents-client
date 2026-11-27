@@ -232,7 +232,10 @@ function fakeHost(reply) {
 		agents: { get: (id) => (sessions.has(id) ? agentOf(sessions.get(id)) : undefined) },
 		workspaces: { list: () => [{ id: 'ws1', path: 'C:/work' }], create: async (path) => ({ id: `ws:${path}` }), archiveSession: async (id) => { host.archived.push(id); } },
 		append: (session, type, data) => { sessions.get(session.id).records.push({ type, data }); return 1; },
-		ctx: { on: (name, fn) => { listeners.set(name, [...(listeners.get(name) ?? []), fn]); return () => undefined; } },
+		ctx: { on: (name, fn) => {
+			listeners.set(name, [...(listeners.get(name) ?? []), fn]);
+			return () => { listeners.set(name, (listeners.get(name) ?? []).filter(listener => listener !== fn)); };
+		} },
 		emit,
 		set rooms(value) { rooms = value; },
 		get rooms() { return rooms; },
@@ -1011,7 +1014,7 @@ const host = fakeHost((botId, prompt) => {
 });
 let rooms = makeRooms(host, file);
 host.rooms = rooms;
-installRooms(host.ctx, rooms);
+let disposeRooms = installRooms(host.ctx, rooms);
 let room;
 await check('建群：在第一个工作区开群会话、写群标记、会话改名为群名、挂上 group_relay（只挂这一个）', async () => {
 	room = await rooms.create({ members: ['designer', 'Coder', 'reviewer'], name: '番茄钟 H5', notice: '移动端优先' }, { createdBy: 'superagent' });
@@ -1288,9 +1291,10 @@ await check('落盘后重读：群、成员、标志、日志、执行轮次都�
 	const out = await roomsApi(again, { method: 'GET', query: new URLSearchParams({ progress: firstRound.callId }), body: undefined });
 	assert.equal(out.body.progress?.callId, firstRound.callId);
 	assert.ok(again.active().some(item => item.callId === firstRound.callId), '重启后 active 仍带出持久化的执行过程');
-	await rooms.close();
+	await disposeRooms();
 	rooms = again;
 	host.rooms = again;
+	disposeRooms = installRooms(host.ctx, again);
 });
 
 await check('执行中重启：快照写穿、旧轮次收口为 cut、已有状态节点不丢', async () => {
@@ -1553,7 +1557,7 @@ await check('FIX 1b 显式选中群时，@群名 无需引用事件也能转投�
 	// ④ 不存在的群 id 被拒
 	const bad = await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'select', id: 'no-such-room' } });
 	assert.equal(bad.status, 404);
-	off();
+	await off();
 });
 
 await check('FIX 3 群会话引用彻底失效时，postToRoom 不抛 503，消息落进 inbox + log 并报可见错误', async () => {
@@ -1728,7 +1732,7 @@ await check('FIX 5 rebindRoom 迁移 late/routed：纯逻辑 + 真转投链路�
 	h.emit('session/event', { id: 'plain-1' }, userEvent('@账本迁移群 干活'));
 	await tick();
 	assert.equal(posted.length, 0, 'rebind 后同一条消息不应重复转投（routed 去重键已迁移）');
-	off();
+	await off();
 });
 
 await check('P0 保存失败给HTTP失败，重试能恢复写队列，后台保存不产生未处理拒绝', async () => {
@@ -1798,6 +1802,7 @@ await check('P0 待派发用户消息重启后继续且只记一次群日志', a
 	await r.flush();
 	await r.close();
 	const restored = makeRooms(h, f);
+	const off = installRooms(h.ctx, restored);
 	await restored.relay(room.id, 'p0-inbox');
 	const log = restored.state(room.id).log.filter(line => line.who === '用户');
 	assert.equal(log.filter(line => /重启前消息/.test(String(line.text))).length, 1);
@@ -1805,13 +1810,14 @@ await check('P0 待派发用户消息重启后继续且只记一次群日志', a
 	const disk = JSON.parse(readFileSync(f, 'utf8')).rooms[0];
 	assert.deepEqual(disk.pendingMessages, []);
 	assert.equal(disk.log.filter(line => /重启前消息/.test(String(line.text))).length, 1);
-	await restored.close();
+	await off();
 });
 
 await check('P0 同一成员并发轮次串行、不重复建影子会话/不重复followup', async () => {
 	let starts = 0;
 	const h = fakeHost(() => { starts += 1; return 'hang'; });
 	const r = makeRooms(h, join(dir, 'p0-member-serial.json'), { timeoutMs: 2000, maxWaitMs: 2000, releaseMs: 0 });
+	const off = installRooms(h.ctx, r);
 	const room = await r.create({ members: ['designer', 'coder'], name: '成员串行' });
 	r.noteUserMessage(room.id, '第一条');
 	const first = r.relay(room.id, 'p0-first');
@@ -1825,7 +1831,7 @@ await check('P0 同一成员并发轮次串行、不重复建影子会话/不重
 	await waitUntilTrue(() => starts === 2);
 	finishHungTurn(h, memberSessionOf(h, 'designer'), '第二条完成');
 	await Promise.all([first, second]);
-	await r.close();
+	await off();
 });
 
 await check('P0 cancel停止本轮与后台成员、清理回叫/审批/迟到项且不吞用户消息', async () => {
@@ -1865,9 +1871,10 @@ await check('P0 digest按实际消息数累计、重启恢复计时、到期只�
 	await r.relay(room.id, 'p0-held');
 	assert.equal(h.order.length, 0);
 	assert.equal(timers.filter(t => !t.cancelled).length, 1);
-	off();
+	await off();
 	await r.close();
 	const restored = makeRooms(h, file, digestDeps);
+	const offRestored = installRooms(h.ctx, restored);
 	await restored.load();
 	const dueTimer = timers.at(-1);
 	assert.equal(timers.filter(t => !t.cancelled).length, 1, '重启后旧计时注销、只恢复一个活动计时');
@@ -1877,7 +1884,7 @@ await check('P0 digest按实际消息数累计、重启恢复计时、到期只�
 	assert.equal(h.order.filter(x => x.at === 'start' && h.sessions.get(x.session).preset).length, 2);
 	await restored.relay(room.id, 'p0-due-again');
 	assert.equal(h.order.filter(x => x.at === 'start' && h.sessions.get(x.session).preset).length, 2, '到期只唤醒一次');
-	await restored.close();
+	await offRestored();
 	const saved = JSON.parse(readFileSync(file, 'utf8'));
 	assert.equal(saved.rooms[0].digestPending, 0);
 	assert.equal(saved.rooms[0].digestStartedAt, undefined);
@@ -1922,7 +1929,7 @@ await check('P3 最大并发：@所有人 按 maxConcurrentTurns 限流，排队
 	const out = JSON.parse(await running);
 	assert.equal(out.replies.length, 4);
 	assert.deepEqual(out.failed, []);
-	off();
+	await off();
 	await r.close();
 });
 
@@ -1943,7 +1950,7 @@ await check('P3 预算停止：maxTurns 触顶给可解释状态，剩余成员�
 	assert.equal(run.budgetStop.reason, 'maxTurns');
 	assert.equal(run.metrics.turns, 1, '触顶后不再派发新成员');
 	assert.ok(run.metrics.promptChars > 0 && run.metrics.estimatedTokens > 0, 'prompt 指标有真实计数');
-	off();
+	await off();
 	await r.close();
 });
 
@@ -1965,7 +1972,7 @@ await check('P3 写范围串行：同范围成员不同时跑，未声明时仍�
 			wakeMode: 'all', maxConcurrentTurns: 4, ...(writeScopes ? { writeScopes } : {}) });
 		r.noteUserMessage(room.id, '@所有人 开工');
 		const out = JSON.parse(await r.relayTool().execute({}, { agent: { id: room.id }, callId: `p3-scopes-${tag}` }));
-		off();
+		await off();
 		await r.close();
 		return { max: maxActiveOf(h), starts: h.order.filter(x => x.at === 'start').length, out };
 	};
@@ -2002,7 +2009,7 @@ await check('发布收口：runId/attempt/cancelReason 与 durable dispatch inte
 	assert.ok(Array.isArray(diag.runs) && Array.isArray(diag.tasks) && Array.isArray(diag.intents));
 	assert.ok(diag.runs.some(run => run.callId === 'diag-1' && run.runId === snap.runId && run.attempt === 1 && run.state === 'done'));
 	assert.ok(diag.intents.some(item => item.status === 'settled'));
-	off();
+	await off();
 	await r.close();
 });
 
@@ -2026,10 +2033,11 @@ await check('发布收口：取消写 cancelReason，把未确认派发意图标
 	assert.ok(saved.rooms[0].dispatchIntents.some(item => item.status === 'cancelled' && item.runId === snap.runId));
 	const diag = (await roomsApi(r, { method: 'GET', query: new URLSearchParams('diagnostics=1'), body: undefined })).body.diagnostics;
 	assert.equal(diag.runs.find(run => run.callId === 'diag-cancel')?.state, 'cancelled');
-	off();
+	await off();
 	await r.close();
 });
 
+await disposeRooms();
 rmSync(dir, { recursive: true, force: true });
 if (fails.length) {
 	console.error(`rooms: ${pass} passed, ${fails.length} failed`);

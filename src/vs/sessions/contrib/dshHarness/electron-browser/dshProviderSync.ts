@@ -30,7 +30,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentOSService } from '../../../common/agentStudioOS.js';
 import { BUILTIN_PROVIDER_IDENTITIES } from '../../../common/agentStudioProviderCatalog.js';
 import { AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING } from '../../../common/agentStudioConstants.js';
-import { buildProvidersSyncArgs, IDshModelRef, IDshProviderSource, mergeExtensionModels, providerRouteFor } from '../common/dshProviderSyncPlan.js';
+import { buildProvidersSyncArgs, IDshModelRef, IDshProviderSource, mergeExtensionModels, providerRouteFor, providersSyncHash } from '../common/dshProviderSyncPlan.js';
 import { validateProvidersSyncArgs } from '../common/dshBridgeProtocol.js';
 import { IDshHarnessService } from './dshHarnessService.js';
 
@@ -86,6 +86,7 @@ export class DshProviderSync extends Disposable {
 	private _running = false;
 	private _again = false;
 	private _lastHash = '';
+	private _bridgeGeneration = 0;
 	private _lastDiagHash = '';
 	/** "采集偏慢"告警的节流戳（30s 兜底轮询下最多 5 分钟一条）。 */
 	private _lastSlowCollectLogAt = 0;
@@ -109,6 +110,8 @@ export class DshProviderSync extends Disposable {
 			if (s.bridge === 'connected') {
 				this._schedule();
 			} else {
+				this._bridgeGeneration++;
+				this._lastHash = '';
 				this._hostOwnsCodeBuddy = undefined;
 				this._lightAIMigrationTried = false;
 			}
@@ -227,6 +230,7 @@ export class DshProviderSync extends Disposable {
 		//   `providers.sync`（Host 侧写 settings）分开计；collect 慢时再把**逐源耗时**打出来。
 		const timings: string[] = [];
 		const tCollect = Date.now();
+		const bridgeGeneration = this._bridgeGeneration;
 		try {
 			await this._probeHostOwnedProviders();
 			// LightAI 迁移不挡 provider 同步（状态里可能要做一次网络校验）
@@ -266,14 +270,16 @@ export class DshProviderSync extends Disposable {
 				}
 			}
 			const args = buildProvidersSyncArgs(accepted);
-			const hash = JSON.stringify({ p: args.providers, c: args.credentials.map(c => c.ref) });
-			if (hash === this._lastHash) {
+			const hash = await providersSyncHash(args, bridgeGeneration);
+			if (bridgeGeneration !== this._bridgeGeneration || this._dsh.status.bridge !== 'connected' || hash === this._lastHash) {
 				return;
 			}
 			const tBridge = Date.now();
 			const result = await this._dsh.syncProviders(args);
 			const bridgeMs = Date.now() - tBridge;
-			this._lastHash = hash;
+			if (bridgeGeneration === this._bridgeGeneration) {
+				this._lastHash = hash;
+			}
 			// 诊断：连同**dsh 侧实际服务**的每条路由模型数、默认模型改写结果一起打。
 			// 此前只打路由名，"路由在线但模型为空/被丢"在日志里完全不可见（实测：codebuddy 的
 			// 清单看起来同步成功，但选择器条数对不上，只能靠猜）。见 IBridgeProvidersSyncResult 注释。

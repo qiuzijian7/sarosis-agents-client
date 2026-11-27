@@ -220,3 +220,10 @@ export function buildProvidersSyncArgs(sources: readonly IDshProviderSource[]): 
 	}
 	return { providers, credentials, skipped };
 }
+
+/** 同步去重摘要包含凭据值与桥连接代次；缓存中不保留明文凭据。 */
+export async function providersSyncHash(args: IBridgeProvidersSyncArgs, bridgeGeneration: number): Promise<string> {
+	const data = new TextEncoder().encode(JSON.stringify({ providers: args.providers, credentials: args.credentials, bridgeGeneration }));
+	const digest = await globalThis.crypto.subtle.digest('SHA-256', data);
+	return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}

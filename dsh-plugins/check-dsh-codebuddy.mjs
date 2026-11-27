@@ -99,14 +99,7 @@ function fakeSettings(initialProviders = {}) {
 function b64url(obj) { return Buffer.from(JSON.stringify(obj)).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_'); }
 function jwt(claims) { return `${b64url({ alg: 'none' })}.${b64url(claims)}.sig`; }
 
-/**
- * ★ 2026-11-02：OAuth access token 的落点从 `VSSAROS_CODEBUDDY_KEY` 改成**专用 ref**
- * `VSSAROS_CODEBUDDY_ACCESS_TOKEN`（产品 2026-10-30 改动）。
- *
- * 为什么：`VSSAROS_CODEBUDDY_KEY` 同时被 ① 本桥（OAuth token）与 ② IDE `providers.sync`（API Key）写
- * ⇒ 后写者赢 ⇒ Host 拿到 API Key ⇒ 平台对 `/v3/config` 拒答 ⇒ 模型数为 0。
- * `KEY` 仍是**路由的 `apiKeyEnv`**（pi-ai 从它读 key），所以下面 197/364/410 那几处刻意保持 `KEY`。
- */
+/** Host 登录、刷新及聊天画像都使用专用 OAuth 引用；旧 KEY 仅用于升级兼容测试。 */
 const ACCESS_REF = 'VSSAROS_CODEBUDDY_ACCESS_TOKEN';
 
 const TOKEN_A = jwt({ sub: 'user-123', iss: 'https://tencent.sso.codebuddy.cn/auth/realms/sso-tenantX', preferred_username: 'tester' });
@@ -209,7 +202,8 @@ try {
 			const ids = route.models.map(m => m.id);
 			const want = ['hy3', 'deepseek-v4', 'missing-meta', 'hy4'];
 			if (JSON.stringify(ids) !== JSON.stringify(want)) { fail(`④ 模型清单 ${JSON.stringify(ids)}（应为 ${JSON.stringify(want)}：allow-list 顺序 + 补入 chat-capable，排除生图/补全小模型）`); }
-			if (route.apiKeyEnv !== 'VSSAROS_CODEBUDDY_KEY') { fail(`⑤ apiKeyEnv=${route.apiKeyEnv}（应为 VSSAROS_CODEBUDDY_KEY）`); }
+			if (route.apiKeyEnv !== ACCESS_REF) { fail(`⑤ apiKeyEnv=${route.apiKeyEnv}（应为 ${ACCESS_REF}）`); }
+			if ((await credentials.resolve(route.apiKeyEnv))?.value !== TOKEN_A) { fail('① 登录后聊天路由没有解析到新 token ✗'); }
 			if (route.baseURL !== 'https://copilot.tencent.com/v2') { fail(`⑤ baseURL=${route.baseURL}（默认直连应为 https://copilot.tencent.com/v2）`); }
 			if (route.api !== 'openai-completions' || route.displayName !== 'CodeBuddy') { fail(`⑤ api/displayName 不对：${route.api}/${route.displayName}`); }
 			if (route.headers?.Authorization) { fail('⑤ 画像 headers 里出现了 Authorization（token 应只走 apiKeyEnv）✗'); }
@@ -232,8 +226,13 @@ try {
 			}],
 			['/v3/config', res(200, CONFIG_JSON)],
 		]);
+		credentials.store.set('VSSAROS_CODEBUDDY_KEY', 'test-stale-legacy-key');
 		const svc2 = makeService({ credentials, settings, fetchImpl: fetch2 });
 		await svc2.tick();
+		const refreshedRoute = settings.providers['vssaros-codebuddy'];
+		if (refreshedRoute?.apiKeyEnv !== route?.apiKeyEnv || (await credentials.resolve(refreshedRoute?.apiKeyEnv))?.value !== TOKEN_B) {
+			fail('③ 刷新后聊天路由未解析到新 token（旧 KEY 不得影响聊天鉴权）✗');
+		}
 		if (refreshCalls !== 1 || credentials.store.get(ACCESS_REF) !== TOKEN_B) {
 			fail(`③ 快过期没刷新（refresh 调用 ${refreshCalls} 次；token=${credentials.store.get(ACCESS_REF) === TOKEN_B ? 'B' : 'A'}）✗`);
 		} else if (JSON.parse(credentials.store.get('VSSAROS_CODEBUDDY_SESSION')).refreshToken !== REFRESH) {
@@ -398,7 +397,13 @@ try {
 		}
 		// 老数据（IDE providers.sync 写的那份，没有会话信息）⇒ 允许被导入覆盖（换来 refresh token）
 		const legacy = fakeCredentials({ VSSAROS_CODEBUDDY_KEY: TOKEN_A });
-		const svcL = makeService({ credentials: legacy, settings: fakeSettings(), fetchImpl });
+		const legacySettings = fakeSettings();
+		const svcL = makeService({ credentials: legacy, settings: legacySettings, fetchImpl });
+		await svcL.syncRoute('legacy');
+		const legacyRoute = legacySettings.providers['vssaros-codebuddy'];
+		if (legacyRoute?.apiKeyEnv !== ACCESS_REF || (await legacy.resolve(legacyRoute?.apiKeyEnv))?.value !== TOKEN_A) {
+			fail('⑦ 旧版登录态切换到专用凭据引用后聊天鉴权断链 ✗');
+		}
 		const rl = await svcL.importSession({ accessToken: TOKEN_B, refreshToken: REFRESH, expiresAt: clock + 3600_000 });
 		if (!rl.imported) { fail('⑦ 老数据（只有 access token、没有会话信息）应允许导入覆盖 ✗'); }
 		// 登出 ⇒ 两个凭据 ref 清掉 + 撤路由 + 记下"主动登出过"
@@ -434,7 +439,7 @@ try {
 		const entry = cb.codebuddyRouteEntry({ baseURL: 'https://copilot.tencent.com/v2/', accessToken: TOKEN_A, models: [{ id: 'hy3', name: 'Hunyuan 3', reasoning: true, effort: 'high' }] });
 		const want = {
 			route: 'vssaros-codebuddy', displayName: 'CodeBuddy', api: 'openai-completions', baseURL: 'https://copilot.tencent.com/v2',
-			credentialRef: 'VSSAROS_CODEBUDDY_KEY',
+			credentialRef: ACCESS_REF,
 		};
 		for (const [k, v] of Object.entries(want)) {
 			if (entry[k] !== v) { fail(`⑤ 路由条目 ${k}=${JSON.stringify(entry[k])}（应为 ${JSON.stringify(v)}）`); }
@@ -445,7 +450,7 @@ try {
 		}
 		const why = [];
 		if (!pp.sameProfile(profile, JSON.parse(JSON.stringify(profile)), why)) { fail(`⑤ sameProfile 对自身不等价：${why}`); }
-		if (!problems.length) { ok('⑤ 路由条目 / 画像与 IDE 侧 providers.sync 同形（换所有权不重写 profile）'); }
+		if (!problems.length) { ok('⑤ 路由画像保持同步协议形状，Host 聊天使用专用 OAuth 引用'); }
 	}
 
 	// ── ⑧ providers.sync 不碰 dsh 自持路由（源码级接线）─────────────────────────

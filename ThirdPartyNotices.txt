@@ -4313,7 +4313,7 @@ docs/license.html_lib.
 
 ---------------------------------------------------------
 
-LibreOffice（libreoffice-kit 0.1.5 随包引擎）
+LibreOffice（libreoffice-kit 0.2.3 随包引擎）
 https://www.libreoffice.org/
 
 Mozilla Public License Version 2.0

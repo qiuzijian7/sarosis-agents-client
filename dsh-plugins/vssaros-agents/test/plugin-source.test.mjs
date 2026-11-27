@@ -1,19 +1,28 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import * as store from '../lib/store.js';
 import { presetIdOf } from '../lib/core/agents.js';
+import { createRooms, installRooms } from '../lib/rooms.js';
 
 const bot = (id = 'wb-audit-reviewer') => ({
 	id, name: '工作台审查员', role: '审查', systemPrompt: '检查工作台内容。',
 	skills: ['audit-skill'], tools: ['read', 'mcp__audit__*'], capabilities: [],
 });
+const fixtureCleanups = new WeakMap();
+const beforeFixtureRemove = (config, cleanup) => fixtureCleanups.get(config).push(cleanup);
 const fixture = async (t) => {
 	const root = await mkdtemp(join(tmpdir(), 'vssaros-agent-source-'));
-	t.after(() => rm(root, { recursive: true, force: true }));
-	return { dataRoot: root, dshHome: join(root, 'dsh'), agentsBuiltinRoot: join(root, 'builtin') };
+	const config = { dataRoot: root, dshHome: join(root, 'dsh'), agentsBuiltinRoot: join(root, 'builtin') };
+	const cleanups = [];
+	fixtureCleanups.set(config, cleanups);
+	t.after(async () => {
+		for (const cleanup of cleanups.splice(0).reverse()) { await cleanup(); }
+		await rm(root, { recursive: true, force: true });
+	});
+	return config;
 };
 const writeAgent = async (root, id, name) => {
 	await mkdir(join(root, id), { recursive: true });
@@ -160,6 +169,97 @@ const deferred = () => {
 	return { promise, resolve };
 };
 
+test('群记录载入未完成时 close 必须等待，结束后不残留写租约', async t => {
+	const config = await fixture(t);
+	const started = deferred();
+	const allowed = deferred();
+	const file = join(config.dataRoot, 'agent-rooms.json');
+	let firstRead = true;
+	const rooms = createRooms({
+		file,
+		readFile: async (...args) => {
+			if (firstRead) { firstRead = false; started.resolve(); await allowed.promise; }
+			return readFile(...args);
+		},
+	});
+	beforeFixtureRemove(config, async () => { allowed.resolve(); await rooms.close(); });
+	const loading = rooms.load();
+	await started.promise;
+	let closed = false;
+	const closing = rooms.close();
+	assert.equal(rooms.close(), closing, '并发关闭共用同一收尾 Promise');
+	void closing.then(() => { closed = true; });
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(closed, false, '初始化尚未完成时不能声称已关闭');
+	allowed.resolve();
+	await loading;
+	await closing;
+	await assert.rejects(readFile(`${file}.owner`), { code: 'ENOENT' });
+	await assert.rejects(rooms.load(), /已关闭/);
+});
+
+test('未初始化的群记录关闭不主动读取或取得租约', async t => {
+	const config = await fixture(t);
+	let reads = 0;
+	const file = join(config.dataRoot, 'agent-rooms.json');
+	const rooms = createRooms({ file, readFile: async () => { reads++; return '{}'; } });
+	await rooms.close();
+	await assert.rejects(rooms.load(), /已关闭/);
+	assert.equal(reads, 0);
+	await assert.rejects(readFile(`${file}.owner`), { code: 'ENOENT' });
+});
+
+test('installRooms 卸载等待载入与关闭，晚到 agent 不能重新挂工具', async t => {
+	const loading = deferred();
+	const closeAllowed = deferred();
+	const events = [];
+	const handlers = new Map();
+	const ctx = { on: (name, handler) => { handlers.set(name, handler); return () => { handlers.delete(name); }; } };
+	const rooms = {
+		load: () => loading.promise,
+		isRoom: () => true,
+		close: async () => { events.push('close'); await closeAllowed.promise; events.push('closed'); },
+	};
+	const dispose = installRooms(ctx, rooms);
+	t.after(async () => { loading.resolve(); closeAllowed.resolve(); await dispose(); });
+	const created = handlers.get('agent/created');
+	created({ agent: { id: 'late-room', ctx: { tools: { register: () => { events.push('attach'); } } } } });
+	let disposed = false;
+	const closing = dispose();
+	assert.equal(dispose(), closing);
+	void closing.then(() => { disposed = true; });
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(events, []);
+	assert.equal(disposed, false);
+	loading.resolve();
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(events, ['close']);
+	assert.equal(disposed, false);
+	created({ agent: { id: 'after-dispose' } });
+	closeAllowed.resolve();
+	await closing;
+	assert.deepEqual(events, ['close', 'closed']);
+	assert.equal(handlers.size, 0);
+});
+
+test('后台群记录载入失败会报告错误，卸载也保留失败而非产生未处理拒绝', async t => {
+	const error = new Error('lease initialization failed');
+	const warnings = [];
+	const reports = [];
+	let closed = false;
+	t.mock.method(console, 'warn', message => warnings.push(message));
+	const dispose = installRooms({ on: () => () => {} }, {
+		load: () => Promise.reject(error),
+		reportError: info => reports.push(info),
+		close: async () => { closed = true; },
+	});
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(warnings.length, 1);
+	assert.deepEqual(reports, [{ kind: 'load-failed', error: error.message }]);
+	await assert.rejects(dispose(), error);
+	assert.equal(closed, true);
+});
+
 test('真实apply的兜底等待appReady，慢启动60秒也不提前扫描', async t => {
 	const config = await fixture(t);
 	await writeAgent(join(config.dataRoot, 'agents'), 'ready-helper', '就绪助手');
@@ -168,7 +268,7 @@ test('真实apply的兜底等待appReady，慢启动60秒也不提前扫描', as
 	presets.setRegisterHook(() => started.resolve());
 	let readyCallback;
 	const host = hostFixture(presets, { onReady(callback) { readyCallback = callback; return () => { readyCallback = undefined; }; } });
-	t.after(host.close);
+	beforeFixtureRemove(config, host.close);
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, config);
@@ -198,7 +298,7 @@ test('服务注册等待在飞同步；lazy 下插件立即可用，附件与异
 		if (!blocked) { blocked = true; firstStarted.resolve(); await firstAllowed.promise; }
 	});
 	const host = hostFixture(presets);
-	t.after(async () => { firstAllowed.resolve(); await host.close(); });
+	beforeFixtureRemove(config, async () => { firstAllowed.resolve(); await host.close(); });
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, config);
 	const service = host.services.get('vssarosAgents');
@@ -241,7 +341,7 @@ test('服务 preset 注册失败回滚 source 并明确拒绝；宿主卸载清�
 	const config = await fixture(t);
 	const presets = presetFixture();
 	const host = hostFixture(presets);
-	t.after(host.close);
+	beforeFixtureRemove(config, host.close);
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, { ...config, presetMode: 'eager' });
 	const service = host.services.get('vssarosAgents');
@@ -259,7 +359,7 @@ test('服务 preset 注册失败回滚 source 并明确拒绝；宿主卸载清�
 test('agentPresets 未就绪时注册拒绝且不留 source，rescan 保持明确错误', async (t) => {
 	const config = await fixture(t);
 	const host = hostFixture();
-	t.after(host.close);
+	beforeFixtureRemove(config, host.close);
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, config);
 	const service = host.services.get('vssarosAgents');
@@ -277,7 +377,7 @@ test('HTTP home 不等待冷启动 preset 注册，返回 pending 并在注册�
 	const allowed = deferred();
 	presets.setRegisterHook(async () => { started.resolve(); await allowed.promise; });
 	const host = hostFixture(presets);
-	t.after(async () => { allowed.resolve(); await host.close(); });
+	beforeFixtureRemove(config, async () => { allowed.resolve(); await host.close(); });
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, config);
 	const route = host.routes.find(row => row.path === '/x/agents');
@@ -310,7 +410,7 @@ test('无 preset 的 HTTP 花名册和未读读口也包含插件 source', async
 	const withdraw = store.registerAgentSource(config, { owner: 'workbench:audit', agents: [bot(), bot('wb-audit-seen')] });
 	t.after(withdraw);
 	const host = hostFixture();
-	t.after(host.close);
+	beforeFixtureRemove(config, host.close);
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, config);
 	const route = host.routes.find(row => row.path === '/x/agents');
@@ -331,7 +431,7 @@ test('lazy 窗口内可委派插件 Bot 完成两阶段，注销清除别的 pre
 	await writeAgent(join(config.dataRoot, 'agents'), 'user-keeper', '保留用户 Bot');
 	const presets = presetFixture();
 	const host = hostFixture(presets);
-	t.after(host.close);
+	beforeFixtureRemove(config, host.close);
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, config);
 	const service = host.services.get('vssarosAgents');
@@ -359,7 +459,7 @@ test('root source 复用原格式，只读已声明 Bot，映射 skills/tools/MC
 		mcp: { local: 'wb_12345678_local' } };
 	const presets = presetFixture();
 	const host = hostFixture(presets);
-	t.after(host.close);
+	beforeFixtureRemove(config, host.close);
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, { ...config, presetMode: 'eager' });
 	const service = host.services.get('vssarosAgents');
@@ -386,7 +486,7 @@ test('root source 拒绝缺失文件、目录声明与frontmatter id不符、非
 	const base = { owner: 'root-invalid', root, ids: { reviewer: 'wb-12345678-reviewer' } };
 	const presets = presetFixture();
 	const host = hostFixture(presets);
-	t.after(host.close);
+	beforeFixtureRemove(config, host.close);
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, { ...config, presetMode: 'eager' });
 	const service = host.services.get('vssarosAgents');
@@ -412,7 +512,7 @@ test('root source 命名空间 id 的用户覆写优先且撤销保留用户文�
 	await writeAgent(join(config.dataRoot, 'agents'), 'wb-12345678-reviewer', '用户覆写');
 	const presets = presetFixture();
 	const host = hostFixture(presets);
-	t.after(host.close);
+	beforeFixtureRemove(config, host.close);
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, { ...config, presetMode: 'eager' });
 	const withdraw = await host.services.get('vssarosAgents').registerSource({ owner: 'root-override', root, ids: { reviewer: 'wb-12345678-reviewer' } });
@@ -438,7 +538,7 @@ test('兼容主流程真实10位hash runtimeId与Object映射，所有能力引�
 	await writeFile(join(root, original, '.agent.md'), '---\nname: 真实主流程 Bot\nskills: audit\ntools:\n  - inspect-detail\n  - !inspect-*\n  - mcp__local__*\n---\n主流程人格。\n', 'utf8');
 	const presets = presetFixture();
 	const host = hostFixture(presets);
-	t.after(host.close);
+	beforeFixtureRemove(config, host.close);
 	const { apply } = await import('../lib/index.js');
 	apply(host.ctx, { ...config, presetMode: 'eager' });
 	const service = host.services.get('vssarosAgents');

@@ -13,42 +13,6 @@ if (-not (nvm list 2>$null | Select-String $nodeVersion)) { nvm install $nodeVer
 nvm use $nodeVersion
 node --version
 
-# ===== 2. Cleanup =====
-cmd /c "rd /s /q node_modules 2>nul"
-cmd /c "rd /s /q build\node_modules 2>nul"
-# ★ 2026-11-09（Log 11）：`rd /s /q ... 2>nul` 把 EPERM 一起吞了。工作区跨次构建复用时，
-#   杀软/索引器偶尔占着 node_modules 里的文件 ⇒ 目录没删干净却无人知晓 ⇒ npm install 走
-#   "增量更新"路径，失败回滚时又报 cleanup EPERM（日志里那 4 组 rmdir 错误）。
-#   ⇒ 显式校验 + Remove-Item 重试一次 + 仍有残留就大声告警（运维能据此清构建机）。
-foreach ($nm in @('node_modules', 'build\node_modules')) {
-  if (Test-Path $nm) {
-    Write-Host ('[clean] WARN: ' + $nm + ' 没被 rd 删干净（文件被占用）⇒ Remove-Item 重试')
-    Start-Sleep -Seconds 3
-    Remove-Item -Recurse -Force -LiteralPath $nm -ErrorAction SilentlyContinue
-    if (Test-Path $nm) {
-      Write-Host ('[clean] WARN: ' + $nm + ' 仍有残留 ⇒ 本次 npm install 会走增量更新；若报 cleanup EPERM 请清理构建机工作区')
-    }
-  }
-}
-
-# extensions/*/node_modules 此前【从不清理】，而蓝盾工作区跨次构建复用（E:\data\landun\workspace），
-# 于是历次失败/中断的 npm install 残骸永久累积。2026-09-07 事故实证：
-#   extensions\css-language-features\node_modules\balanced-match\node_modules\@shikijs\langs\dist\*.mjs
-# balanced-match 是零依赖的几十行 tiny 包，本仓库任何 package.json / package-lock.json 都不含
-# shiki（已 git grep 验证为 0 命中）——纯属陈年残骸。@shikijs/langs 单包就有 200+ 个 .mjs，
-# 被 gulp 扩展流当作扩展内容遍历读取，直接把 Windows CRT 句柄打爆 → EMFILE。
-# 这也解释了为何 build/lib/extensions.ts 里的 graceful-fs 加固没能救回来：graceful-fs 只能在
-# 句柄紧张时排队重试，扛不住「凭空多出上万个本不该存在的文件」这种量级。
-# 逐个 rd 而非整体删 extensions（扩展源码在版本控制内，node_modules 不在），保持可重入。
-Write-Host '=== Cleaning stale extensions/*/node_modules (workspace is reused across builds) ==='
-$staleCount = 0
-foreach ($d in (Get-ChildItem extensions -Directory -Recurse -Depth 2 -Filter 'node_modules' -EA SilentlyContinue)) {
-  cmd /c ('rd /s /q "' + $d.FullName + '" 2>nul')
-  if (-not (Test-Path $d.FullName)) { $staleCount++ }
-}
-cmd /c "rd /s /q extensions\node_modules 2>nul"
-Write-Host ('[clean] removed ' + $staleCount + ' extensions node_modules dirs')
-
 # ===== 3. Install Spectre =====
 $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Community"
 $vsInstaller = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs_installer.exe"
@@ -74,6 +38,13 @@ $env:npm_config_build_from_source = "true"
 $env:npm_config_registry   = "https://registry.npmmirror.com/"
 $env:ELECTRON_MIRROR       = "https://npmmirror.com/mirrors/electron/"
 
+try {
+  . (Join-Path $PSScriptRoot 'dependency-cache.ps1')
+  Initialize-DependencyCache -RepoRoot $repoRoot
+  $rootCacheHit = Test-DependencyLayer -Relative ''
+  if (-not $rootCacheHit) { Clear-DependencyLayer -Relative '' }
+} catch { Write-Error $_; exit 1 }
+
 # ===== 5. Install root dependencies =====
 # ★ 2026-11-09（Log 11）：npm 镜像偶发 500（[ER_NO_SUCH_TABLE] Table 'npmmirrordb...'）
 #   ⇒ 47 分钟的 npm install 在最后一个包上失败 ⇒ 根 node_modules 半残 ⇒ 后续
@@ -81,10 +52,10 @@ $env:ELECTRON_MIRROR       = "https://npmmirror.com/mirrors/electron/"
 #   verify-staging(缺 tree-sitter-wasm) 连锁失败，而流水线不中断 ⇒ 白跑 20 分钟出 0 个 exe。
 #   ⇒ 最多 3 次；第 2 次起 --prefer-offline（复用 npm cache，避免重复拉同一个坏包且更快）；
 #     并让 npm 自己按拉长的超时做 fetch 级重试（5xx 属可重试错误）。
-$rootInstallOk = $false
-for ($attempt = 1; $attempt -le 3; $attempt++) {
+$rootInstallOk = $rootCacheHit
+for ($attempt = 1; -not $rootCacheHit -and $attempt -le 3; $attempt++) {
   Write-Host "=== npm install --ignore-scripts (attempt $attempt/3) ==="
-  $npmArgs = @('--ignore-scripts', '--fetch-retries=5', '--fetch-retry-mintimeout=2000', '--fetch-retry-maxtimeout=60000')
+  $npmArgs = @('--ignore-scripts', '--include=dev', '--no-audit', '--no-fund', '--fetch-retries=5', '--fetch-retry-mintimeout=2000', '--fetch-retry-maxtimeout=60000')
   if ($attempt -gt 1) { $npmArgs += '--prefer-offline' }
   & npm install @npmArgs
   if ($LASTEXITCODE -eq 0) { $rootInstallOk = $true; break }
@@ -100,8 +71,8 @@ if (-not $rootInstallOk) { Write-Error "FATAL: npm install --ignore-scripts fail
 # 而流水线不会因此中断，白跑 30 分钟编译后在 compile-extensions 报 Cannot find module '@vscode/vsce'
 # （2026-09-07 事故）。因此这里按重试处理（npm rebuild 幂等，已成功的包会被跳过/快速重建）。
 $env:npm_config_msvs_version = "2022"
-$nativeOk = $false
-for ($attempt = 1; $attempt -le 3; $attempt++) {
+$nativeOk = $rootCacheHit
+for ($attempt = 1; -not $rootCacheHit -and $attempt -le 3; $attempt++) {
   npm rebuild `
     @parcel/watcher @vscode/native-watchdog @vscode/policy-watcher `
     @vscode/spdlog @vscode/windows-process-tree @vscode/windows-registry `
@@ -155,43 +126,54 @@ if (-not (Test-Path "node_modules\gulp\bin\gulp.js")) {
 }
 Write-Host "[OK] node_modules/gulp found"
 
-# ===== 6. Install build/ dependencies =====
-Push-Location build
-npm install --ignore-scripts
-if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: build/ npm install failed"; exit 1 }
+# ===== 6. Build tools target the host Node, never Electron's ABI =====
+try {
+  $buildCacheHit = Test-DependencyLayer -Relative 'build'
+  if (-not $buildCacheHit) {
+    Clear-DependencyLayer -Relative 'build'
+    $electronTarget = $env:npm_config_target
+    $electronDistUrl = $env:npm_config_disturl
+    $env:npm_config_runtime = 'node'
+    $env:npm_config_target = [string](node -p 'process.versions.node')
+    $env:npm_config_disturl = 'https://nodejs.org/dist'
+    Push-Location build
+    try {
+      npm install --ignore-scripts --include=dev --no-audit --no-fund --prefer-offline
+      if ($LASTEXITCODE -ne 0) { throw 'FATAL: build/ npm install failed' }
+      $tsGyp = 'node_modules\tree-sitter\binding.gyp'
+      if (Test-Path $tsGyp) {
+        $gypContent = (Get-Content $tsGyp -Raw) -replace '/std:c\+\+17', '/std:c++20'
+        [IO.File]::WriteAllText((Resolve-Path $tsGyp), $gypContent, (New-Object Text.UTF8Encoding $false))
+      }
+      npm rebuild tree-sitter tree-sitter-typescript --foreground-scripts
+      if ($LASTEXITCODE -ne 0) { throw 'FATAL: build/ tree-sitter rebuild failed' }
+    } finally {
+      Pop-Location
+      $env:npm_config_runtime = 'electron'
+      $env:npm_config_target = $electronTarget
+      $env:npm_config_disturl = $electronDistUrl
+    }
+    Complete-DependencyLayer -Relative 'build'
+  }
+  Complete-DependencyLayer -Relative ''
+} catch { Write-Error $_; exit 1 }
 
-# FIX: tree-sitter binding.gyp forces /std:c++17, but Node 39.8.8 requires C++20
-$tsGyp = "node_modules\tree-sitter\binding.gyp"
-if (Test-Path $tsGyp) {
-  $gypContent = Get-Content $tsGyp -Raw
-  $gypContent = $gypContent -replace '/std:c\+\+17', '/std:c++20'
-  [System.IO.File]::WriteAllText((Resolve-Path $tsGyp), $gypContent, (New-Object System.Text.UTF8Encoding $false))
-  Write-Host "[FIX] tree-sitter binding.gyp patched: /std:c++17 -> /std:c++20"
-}
-
-# FIX: only rebuild tree-sitter (avoids triggering ripgrep postinstall -> 403)
-npm rebuild tree-sitter --foreground-scripts
-if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: build/ tree-sitter rebuild failed"; exit 1 }
-Pop-Location
-
-# ===== 7. ripgrep (postinstall -> vendored 兜底，缺则 fail) =====
+# ===== 7. Prefer the verified vendored binary before any GitHub requests =====
 $mainRg = "node_modules\@vscode\ripgrep\bin\rg.exe"
+node build/saros/dependency-cache.cjs --rg
+if ($LASTEXITCODE -ne 0) { Write-Host '[RG] Vendored identity unavailable; trying online fallback' }
 if (-not (Test-Path $mainRg)) {
   Write-Host "[RG] Trying postinstall (GitHub CDN)..."
   try {
     node node_modules/@vscode/ripgrep/lib/postinstall.js --force
   } catch { Write-Host ('[RG] postinstall failed: ' + $_) }
 }
-$vendoredRg = "build/saros/bin/rg.exe"
-if (-not (Test-Path $mainRg) -and (Test-Path $vendoredRg)) {
-  New-Item -Force -ItemType Directory (Split-Path $mainRg) | Out-Null
-  Copy-Item $vendoredRg $mainRg -Force
-  Write-Host "[RG] Restored from vendored build/saros/bin/rg.exe"
-}
 if (-not (Test-Path $mainRg)) {
   Write-Error "rg.exe unavailable. Refusing to package without ripgrep."
   exit 1
 }
+node build/saros/dependency-cache.cjs --verify-rg
+if ($LASTEXITCODE -ne 0) { Write-Error 'Installed ripgrep verification failed'; exit 1 }
 
 # ===== 8. Install extension dependencies =====
 # 原写法 `Get-ChildItem extensions -Directory -Depth 2` 会递归进 node_modules：
@@ -205,19 +187,25 @@ try {
   . (Join-Path $PSScriptRoot 'extension-dependencies.ps1')
 } catch { Write-Error $_; exit 1 }
 $requiredExtensions = @('markdown-math', 'mermaid-chat-features')
-$extRoots = Get-ChildItem extensions -Directory -Recurse -Depth 2 -EA SilentlyContinue |
-  Where-Object { $_.FullName -notmatch '\\node_modules(\\|$)' -and $_.FullName -notmatch '\\(out|dist)(\\|$)' }
+$extRoots = $script:dependencyPlan.entries | Where-Object { $_.relative -eq 'extensions' -or $_.relative.StartsWith('extensions/') } |
+  ForEach-Object { Get-Item -LiteralPath (Join-Path $repoRoot $_.relative) }
 foreach ($extDir in $extRoots) {
+  $relative = $extDir.FullName.Substring($repoRoot.Length + 1).Replace('\', '/')
   if (Test-Path ($extDir.FullName + '/package.json')) {
+    try {
+      if (Test-DependencyLayer -Relative $relative) { continue }
+      Clear-DependencyLayer -Relative $relative
+    } catch { Write-Error $_; exit 1 }
     if ($requiredExtensions -contains $extDir.Name) {
       try { Install-RequiredExtensionDependencies -Directory $extDir.FullName }
       catch { Write-Error $_; exit 1 }
+      Complete-DependencyLayer -Relative $relative
     } else {
       Push-Location $extDir.FullName
-      npm install --ignore-scripts
+      npm install --ignore-scripts --include=dev --no-audit --no-fund --prefer-offline
       if ($LASTEXITCODE -ne 0) {
         Write-Host ('[WARN] ' + $extDir.FullName + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
-      }
+      } else { Complete-DependencyLayer -Relative $relative }
       Pop-Location
     }
   }
@@ -231,11 +219,16 @@ if (Test-Path ".vscode/extensions") {
   $vscExtRoots = Get-ChildItem .vscode/extensions -Directory
   foreach ($extDir in $vscExtRoots) {
     if (Test-Path ($extDir.FullName + '/package.json')) {
+      $relative = $extDir.FullName.Substring($repoRoot.Length + 1).Replace('\', '/')
+      try {
+        if (Test-DependencyLayer -Relative $relative) { continue }
+        Clear-DependencyLayer -Relative $relative
+      } catch { Write-Error $_; exit 1 }
       Push-Location $extDir.FullName
-      npm install --ignore-scripts
+      npm install --ignore-scripts --include=dev --no-audit --no-fund --prefer-offline
       if ($LASTEXITCODE -ne 0) {
         Write-Host ('[WARN] ' + $extDir + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
-      }
+      } else { Complete-DependencyLayer -Relative $relative }
       Pop-Location
     }
   }
@@ -259,12 +252,18 @@ if ((Test-Path $rootTs) -and -not (Test-Path $extTsTarget)) {
 # ===== 8d. Agent Studio webview dependencies (katex 等，kbblocks 构建必需) =====
 $webviewDir = "src\vs\sessions\contrib\agentStudio\webview"
 if (Test-Path ($webviewDir + '\package.json')) {
-  Push-Location $webviewDir
-  npm install --ignore-scripts
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host ('[WARN] ' + $webviewDir + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
-  }
-  Pop-Location
+  $relative = $webviewDir.Replace('\', '/')
+  try {
+    if (-not (Test-DependencyLayer -Relative $relative)) {
+      Clear-DependencyLayer -Relative $relative
+      Push-Location $webviewDir
+      npm install --ignore-scripts --include=dev --no-audit --no-fund --prefer-offline
+      if ($LASTEXITCODE -ne 0) {
+        Write-Host ('[WARN] ' + $webviewDir + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
+      } else { Complete-DependencyLayer -Relative $relative }
+      Pop-Location
+    }
+  } catch { Write-Error $_; exit 1 }
   Write-Host "[OK] Agent Studio webview dependencies installed"
 }
 
@@ -297,3 +296,4 @@ if ($actual -ne $expected) {
 }
 Write-Host "[OK] pinned pnpm $actual（node_modules/pnpm/bin/pnpm.mjs；构建期不读 PATH）"
 try { Write-Host ('[INFO] PATH 上还有 pnpm ' + (pnpm --version) + '（仅供参考，构建期不使用）') } catch { }
+try { Save-DependencyCache } catch { Write-Error $_; exit 1 }

@@ -60,7 +60,7 @@ function Remove-InstallerArtifact([string]$RelativePath) {
 Remove-InstallerArtifact '.build/pack-reports/installers.json'
 foreach ($asset in $allSetupAssets) { Remove-InstallerArtifact $asset.rel }
 Write-Host "=== Packaging policy regression tests (120s per-test timeout) ==="
-node --test --test-timeout=120000 --test-concurrency=1 build/saros/pack-optimization.test.mjs build/saros/extension-dependencies.test.mjs build/saros/release-assets.test.mjs build/saros/update-server/update.test.mjs build/saros/update-server/archive.test.mjs dsh-plugins/vssaros-web-content-import/test/whisperModel.test.mjs dsh-plugins/test/page-route-owners.test.mjs dsh-plugins/vssaros-agents/test/lazy-preset-fill.test.mjs dsh-plugins/vssaros-agents/test/plugin-source.test.mjs
+node --test --test-timeout=120000 --test-concurrency=1 build/saros/pack-optimization.test.mjs build/saros/extension-dependencies.test.mjs build/saros/dependency-cache.test.mjs build/saros/release-assets.test.mjs build/saros/update-server/update.test.mjs build/saros/update-server/archive.test.mjs dsh-plugins/vssaros-web-content-import/test/whisperModel.test.mjs dsh-plugins/test/page-route-owners.test.mjs dsh-plugins/vssaros-agents/test/lazy-preset-fill.test.mjs dsh-plugins/vssaros-agents/test/plugin-source.test.mjs
 if ($LASTEXITCODE -ne 0) { Write-Error "Packaging policy regression tests failed"; exit 1 }
 
 # ===== 校验 @vscode/tree-sitter-wasm 已进打包产物（语法高亮 wasm）=====

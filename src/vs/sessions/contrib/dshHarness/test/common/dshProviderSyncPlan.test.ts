@@ -5,9 +5,44 @@
 
 import assert from 'assert';
 import { validateProvidersSyncArgs } from '../../common/dshBridgeProtocol.js';
-import { buildProvidersSyncArgs, credentialRefFor, mergeExtensionModels, providerApiFor, providerRouteFor } from '../../common/dshProviderSyncPlan.js';
+import { buildProvidersSyncArgs, credentialRefFor, mergeExtensionModels, providerApiFor, providerRouteFor, providersSyncHash } from '../../common/dshProviderSyncPlan.js';
 
 suite('dshProviderSyncPlan（provider 收集整形）', () => {
+	test('同步摘要对相同负载稳定且不包含明文凭据', async () => {
+		const args = buildProvidersSyncArgs([
+			{ id: 'custom', displayName: 'Custom', baseURL: 'https://example.com/v1', credential: 'test-provider-key', models: [{ id: 'm' }] },
+		]);
+		const hash = await providersSyncHash(args, 0);
+		assert.deepStrictEqual({ stable: hash === await providersSyncHash(structuredClone(args), 0), sha256: /^[a-f0-9]{64}$/.test(hash), containsCredential: hash.includes('test-provider-key') }, {
+			stable: true, sha256: true, containsCredential: false,
+		});
+	});
+
+	test('仅更换 API Key 也必须重新同步', async () => {
+		const args = buildProvidersSyncArgs([
+			{ id: 'custom', displayName: 'Custom', baseURL: 'https://example.com/v1', credential: 'test-old-key', models: [{ id: 'm' }] },
+		]);
+		const next = { ...args, credentials: args.credentials.map(c => ({ ...c, value: 'test-new-key' })) };
+		assert.notStrictEqual(await providersSyncHash(args, 0), await providersSyncHash(next, 0));
+	});
+
+	test('桥重连后相同凭据与路由也必须重新同步', async () => {
+		const args = buildProvidersSyncArgs([
+			{ id: 'custom', displayName: 'Custom', baseURL: 'https://example.com/v1', credential: 'test-key', models: [{ id: 'm' }] },
+		]);
+		assert.notStrictEqual(await providersSyncHash(args, 0), await providersSyncHash(args, 1));
+	});
+
+	test('模型或凭据移除必须改变同步摘要', async () => {
+		const args = buildProvidersSyncArgs([
+			{ id: 'custom', displayName: 'Custom', baseURL: 'https://example.com/v1', credential: 'test-key', models: [{ id: 'm' }] },
+		]);
+		const hash = await providersSyncHash(args, 0);
+		assert.deepStrictEqual({
+			modelChanged: hash !== await providersSyncHash({ ...args, providers: args.providers.map(p => ({ ...p, models: [{ id: 'next' }] })) }, 0),
+			credentialRemoved: hash !== await providersSyncHash({ ...args, credentials: [] }, 0),
+		}, { modelChanged: true, credentialRemoved: true });
+	});
 	test('路由名/凭证引用名规整', () => {
 		assert.strictEqual(providerRouteFor('openrouter'), 'vssaros-openrouter');
 		assert.strictEqual(providerRouteFor('My Custom Provider!'), 'vssaros-my-custom-provider');

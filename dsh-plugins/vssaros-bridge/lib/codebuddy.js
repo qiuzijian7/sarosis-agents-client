@@ -13,7 +13,7 @@
 //   · 导出形状：同文件 `_codebuddy.dshProviderConfig`（baseURL = {endpoint}/v2、身份头去掉 Authorization）
 //
 // 安全边界（与 TOF 票据同一档，见 tof.js 文件头）：
-//   · access token 存在 `VSSAROS_CODEBUDDY_KEY`（= pi-ai 路由的 apiKeyEnv，**按请求解析** ⇒ 刷新后立即生效）；
+//   · access token 存在 `VSSAROS_CODEBUDDY_ACCESS_TOKEN`（= pi-ai 路由的 apiKeyEnv，按请求解析 ⇒ 刷新后立即生效）；
 //   · refresh token 等会话信息存在 `VSSAROS_CODEBUDDY_SESSION`（JSON）；两者都在 dsh 的 `.credentials.yaml`
 //     （**明文**，同 UID 进程可读）—— 与此前 IDE 侧经 providers.sync 写进同一处的做法相同，暴露面没有扩大；
 //   · **任何对外投影（HTTP / 桥回执）都不含 token** —— 只有 userId / 租户 / 过期时间 / 模型数。
@@ -29,16 +29,9 @@ import { CODEBUDDY_RETRY_POLICY } from './codebuddyRetry.js';
 /** dsh 里的路由名（与 IDE 侧 `providerRouteFor('codebuddy')` 一致 ⇒ 会话里已记录的引用不失效）。 */
 export const CODEBUDDY_ROUTE = 'vssaros-codebuddy';
 export const CODEBUDDY_DISPLAY_NAME = 'CodeBuddy';
-/** access token 的凭据引用（与 IDE 侧 `credentialRefFor('codebuddy')` **逐字一致** ⇒ 换所有权不改 profile）。 */
+/** 旧版 IDE 同步的凭据引用；仅用于历史登录态回退和登出清理。 */
 export const CODEBUDDY_CREDENTIAL_REF = 'VSSAROS_CODEBUDDY_KEY';
-/**
- * ★ OAuth access token 的**专用** ref（只有本桥写 ⇒ 不会被 `providers.sync` 抢）。
- *
- * 背景（2026-10-28）：`VSSAROS_CODEBUDDY_KEY` 同时被
- *   ① 本桥（OAuth access token）与 ② IDE `providers.sync`（**API Key**）写
- * ⇒ 后写者赢 ⇒ Host 侧可能拿到 API Key ⇒ 平台对它的 `/v3/config` 拒答 ⇒ 节点模型数为 0。
- * ⇒ 需要 OAuth 的调用方（例如中转站 Node Agent 拉模型目录）读**这个** ref ✓
- */
+/** Host 自持的 OAuth 凭据引用；登录、刷新、模型目录和聊天使用同一槽位，不受旧版 IDE 同步影响。 */
 export const CODEBUDDY_ACCESS_TOKEN_REF = 'VSSAROS_CODEBUDDY_ACCESS_TOKEN';
 /** 会话信息（refresh token / 过期时间 / 来源）的凭据引用（JSON 字符串）。 */
 export const CODEBUDDY_SESSION_REF = 'VSSAROS_CODEBUDDY_SESSION';
@@ -237,7 +230,7 @@ export function codebuddyRouteEntry({ baseURL, accessToken, models }) {
 		displayName: CODEBUDDY_DISPLAY_NAME,
 		api: 'openai-completions',
 		baseURL: String(baseURL).trim().replace(/\/+$/, ''),
-		credentialRef: CODEBUDDY_CREDENTIAL_REF,
+		credentialRef: CODEBUDDY_ACCESS_TOKEN_REF,
 		retryPolicy: CODEBUDDY_RETRY_POLICY,
 		headers: sanitizeHeaders(identityHeaders(accessToken)),
 		// 与 IDE 侧同一上限（跨进程校验器 `models.length > 200` 拒绝）。
@@ -389,12 +382,7 @@ export function createCodeBuddyService(deps) {
 		}
 	};
 	const readSession = async () => {
-		// ★ 2026-10-28：access token 优先从**专用 ref** 读（`VSSAROS_CODEBUDDY_ACCESS_TOKEN`）。
-		//   原因：`VSSAROS_CODEBUDDY_KEY` 那个槽位有**两个写入方** —— 本桥（OAuth token）与
-		//   IDE 的 `providers.sync`（**API Key**）⇒ 后写者赢 ⇒ 从旧 ref 读到的可能已是 API Key
-		//   ⇒ 拿它拉模型目录会被平台拒答（code:12403）⇒ 节点模型数 0 ✗
-		//   ⇒ OAuth token 另存专用 ref（只有本桥写）⇒ 这里优先读它；旧 ref 只作**回退**
-		//   （老数据：那时那一份确实是 OAuth token）。
+		// Host 登录、目录和聊天共用专用 OAuth 槽位；旧版 IDE 同步槽位只作历史会话回退。
 		const accessToken = await readRef(CODEBUDDY_ACCESS_TOKEN_REF) || await readRef(CODEBUDDY_CREDENTIAL_REF);
 		if (!accessToken) { return undefined; }
 		let meta = {};
@@ -415,13 +403,8 @@ export function createCodeBuddyService(deps) {
 		if (!credentials || typeof credentials.set !== 'function') {
 			throw new Error('凭据服务不可用（credentials 缺席）—— 无法保存 CodeBuddy 登录态');
 		}
-		// ★ 2026-10-28：**OAuth token 只写专用 ref**（`VSSAROS_CODEBUDDY_ACCESS_TOKEN`）。
-		//   ⚠ **不再写** `VSSAROS_CODEBUDDY_KEY` —— 那个槽位是 pi-ai 路由的 `apiKeyEnv`，
-		//     归 `providers.sync`（**API Key**）所有 ⇒ 本桥往里写 OAuth token 就是**抢**
-		//     ⇒ 谁后写谁赢 ⇒ 路由可能拿到 OAuth token（目录拉不到）或 API Key（目录被拒答）⇒
-		//     表现为"节点模型数 0"这类玄学问题 ✗
+		// 聊天路由按请求解析同一专用引用，刷新后无需重写路由即可使用新 token。
 		await credentials.set(CODEBUDDY_ACCESS_TOKEN_REF, accessToken);
-		//   （聊天仍用 API Key —— pi-ai 的 apiKeyEnv 指向 `VSSAROS_CODEBUDDY_KEY` ⇒ 不变 ✓）
 		await credentials.set(CODEBUDDY_SESSION_REF, JSON.stringify({
 			...(refreshToken ? { refreshToken } : {}),
 			expiresAt,
@@ -612,6 +595,9 @@ export function createCodeBuddyService(deps) {
 				lastRoute = { written: false, models: 0, at: now(), why: r.changed ? 'removed（目录为空）' : 'absent（目录为空）' };
 				return lastRoute;
 			}
+			if (!await readRef(CODEBUDDY_ACCESS_TOKEN_REF)) {
+				await credentials.set(CODEBUDDY_ACCESS_TOKEN_REF, token);
+			}
 			const baseURL = await resolveBaseURL(`${cfg.endpoint}/v2`).catch(() => `${cfg.endpoint}/v2`);
 			const entry = codebuddyRouteEntry({ baseURL, accessToken: token, models });
 			const r = await writeOwnedRoute(settings, CODEBUDDY_ROUTE, buildRouteProfile(entry));
@@ -797,7 +783,7 @@ export function createCodeBuddyService(deps) {
 
 	return {
 		config: cfg,
-		refs: { access: CODEBUDDY_CREDENTIAL_REF, session: CODEBUDDY_SESSION_REF, signedOut: CODEBUDDY_SIGNED_OUT_REF },
+		refs: { access: CODEBUDDY_ACCESS_TOKEN_REF, session: CODEBUDDY_SESSION_REF, signedOut: CODEBUDDY_SIGNED_OUT_REF },
 		setBaseURLResolver: fn => { resolveBaseURL = typeof fn === 'function' ? fn : (async real => real); },
 		status,
 		signIn,

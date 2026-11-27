@@ -430,12 +430,13 @@ export function createRooms(deps) {
 	}
 
 	async function readRaw() {
-		try { return JSON.parse(await readFile(deps.file, 'utf8')); } catch (error) {
+		try { return JSON.parse(await (deps.readFile ?? readFile)(deps.file, 'utf8')); } catch (error) {
 			if (error?.code !== 'ENOENT') { warn(`读群记录失败（按空处理）：${String(error?.message ?? error)}`); }
 			return null;
 		}
 	}
 	async function load() {
+		if (closed) { throw new RoomError('群记录已关闭，不能重新载入', 503); }
 		loaded ??= (async () => {
 			let dirty = false;
 			let raw = await readRaw();
@@ -578,11 +579,21 @@ export function createRooms(deps) {
 		do { last = writing; await last; } while (last !== writing);
 		if (writeError) { throw writeError; }
 	}
-	/** 卸载：写完排队的改动，再交还租约（只删自己的；已被接管就不动）。 */
-	async function close() {
+	let closing;
+	/** 卸载：等在途载入和写入结束，再交还自己的租约。 */
+	function close() {
+		if (closing) { return closing; }
 		closed = true;
 		for (const id of digestTimers.keys()) { cancelDigest(id); }
-		try { await flush(); } finally { await releaseLease(); }
+		closing = (async () => {
+			try {
+				if (loaded) { await loaded; }
+				await flush();
+			} finally {
+				if (loaded) { await releaseLease(); }
+			}
+		})();
+		return closing;
 	}
 	/**
 	 * ★ 跨插件契约（schema=ROUND_SCHEMA）：一轮对外的全部字段。工具结果、`?progress=`、`?active=1` 共用，
@@ -2374,9 +2385,16 @@ export function userTextOf(event) {
  */
 export function installRooms(ctx, rooms) {
 	const offs = [];
+	let disposed = false;
+	let closing;
+	const reportLoadError = error => {
+		const message = String(error?.message ?? error);
+		console.warn(`[vssaros-agents][rooms] 载入群记录失败：${message}`);
+		rooms.reportError?.({ kind: 'load-failed', error: message });
+	};
 	const attached = new WeakSet();
 	const attach = (agent) => {
-		if (!agent?.ctx?.tools || typeof agent.ctx.tools.register !== 'function' || attached.has(agent)) { return; }
+		if (disposed || !agent?.ctx?.tools || typeof agent.ctx.tools.register !== 'function' || attached.has(agent)) { return; }
 		attached.add(agent);
 		try {
 			const dispose = agent.ctx.tools.register(rooms.relayTool());
@@ -2499,12 +2517,20 @@ export function installRooms(ctx, rooms) {
 		offs.push(ctx.on('approval/request', (request, next) => rooms.decideApproval(request, next), { prepend: true }));
 	}
 	offs.push(ctx.on('agent/created', ({ agent }) => {
-		void rooms.load().then(() => { if (rooms.isRoom(agent?.id ?? agent?.session?.id)) { attach(agent); } });
+		if (disposed) { return; }
+		void rooms.load().then(() => { if (!disposed && rooms.isRoom(agent?.id ?? agent?.session?.id)) { attach(agent); } }).catch(reportLoadError);
 	}));
-	void rooms.load();
+	const loading = rooms.load();
+	void loading.catch(reportLoadError);
 	return () => {
+		if (closing) { return closing; }
+		disposed = true;
 		for (const off of offs.splice(0)) { try { off(); } catch { /* 已撤 */ } }
-		void (rooms.close ?? rooms.flush)?.(); // ★ 卸载前把排队的执行过程写完，再交还租约
+		closing = (async () => {
+			try { await loading; }
+			finally { await (rooms.close ?? rooms.flush)?.(); }
+		})();
+		return closing;
 	};
 }
 

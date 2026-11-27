@@ -179,6 +179,9 @@ $loop = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.ForE
 if (-not $names -or -not $loop) { throw 'Required extension loop missing' }
 function npm { [IO.File]::AppendAllText('${capture.replace(/'/g, "''")}', 'call' + [Environment]::NewLine); $global:LASTEXITCODE = 1 }
 function Start-Sleep { param($Seconds) }
+function Test-DependencyLayer { param($Relative); return $false }
+function Clear-DependencyLayer { param($Relative) }
+$repoRoot = '${f.repo.replace(/'/g, "''")}'
 $extRoots = @([pscustomobject]@{ Name = 'mermaid-chat-features'; FullName = '${directory.replace(/'/g, "''")}' })
 . ([scriptblock]::Create($names.Extent.Text + [Environment]::NewLine + $loop.Extent.Text))
 Write-Output 'UNEXPECTED_INSTALL_SUCCESS'
