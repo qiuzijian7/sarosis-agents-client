@@ -20,22 +20,22 @@
  *
  * 三条纪律：
  *   ① **串行**跑（多个占用者之间也可能互相等，别并发）；
- *   ② 每条**带超时**（卡死的钩子不许把安装拖住 —— 装不上比"多弹一次重启提示"更糟）；
- *   ③ 失败**只记日志、不阻断**（兜底就是安装器的 `restartreplace`，不是半装）。
+ *   ② 每条带超时和取消信号；
+ *   ③ 失败或超时阻断安装，保留可重试状态。
  */
 
+import { CancellationToken, CancellationTokenSource } from '../../../base/common/cancellation.js';
 import { IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import type { ILogService } from '../../log/common/log.js';
 
-export type BeforeUpdateInstallHook = () => Promise<void> | void;
+export type BeforeUpdateInstallHook = (token: CancellationToken) => Promise<void> | void;
 
 /**
  * 单条钩子的超时。
  *
- * 取 8s：`dshHostSupervisor._killChild()` 是 `taskkill /T /F` + 5s 后 SIGKILL 兜底 ⇒ 最坏 ~5s，
- * 留 3s 余量。超时只是"不再等"（钩子仍会继续跑完），不会取消释放动作。
+ * 覆盖两次活动查询与 Host 退出确认；超时取消准备并拒绝安装。
  */
-export const BEFORE_UPDATE_HOOK_TIMEOUT_MS = 8_000;
+export const BEFORE_UPDATE_HOOK_TIMEOUT_MS = 25_000;
 
 const hooks = new Set<BeforeUpdateInstallHook>();
 
@@ -45,19 +45,27 @@ export function registerBeforeUpdateInstallHook(hook: BeforeUpdateInstallHook): 
 	return toDisposable(() => hooks.delete(hook));
 }
 
-/** 安装前收尾：串行 + 单条超时 + 失败只记日志。 */
-export async function runBeforeUpdateInstallHooks(logService?: ILogService): Promise<void> {
-	if (hooks.size === 0) {
-		return;
-	}
+/** Preparation errors and timeouts veto installation; no installer is started on failure. */
+export async function runBeforeUpdateInstallHooks(logService?: ILogService, timeoutMs = BEFORE_UPDATE_HOOK_TIMEOUT_MS): Promise<void> {
 	for (const hook of [...hooks]) {
+		const cancellation = new CancellationTokenSource();
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
 			await Promise.race([
-				Promise.resolve(hook()),
-				new Promise<void>(resolve => setTimeout(resolve, BEFORE_UPDATE_HOOK_TIMEOUT_MS)),
+				Promise.resolve().then(() => hook(cancellation.token)),
+				new Promise<never>((_resolve, reject) => {
+					timer = setTimeout(() => {
+						cancellation.cancel();
+						reject(new Error('stop-failed: update preparation timed out'));
+					}, timeoutMs);
+				}),
 			]);
 		} catch (e) {
-			logService?.warn(`update#beforeInstall hook failed（安装时可能仍会撞文件锁）：${String((e as Error)?.message ?? e)}`);
+			logService?.warn(`update#beforeInstall veto: ${String((e as Error)?.message ?? e)}`);
+			throw e;
+		} finally {
+			if (timer !== undefined) { clearTimeout(timer); }
+			cancellation.dispose(true);
 		}
 	}
 }

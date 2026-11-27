@@ -23,20 +23,14 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IIdeCapabilityEnv, IIdeSelectionRange, buildExecuteNodeRequest, executeIdeCapability, ideFailureSummary } from '../common/dshIdeCapabilities.js';
 import { DSH_UPGRADE_ASSET_KINDS, IDshUpgradeAppState, IDshUpgradeAssetRow, IDshUpgradeBundledRow, IDshUpgradeState, isPathInside } from '../common/dshPageBridgeProtocol.js';
-// ★ 2026-10-23（desktop 窗口「更新」入口）：应用升级的纯逻辑（版本比较 / **降级闸门** / 端点）
-import { decideAppUpdate, parseAppUpdateResponse } from '../common/dshAppUpdate.js';
 import { createUpgradeJob, finishUpgradeJob, finishUpgradeJobItem, startUpgradeJobItem, upgradeJobSummary, type IUpgradeJobState } from '../common/dshUpgradeJob.js';
 import { decideUpgradePolicy } from '../common/dshUpgradePolicy.js';
 import { decideRestartScope } from '../common/dshRestartScope.js';
 import { DSH_SAFE_MODE_STORAGE_KEY, safeModeDisablePlan, validateSafeModeBackup } from '../common/dshSafeMode.js';
 import { getDshPluginCenterHost } from '../../agentStudio/browser/dshPluginCenterHost.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
-import { IUpdateService, State } from '../../../../platform/update/common/update.js';
-import { waitForUpdateReady } from '../common/dshUpdateWait.js';
-// ★ 2026-11-05：复刻 dsh-desktop 更新实现的 8 相状态机（纯函数，零平台依赖，可单测）。
-import { AppUpdateEvent, IAppUpdateStatus, initialAppUpdateStatus, reduceAppUpdateStatus } from '../common/appUpdateState.js';
-// ★ 2026-11-23：12 态 → 8 相的映射收敛成可单测的穷尽表（宿主不再自己写 switch）。
-import { mapUpdateServiceState } from '../common/appUpdateStateMapping.js';
+import { IAppUpdateStatus, initialAppUpdateStatus } from '../common/appUpdateState.js';
+import { IDesktopUpdateSnapshot } from '../common/dshDesktopUpdate.js';
 import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesFromPlugins, activeModulesOf, containersFromPlugins, pagesFromPlugins, resolveContainerPageState, withWorkbenchClient } from '../common/dshModuleContainers.js';
 // `taskboard` 能力（看板"定位卡片"）：与原 `TasksViewPane` 点条目**同一套实现**（同一个 EditorInput
 // 与同一个 focusTaskInBoard），不另开一条"看起来能跳"的路径。
@@ -586,11 +580,7 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		// 它**不在**工作区里、也不在盘上，只能由 IDE 内存给出（这正是反向通道存在的理由 ✓）。
 		@IAgentStudioDashboardService private readonly _dashboardService: IAgentStudioDashboardService,
 		@ICommandService private readonly _commandService: ICommandService,
-		// ★ 2026-10-23（desktop 窗口「更新」入口）：应用自身的版本 / 更新源 / 更新服务。
-		//   `IUpdateService` 在 workbench 里是 eager 注册的（`workbench/services/update`）⇒ 直接注入；
-		//   万一哪天真缺它，`upgradeApp` 里会退回"请手动下载安装包"，不会静默失败 ✓。
 		@IProductService private readonly _productService: IProductService,
-		@IUpdateService private readonly _updateService: IUpdateService,
 		@ILogService private readonly _logService: ILogService,
 		// ★ 2026-10-21：`media`（生图）能力要用的：模型 provider 注册表
 		// （`getModelProviders()` ⇒ 里面有 `generateImage` 的那些就是能出图的源）。
@@ -671,18 +661,10 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		this._register(this._channel.listen<IDshIdeRequest>(DshHarnessChannelEvent.OnIdeRequest)(request => void this._handleIdeRequest(request)));
 		void this.getWorkspaceSync().catch(() => undefined);
 		void this._channel.call<IDshHostStatus>(DshHarnessChannelCommand.GetStatus).then(s => this._update(s), () => undefined);
-		// ★★ 2026-10-29（用户："打包出的 exe 左下角没有弹出更新（有可更新的版本）"）：
-		//   真机证据：更新源上**确实有新版**（本地 2.2.26207 / 源上 2.2.26208，URL 与响应都验过），
-		//   但左下角那行一直显示"已最新" ⇒ 因为 `_checkAppUpdate()` **只在用户点「检查更新」/
-		//   「一键升级」时**才被调用（`refreshUpgrade` / `upgradeApp`），启动时压根没人查 ✗✗。
-		//   ⇒ 启动后**静默查一次**：结果进 `_appUpdate`（缓存），之后每个新视图都会带上它
-		//   （`_pushUpgradeState`）⇒ 左下角那行与面板里的应用行都能立刻说出"可升级到 X" ✓。
-		this._scheduleSilentAppUpdateCheck();
-		// ★ 2026-11-05（复刻 dsh-desktop）：状态机的事件源是平台更新服务，不是定时器。
-		//   订阅由基类 Disposable._register 统一清理，不需要覆写 dispose。
-		this._appUpdateStatus = initialAppUpdateStatus(this._productService.version ?? '0.0.0');
-		this._appUpdateSkippedVersion = this._storageService.get('dsh.appUpdate.skippedVersion', StorageScope.APPLICATION);
-		this._register(this._updateService.onStateChange(state => this._onUpdateServiceState(state)));
+		this._register(this._channel.listen<IDesktopUpdateSnapshot>(DshHarnessChannelEvent.OnDidChangeDesktopUpdate)(snapshot => this._acceptDesktopUpdate(snapshot)));
+		void this._channel.call<IDesktopUpdateSnapshot | undefined>(DshHarnessChannelCommand.DesktopUpdateStatus).then(snapshot => {
+			if (snapshot) { this._acceptDesktopUpdate(snapshot); }
+		}, error => this._logService.warn(`[dshHarness] update snapshot failed: ${String(error)}`));
 	}
 
 	/**
@@ -2028,7 +2010,7 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	// ★ 2026-11-05 复刻 dsh-desktop：8 相状态机是真源；上面的 `_appUpdate` 仍是
 	//   「更新源版本结论」，供 IDE 面板与旧胶囊用，两者不互相替代。
 	private _appUpdateStatus: IAppUpdateStatus = initialAppUpdateStatus('0.0.0');
-	private _appUpdatePresentation = 0;
+	private _desktopUpdateSeq = -1;
 	private _appUpdateReleaseNotes: string | undefined;
 	private _appUpdateSkippedVersion: string | undefined;
 	// ★ 2026-11-23（P1）：更新源可选的最低版本与灰度百分比（缺省 = 不强制 / 全量）。
@@ -2116,11 +2098,9 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	 * ⚠ `check=true` 只更新 `_appUpdate`（应用自身的结论）；随包插件 / 资产本来每次都会现算。
 	 */
 	public async getUpgradeState(check?: boolean): Promise<IDshUpgradeState> {
-		if (check) {
-			this._appUpdate = await this._checkAppUpdate();
-			// 顺手推一份给 dsh 页面：desktop 那行也要跟着变成"已是最新 / 可升级到 X" ✓
-			void this._pushUpgradeToAll();
-		}
+		if (check) { await this.checkAppUpdate(); }
+		const snapshot = await this._channel.call<IDesktopUpdateSnapshot | undefined>(DshHarnessChannelCommand.DesktopUpdateStatus);
+		if (snapshot) { this._acceptDesktopUpdate(snapshot); }
 		return await this._buildUpgradeState();
 	}
 
@@ -2144,60 +2124,7 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	public async upgradeApp(): Promise<void> {
-		if (this._upgradeBusy) {
-			return;   // 防重入：一次只跑一条（下载/安装期间按钮已置灰，这里再兜一层）
-		}
-		this._upgradeError = undefined;
-		this._upgradeBusy = 'checking';
-		await this._pushUpgradeToAll();
-		try {
-			const checked = await this._checkAppUpdate();
-			this._appUpdate = checked;
-			if (checked.action !== 'upgrade') {
-				// 已最新 / **更新源更旧** / 查不到 ⇒ 一律不下载。
-				// ★ 这一条就是"一键升级"不变成"一键降级"的地方（真机更新源现在比本地旧）。
-				this._logService.info(`[dshHarness] upgradeApp: 不升级（action=${checked.action} local=${checked.current} remote=${checked.remote ?? '-'}）`);
-				return;
-			}
-			const svc = this._updateService;
-			if (!svc) {
-				throw new Error('这个构建没有可用的更新服务，请手动下载安装包覆盖安装');
-			}
-			this._upgradeBusy = 'downloading';
-			await this._pushUpgradeToAll();
-			await svc.checkForUpdates(true);
-			// ★ 2026-11-04：阈值 180s → 600s（安装包实测 ≈477MB，慢网 3 分钟不够），
-			//   并且**按真实原因**报错 —— 把"更新服务被禁用 / 压根没开始下载 / 真超时"区分开。
-			const waited = await this._waitUpdateReady(svc, 600_000);
-			if (!waited.ok) {
-				const detail = waited.detail ? `：${waited.detail}` : '';
-				throw new Error(waited.reason === 'disabled'
-					? `这个构建不支持自动更新（更新服务已禁用${detail}）—— 请手动下载安装包覆盖安装`
-					: waited.reason === 'not-started'
-						? `更新服务没有开始下载（可能另一个 VsSaros 窗口正在更新，或 update.mode=none${detail}）—— 可稍后重试，或手动下载安装包`
-						: `下载超时（已等 10 分钟仍未就绪），请稍后重试；安装包约 477MB，网速慢时会更久`);
-			}
-			this._upgradeBusy = 'installing';
-			await this._pushUpgradeToAll();
-			// ★★ 2026-10-29（真机：升级安装报「DeleteFile 失败；错误代码 5。拒绝访问」）：
-			//   我们的 dsh Host 是 **detached 常驻**的（IDE 关了它还活着）⇒ 它正加载着
-			//   `resources/app/dsh-runtime/…/koffi.node` ⇒ **安装器删不掉** ⇒ 安装中断 ⇒ 半装状态 ✗✗。
-			// ⇒ 先结束它（释放锁）再退出安装 ⇒ 升级顺畅 ✓。
-			// ⚠ 失败**不阻断**升级（只记日志）：大不了让安装器走 `restartreplace` 兜底。
-			try {
-				await this._channel.call<void>(DshHarnessChannelCommand.ReleaseHost);
-			} catch (e) {
-				this._logService.warn('[dshHarness] upgradeApp: 释放 dsh Host 失败（安装时可能仍会撞文件锁）：' + String((e as Error)?.message ?? e));
-			}
-			// 应用会重启：正在跑的会话中断（面板上已写明，不再弹二次确认 —— 用户点的是"一键"）
-			svc.quitAndInstall();
-		} catch (e) {
-			this._upgradeError = String((e as Error)?.message ?? e);
-			this._logService.warn(`[dshHarness] upgradeApp 失败：${this._upgradeError}`);
-		} finally {
-			this._upgradeBusy = undefined;
-			await this._pushUpgradeToAll();
-		}
+		await this._channel.call<void>(DshHarnessChannelCommand.DesktopUpdateOpen);
 	}
 
 	public async upgradeAsset(kind: string, slug: string): Promise<{ ok: boolean; error?: string }> {
@@ -2264,185 +2191,42 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		}
 	}
 
-	/**
-	 * 启动后**静默**查一次应用更新（2026-10-29）。
-	 *
-	 * 为什么必须有（用户报障："打包出的 exe 左下角没有弹出更新（有可更新的版本）"）：
-	 *   `_checkAppUpdate()` 原来只在 `refreshUpgrade()`（点「检查更新」）与 `upgradeApp()`
-	 *   （点「一键升级」）里被调用 ⇒ **启动时从来没人查** ⇒ `_appUpdate` 恒 `undefined`
-	 *   ⇒ 快照里 `app.action = 'unknown'`（页面文案"还没检查"）⇒ 左下角那行永远"已最新" ✗✗。
-	 *   真机上更新源**确实有新版**（本地 2.2.26207 / 源上 2.2.26208）—— 纯粹是没去问。
-	 *
-	 * 三条约束：
-	 *   · **延后几秒**再查：避开首启高峰（Host 冷启动要十几秒），也避免与页面首帧抢资源；
-	 *   · **静默**：不设 `_upgradeBusy`（页面不该显示"正在检查更新源…"），失败只记日志；
-	 *   · 结果进 `_appUpdate` 后**每个新视图都会带上**（`_pushUpgradeState`）⇒ 视图晚建也不丢 ✓。
-	 */
-	private _scheduleSilentAppUpdateCheck(): void {
-		const timer = setTimeout(() => {
-			void (async () => {
-				try {
-					this._appUpdate = await this._checkAppUpdate();
-					const checked = this._appUpdate;
-					// ★★ 2026-11-23（真机：打包版 exe 有新版却不弹更新 UI）：过去静默检查只写
-					//   `_appUpdate`（版本结论），8 相状态机仍停在 `idle` ⇒ 快照 app.phase=idle
-					//   ⇒ client.appUpdate.js 的 AUTO_VISIBLE 不命中、胶囊又因 pendingCount=0 隐藏
-					//   ⇒ 用户完全看不到更新入口 ✗。这里把「发现新版」推进成 available。
-					//   ⚠ 保持静默：不递增 presentationId（不重放手动弹窗）、不设 _upgradeBusy、
-					//     不弹 IDE 通知；只在 idle 时推进，绝不打断正在下载/已就绪的流程。
-					if (checked.action === 'upgrade' && checked.remote && this._appUpdateStatus.phase === 'idle') {
-						const event: AppUpdateEvent = {
-							type: 'available', version: checked.remote,
-							...(this._appUpdateReleaseNotes ? { releaseNotes: this._appUpdateReleaseNotes } : {}),
-						};
-						this._appUpdateStatus = {
-							...reduceAppUpdateStatus(this._appUpdateStatus, event),
-							...(this._appUpdateStatus.presentationId !== undefined ? { presentationId: this._appUpdateStatus.presentationId } : {}),
-						};
-						this._logService.info(`[dshHarness] 静默检查发现新版 v${checked.remote} ⇒ 更新卡片自动可见`);
-					}
-					await this._pushUpgradeToAll();
-				} catch (e) {
-					this._logService.info(`[dshHarness] 静默检查应用更新失败：${String((e as Error)?.message ?? e)}`);
-				}
-			})();
-		}, 8_000);
-		// ⚠ CI 全量编译时全局 setTimeout 可能解析到 src/typings/base-common.d.ts 的
-		//   `TimeoutHandle`（空接口，类型上没有 unref）⇒ 结构化断言调用（与 runJournal.ts / app.ts 同口径）。
-		(timer as { unref?: () => void })?.unref?.();
-		this._register({ dispose: () => clearTimeout(timer) });
-	}
-
-	/** 问更新源"最新是哪一版"，并用 `decideAppUpdate` 判能不能升（**不下载**）。 */
+	/** Reads the native controller's cached result without starting another update check. */
 	private async _checkAppUpdate(): Promise<IDshUpgradeAppState> {
-		const current = this._productService.version ?? '0.0.0';
-		try {
-			// 每次检查都清掉上一版的日志 / 策略，避免旧结论串到新版本。
-			this._appUpdateReleaseNotes = undefined;
-			this._appUpdateMinVersion = undefined;
-			this._appUpdateRolloutPercent = undefined;
-			// ★★ 2026-10-30（真机 P0：打包 exe 的更新面板红字 `Failed to fetch`）：
-			//   原来在**渲染进程**用 IRequestService（浏览器 XHR）直连更新源 —— 更新源是内网静态
-			//   托管，**不发 CORS 头** ⇒ 浏览器拦掉响应，JS 只能看到 `Failed to fetch` ✗✗
-			//   （saros-pocket 的 app.js L2271 早有同一坑的记录与解法：走原生 fetch）。
-			//   ⇒ 请求挪到**主进程**（`CheckAppUpdate` 通道命令，无跨域概念）；
-			const res = await this._channel.call<{ ok: boolean; status?: number; body?: string; error?: string; platform?: string }>(
-				DshHarnessChannelCommand.CheckAppUpdate,
-			);
-			if (!res || !res.ok) {
-				return { current, action: 'unknown', error: res?.error ?? '更新源请求失败' };
-			}
-			if (!res.body) {
-				return { current, action: 'unknown', error: `更新源返回 HTTP ${res.status ?? 204}（空响应）` };
-			}
-			const parsed = parseAppUpdateResponse(JSON.parse(res.body));
-			if (!parsed?.version || !parsed.productVersion || !parsed.url || !/^https?:\/\//i.test(parsed.url)) {
-				return { current, action: 'unknown', error: '更新源响应缺少有效的 version、productVersion 或下载地址' };
-			}
-			this._appUpdateReleaseNotes = parsed.notes;
-			this._appUpdateMinVersion = parsed.minVersion;
-			this._appUpdateRolloutPercent = parsed.rolloutPercent;
-			const remote = parsed.productVersion;
-			const action = decideAppUpdate(current, remote);
-			this._logService.info(`[dshHarness] app update: local=${current} remote=${remote} ⇒ ${action} platform=${res.platform ?? '-'}`);
-			if (action === 'unknown') {
-				return { current, remote, action, error: '更新源或本地构建的版本号无法识别' };
-			}
-			return { current, remote, action, ...(action === 'downgrade' ? { error: `当前安装渠道的更新源版本 ${remote} 低于本地 ${current}，已阻止降级` } : {}) };
-		} catch (e) {
-			return { current, action: 'unknown', error: String((e as Error)?.message ?? e) };
-		}
+		const snapshot = await this._channel.call<IDesktopUpdateSnapshot | undefined>(DshHarnessChannelCommand.DesktopUpdateStatus);
+		if (snapshot) { this._acceptDesktopUpdate(snapshot); }
+		return snapshot?.app ?? { current: this._productService.version ?? '0.0.0', action: 'unknown' };
 	}
 
 	// ── 复刻 dsh-desktop 的 App 更新状态机（2026-11-05）──────────────────────────────
 
-	/**
-	 * 平台更新服务 `State` → 状态机事件：映射的**唯一真源**已抽到
-	 * `common/appUpdateStateMapping.ts`（穷尽表，可单测；新增 StateType 会编译期报错）。
-	 *
-	 * ⚠ `undefined` = 不迁移：普通 `Idle` 不能把用户还没点「更新」的 `available` 冲掉 ✗。
-	 */
-	private _onUpdateServiceState(state: State): void {
-		const event = mapUpdateServiceState(state, this._appUpdateReleaseNotes);
-		if (!event) {
-			return;
-		}
-		this._appUpdateStatus = reduceAppUpdateStatus(this._appUpdateStatus, event);
+	/** Read-only replica of the main-process update snapshot; older deliveries are ignored. */
+	private _acceptDesktopUpdate(snapshot: IDesktopUpdateSnapshot): void {
+		if (snapshot.seq <= this._desktopUpdateSeq) { return; }
+		this._desktopUpdateSeq = snapshot.seq;
+		this._appUpdate = snapshot.app;
+		this._appUpdateReleaseNotes = snapshot.app.releaseNotes;
+		this._appUpdateMinVersion = snapshot.metadata?.minVersion;
+		this._appUpdateRolloutPercent = snapshot.metadata?.rolloutPercent;
+		this._appUpdateSkippedVersion = snapshot.app.skippedVersion;
+		this._appUpdateStatus = {
+			phase: snapshot.app.phase ?? 'idle', currentVersion: snapshot.app.current,
+			availableVersion: snapshot.app.availableVersion, percent: snapshot.app.percent,
+			message: snapshot.app.error, releaseNotes: snapshot.app.releaseNotes, manual: false,
+		};
 		void this._pushUpgradeToAll();
 	}
 
-	/**
-	 * 用户**显式**点「检查更新」。启动静默检查继续走 `_checkAppUpdate()`（只更新版本结论、不弹 UI）。
-	 * 每次调用推进 `presentationId` ⇒ 页面能识别「这是一次新请求」，也不会被历史快照重放弹窗。
-	 */
 	public async checkAppUpdate(): Promise<void> {
-		this._appUpdatePresentation += 1;
-		const id = this._appUpdatePresentation;
-		this._appUpdateStatus = {
-			...reduceAppUpdateStatus(this._appUpdateStatus, { type: 'check', manual: true, source: 'manual' }),
-			presentationId: id,
-		};
-		// 手动检查取回被忽略的版本（官方 `skipUpdate` 的同款语义）。
-		this._appUpdateSkippedVersion = undefined;
-		this._storageService.store('dsh.appUpdate.skippedVersion', '', StorageScope.APPLICATION, StorageTarget.USER);
-		this._upgradeError = undefined;
-		this._upgradeBusy = 'checking';
-		await this._pushUpgradeToAll();
-		try {
-			this._appUpdate = await this._checkAppUpdate();
-			const a = this._appUpdate;
-			const event: AppUpdateEvent = a.action === 'upgrade' && a.remote
-				? {
-					type: 'available', version: a.remote,
-					...(this._appUpdateReleaseNotes ? { releaseNotes: this._appUpdateReleaseNotes } : {}),
-				}
-				: a.error
-					? { type: 'error', message: a.error }
-					: { type: 'not-available' };
-			this._appUpdateStatus = { ...reduceAppUpdateStatus(this._appUpdateStatus, event), presentationId: id };
-		} finally {
-			this._upgradeBusy = undefined;
-			await this._pushUpgradeToAll();
-		}
+		await this._channel.call<void>(DshHarnessChannelCommand.DesktopUpdateOpen);
 	}
 
-	/** 忽略某个版本（持久化）；下次新版本仍会问，手动检查可覆盖忽略。 */
 	public async skipAppUpdate(version: string): Promise<void> {
-		const v = String(version ?? '').trim();
-		if (!v) {
-			return;
-		}
-		this._appUpdateSkippedVersion = v;
-		this._storageService.store('dsh.appUpdate.skippedVersion', v, StorageScope.APPLICATION, StorageTarget.USER);
-		this._appUpdateStatus = reduceAppUpdateStatus(this._appUpdateStatus, { type: 'reset' });
-		await this._pushUpgradeToAll();
+		await this._channel.call<void>(DshHarnessChannelCommand.DesktopUpdateSkip, { version });
 	}
 
-	/**
-	 * 「重新启动并安装」。只在 `downloaded` 阶段允许；安装前先释放 dsh Host 的文件锁
-	 * （真机事故：detached Host 占着 `koffi.node` ⇒ 安装器 DeleteFile 拒绝访问 / 半装）。
-	 */
 	public async installAppUpdate(): Promise<void> {
-		if (this._appUpdateStatus.phase !== 'downloaded') {
-			return;
-		}
-		try {
-			await this._channel.call<void>(DshHarnessChannelCommand.ReleaseHost);
-		} catch (e) {
-			this._logService.warn(`[dshHarness] installAppUpdate: 释放 dsh Host 失败（安装时可能仍会撞文件锁）：${String((e as Error)?.message ?? e)}`);
-		}
-		await this._updateService.quitAndInstall();
-	}
-
-	/**
-	 * 等更新服务进入"可安装"（`Ready`/`Downloaded`）。
-	 *
-	 * 逻辑与缘由见 `common/dshUpdateWait.ts` 的文件头（真机踩过：`Idle` 一见到就判失败 ⇒
-	 * 「3 分钟超时」文案掩盖了"禁用 / 没开始下载 / 真超时"三种完全不同的原因）。
-	 * 抽成纯函数是为了能用**假状态序列**做行为测试。
-	 */
-	private _waitUpdateReady(svc: IUpdateService, timeoutMs: number) {
-		return waitForUpdateReady(() => svc.state, timeoutMs);
+		await this._channel.call<void>(DshHarnessChannelCommand.DesktopUpdateOpen);
 	}
 
 	/** 算一份全量升级状态（不联网；`app` 用最近一次的结论）。 */

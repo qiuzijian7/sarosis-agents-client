@@ -16,14 +16,16 @@
  *  - `requires.minClient` 不得高于当前客户端版本；
  *  - 每个 tgz 按 sha256 校验；归档落 userData（system setup 装在 Program Files，appPath 不可写）。
  *
- * 原子性：先全部下载校验，再逐个安装；**全部成功才写 overrides**（失败保留上一版、下次重试）。
- * `installPluginSpec` 内部会 `_ensureProfile` 并置 `_pluginsStale`，下次启动会起重读磁盘的 Host。
+ * 先全部下载校验，在 profile 排他事务内安装并核对版本；全部成功才提交 overrides。
+ * 批次失败恢复原 package/lock 并重新物化依赖树；恢复失败保留备份和阻断锁。
+ * 不承诺撤销插件安装脚本对 profile 以外的副作用。
  */
 
 import { createHash, verify as ed25519Verify } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { comparePluginVersions } from './dshBundledPlugins.js';
+import { valid } from '../../../../base/common/semver/semver.js';
 import type { FetchLike } from './dshNodeInstaller.js';
 import { readOverrides, writeOverrides, type IDshPluginOverride } from './dshPluginOverrides.js';
 
@@ -63,8 +65,8 @@ export interface IDshPluginPatchOptions {
 	readonly platform: string;
 	readonly fetch: FetchLike;
 	readonly log: (line: string) => void;
-	/** 通常为 `supervisor.installPluginSpec(spec, name)`；spec 形如 `file:/<userData>/.../x.tgz`。 */
-	readonly install: (name: string, spec: string) => Promise<{ ok: boolean; error?: string }>;
+	readonly installedVersion: (name: string) => string | undefined;
+	readonly runTransaction: (apply: (install: (name: string, spec: string) => Promise<{ ok: boolean; version?: string; error?: string }>) => Promise<IDshPluginPatchResult>) => Promise<IDshPluginPatchResult>;
 	/** 公钥 PEM；生产必须提供（内置常量或 VSSAROS_DSH_PLUGIN_PATCH_PUBLIC_KEY）。 */
 	readonly publicKeyPem?: string;
 	/** 仅内网开发：允许未签名清单。生产绝不开启。 */
@@ -83,7 +85,7 @@ export class DshPluginPatchManager {
 			return await this._apply();
 		} catch (e) {
 			const message = String((e as Error)?.message ?? e);
-			this._log(`failed: ${message}（保留现有插件，下次启动重试）`);
+			this._log(`failed: ${message}`);
 			return { ok: false, applied: 0, error: message };
 		}
 	}
@@ -187,9 +189,25 @@ export class DshPluginPatchManager {
 		this._checkCompatibility(raw);
 
 		const existing = readOverrides(userDataPath);
-		const pending = raw.plugins.filter(entry =>
-			entry.name && entry.version && entry.url && entry.sha256 && entry.source
-			&& !existing.some(o => o.name === entry.name && o.version === entry.version && o.sha256 === entry.sha256));
+		const namesInManifest = new Set<string>();
+		for (const entry of raw.plugins) {
+			if (!/^(@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*$/.test(entry.name) || !valid(entry.version)
+				|| !/^dsh-plugins\/[a-z0-9][a-z0-9._-]*$/.test(entry.source ?? '') || !/^[a-f0-9]{64}$/.test(entry.sha256)
+				|| typeof entry.url !== 'string' || !entry.url || namesInManifest.has(entry.name)) {
+				throw new Error('插件补丁清单包含无效或重复的包');
+			}
+			namesInManifest.add(entry.name);
+		}
+		const assertVersion = (entry: IPluginPatchEntry) => {
+			const bundled = JSON.parse(readFileSync(join(this._opts.bundledPluginsRoot, entry.source!.split('/')[1], 'package.json'), 'utf8')) as { name: string; version: string };
+			if (bundled.name !== entry.name || !valid(bundled.version)) { throw new Error(`补丁随包来源不匹配：${entry.name}`); }
+			const versions = [bundled.version, this._opts.installedVersion(entry.name), ...readOverrides(userDataPath).filter(o => o.name === entry.name).map(o => o.version)].filter((version): version is string => version !== undefined);
+			if (versions.some(version => !valid(version) || comparePluginVersions(entry.version, version) <= 0)) {
+				throw new Error(`已阻止插件降级或同版内容替换：${entry.name}@${entry.version}`);
+			}
+		};
+		const pending = raw.plugins.filter(entry => !existing.some(o => o.name === entry.name && o.version === entry.version && o.sha256 === entry.sha256));
+		for (const entry of pending) { assertVersion(entry); }
 		if (!pending.length) {
 			this._log('插件补丁已是最新，无需操作');
 			return { ok: true, applied: 0 };
@@ -207,7 +225,7 @@ export class DshPluginPatchManager {
 			if (digest !== entry.sha256) {
 				throw new Error(`sha256 不符：${entry.name}（期望 ${entry.sha256}，实得 ${digest}）`);
 			}
-			const fileName = entry.url.split('/').pop() ?? `${entry.name.replace(/[^a-z0-9._-]/gi, '-')}.tgz`;
+			const fileName = `${entry.name.replace(/[^a-z0-9._-]/gi, '-')}.tgz`;
 			const dir = join(userDataPath, 'dsh-plugin-patches', digest.slice(0, 12));
 			mkdirSync(dir, { recursive: true });
 			const archive = join(dir, fileName);
@@ -216,27 +234,25 @@ export class DshPluginPatchManager {
 			this._log(`downloaded ${entry.name}@${entry.version} (${bytes.length} B)`);
 		}
 
-		// 阶段二：交给 supervisor 的 spec 通道（`dsh plugin add file:<tgz>`，内部会 _ensureProfile）。
-		const applied: IDshPluginOverride[] = [];
-		for (const { entry, archive } of archives) {
-			const result = await this._opts.install(entry.name, `file:${archive.replace(/\\/g, '/')}`);
-			if (!result.ok) {
-				throw new Error(`安装失败 ${entry.name}@${entry.version}：${result.error ?? '未知原因'}`);
+		return this._opts.runTransaction(async install => {
+			for (const { entry } of archives) { assertVersion(entry); }
+			const applied: IDshPluginOverride[] = [];
+			for (const { entry, archive } of archives) {
+				const result = await install(entry.name, `file:${archive.replace(/\\/g, '/')}`);
+				if (!result.ok || result.version !== entry.version) {
+					throw new Error(`安装失败 ${entry.name}@${entry.version}：${result.error ?? `实装版本不匹配（${result.version ?? '未知'}）`}`);
+				}
+				applied.push({
+					name: entry.name, version: entry.version,
+					dirName: entry.source!.split('/')[1], sha256: entry.sha256, archive,
+					appliedAt: new Date().toISOString(),
+				});
+				this._log(`applied ${entry.name}@${entry.version}`);
 			}
-			applied.push({
-				name: entry.name,
-				version: entry.version,
-				dirName: entry.source!.split('/').filter(Boolean).pop() ?? entry.name,
-				sha256: entry.sha256,
-				archive,
-				appliedAt: new Date().toISOString(),
-			});
-			this._log(`applied ${entry.name}@${entry.version}`);
-		}
-
-		const names = new Set(applied.map(o => o.name));
-		writeOverrides(userDataPath, [...existing.filter(o => !names.has(o.name)), ...applied]);
-		this._log(`✅ ${applied.length} 个插件补丁已生效；下次启动的随包清单会跳过它们`);
-		return { ok: true, applied: applied.length };
+			const names = new Set(applied.map(o => o.name));
+			writeOverrides(userDataPath, [...readOverrides(userDataPath).filter(o => !names.has(o.name)), ...applied]);
+			this._log(`${applied.length} 个插件补丁已提交；下次启动加载新版本`);
+			return { ok: true, applied: applied.length };
+		});
 	}
 }

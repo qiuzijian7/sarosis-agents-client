@@ -59,20 +59,14 @@ suite('一键升级前释放 native 模块的文件锁', () => {
 			'releaseHost 不许清 run 目录（那些日志是升级失败的排查依据 ✗）');
 	});
 
-	test('2) upgradeApp 必须在 quitAndInstall 之前释放 Host（顺序不能反）', () => {
+	test('2) renderer 不得提前释放 Host 或直接退出；原生准备统一负责', () => {
 		const src = stripComments(read(SERVICE));
 		const at = src.indexOf('public async upgradeApp()');
-		assert.ok(at > 0, '找不到 upgradeApp');
-		const end = src.indexOf('\n\tpublic ', at + 10);
-		const body = src.slice(at, end > at ? end : at + 6000);
-
-		const iRelease = body.indexOf('DshHarnessChannelCommand.ReleaseHost');
-		const iQuit = body.indexOf('quitAndInstall()');
-		assert.ok(iRelease > 0, 'upgradeApp 必须释放 Host');
-		assert.ok(iQuit > 0, 'upgradeApp 必须调用 quitAndInstall');
-		assert.ok(iRelease < iQuit,
-			'释放 Host 必须在 quitAndInstall **之前**（否则进程还没退、锁还在 ⇒ 照样错误代码 5 ✗）');
-		// 释放失败不许阻断升级（安装器还有 restartreplace 兜底）
-		assert.match(body, /catch \(e\)/, '释放 Host 必须兜住异常');
+		assert.ok(at > 0);
+		const body = src.slice(at, src.indexOf('\n\tpublic ', at + 10));
+		assert.match(body, /DshHarnessChannelCommand\.DesktopUpdateOpen/);
+		assert.ok(!/ReleaseHost|quitAndInstall/.test(body));
+		const channel = read(CHANNEL);
+		assert.match(channel, /registerBeforeUpdateInstallHook\(token => this\._supervisor\.prepareForAppUpdate\(token\)\)/);
 	});
 });

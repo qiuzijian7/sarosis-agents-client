@@ -1376,7 +1376,7 @@ export class DshFullWindowContribution extends Disposable {
 				await this._nativeHostService.toggleFullScreen({ targetWindowId: windowId });
 				break;
 			case 'checkForUpdates':
-				await this._dsh.getUpgradeState(true);
+				await this._dsh.checkAppUpdate();
 				break;
 			case 'about':
 				this._notifications.info(`VsSaros ${this._productService.version}`);

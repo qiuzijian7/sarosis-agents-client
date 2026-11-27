@@ -10,7 +10,7 @@ import { IUpdateService, State } from './update.js';
 
 export class UpdateChannel implements IServerChannel {
 
-	constructor(private service: IUpdateService) { }
+	constructor(private service: IUpdateService, private readonly openUserUpdate?: () => Promise<void>) { }
 
 	listen(_: unknown, event: string): Event<any> {
 		switch (event) {
@@ -21,6 +21,9 @@ export class UpdateChannel implements IServerChannel {
 	}
 
 	call(_: unknown, command: string, arg?: any): Promise<any> {
+		if (this.openUserUpdate && (command === 'checkForUpdates' && arg === true || command === 'downloadUpdate' || command === 'applyUpdate' || command === 'quitAndInstall')) {
+			return this.openUserUpdate();
+		}
 		switch (command) {
 			case 'checkForUpdates': return this.service.checkForUpdates(arg);
 			case 'downloadUpdate': return this.service.downloadUpdate(arg);

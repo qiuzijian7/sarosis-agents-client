@@ -1103,6 +1103,8 @@ export type DshPageCommand =
 	 * `upgradeRefresh` 只重算状态（旧胶囊用），不产生新呈现。
 	 */
 	| { readonly method: 'appUpdateCheck' }
+	| { readonly method: 'desktopUpdateStatus' }
+	| { readonly method: 'desktopUpdateOpen' }
 	/** 忽略某个版本（宿主持久化）；`version` 只放版本号形状，由宿主核对是不是真有这一版。 */
 	| { readonly method: 'appUpdateSkip'; readonly version: string }
 	/** 「重新启动并安装」：宿主先释放 dsh Host 文件锁，再 `quitAndInstall()`。 */
@@ -1176,6 +1178,7 @@ export const DSH_PAGE_COMMANDS_WITHOUT_IDE_UI: ReadonlySet<Exclude<DshPageComman
 	'upgradeAll',
 	// ★ 2026-11-05：更新卡片的三条动作全在 dsh 窗口里完成，不许把 IDE 主窗口拉到前台。
 	'appUpdateCheck', 'appUpdateSkip', 'appUpdateInstall',
+	'desktopUpdateStatus', 'desktopUpdateOpen',
 	// ★ 2026-11-05：右侧栏内嵌浏览器由 dsh 桌面窗口的 WebContentsView 承载，不许把 IDE 主窗口拉到前台。
 	'rightbarBrowser',
 	// ★★ 2026-10-31：意见反馈开的是**产品自己的独立窗口**（`IFeedbackWindowService`），
@@ -1609,6 +1612,10 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 		case 'upgradeApp':
 			return { method: 'upgradeApp' };
 		// 桥 `24 → 25`：复刻后的更新卡片（检查 / 忽略 / 重启安装）。
+		case 'desktopUpdateStatus':
+		case 'desktopUpdateOpen':
+			if (Object.keys(r).some(key => key !== 'method')) { return undefined; }
+			return { method: r.method };
 		case 'appUpdateCheck':
 			return { method: 'appUpdateCheck' };
 		case 'appUpdateInstall':

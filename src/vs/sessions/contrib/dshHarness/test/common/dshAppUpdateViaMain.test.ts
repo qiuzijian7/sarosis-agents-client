@@ -55,8 +55,10 @@ suite('检查更新必须在主进程发请求', () => {
 		assert.ok(!src.includes('_requestService'), '渲染进程不许再用 IRequestService 直连更新源（CORS ⇒ Failed to fetch ✗）');
 		assert.ok(!src.includes('IRequestService'), 'IRequestService 的 import 也要清掉');
 		assert.ok(!src.includes('streamToBuffer'), 'streamToBuffer 是旧取数路径的残留，请一并清理');
-		assert.match(src, /DshHarnessChannelCommand\.CheckAppUpdate,\s*\)/,
-			'检查更新必须由主进程选择渠道，不能接收渲染进程自行构造的 URL');
+		assert.match(src, /DshHarnessChannelCommand\.DesktopUpdateOpen/,
+			'检查更新必须由主进程确认和选择渠道');
+		assert.match(src, /DshHarnessChannelCommand\.DesktopUpdateStatus/);
+		assert.ok(!src.includes('DshHarnessChannelCommand.CheckAppUpdate'), '渲染进程不应维护第二条应用更新检查路径');
 		assert.ok(!src.includes('buildUpdateEndpoint'), '渲染进程不应独立选择更新渠道');
 	});
 

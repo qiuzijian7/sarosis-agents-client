@@ -34,6 +34,7 @@ import { DshAuthWarmup, sameAuthConnection } from '../common/dshAuthWarmup.js';
 import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
 import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_THEME_SOURCE, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_UPGRADE, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageCommand, DshPageEvent, DshPageThemeSource, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshUpgradeState, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
+import { DSH_DESKTOP_UPDATE_IPC, IDesktopUpdateSnapshot, mergeDesktopUpdateReplica } from '../common/dshDesktopUpdate.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { backgroundForPageSurface, DshThemeTokens, IDshViewBackgrounds } from '../common/dshThemeBridge.js';
 import { IIdeViewSlotForTargeting } from '../common/dshIdeTargeting.js';
@@ -639,6 +640,19 @@ export class DshViewHost extends Disposable {
 	/** 桌面池分区的序号（单调递增 ⇒ 分区名不复用 ⇒ 不会撞上旧 cookie）。 */
 	private _desktopPoolSeq = 0;
 	private _connection: IDshHostConnection | undefined;
+	private _desktopUpdate: IDesktopUpdateSnapshot | undefined;
+	private _upgradeSeq = 0;
+
+	pushDesktopUpdate(snapshot: IDesktopUpdateSnapshot): void {
+		this._desktopUpdate = snapshot;
+		for (const slot of this._views.values()) {
+			const wc = slot.view.webContents;
+			if (!wc.isDestroyed() && wc.mainFrame.origin === this._connection?.origin) {
+				wc.send(DSH_DESKTOP_UPDATE_IPC, snapshot.presentation);
+				this.pushUpgrade(slot.id, slot.lastUpgrade ?? { at: Date.now(), app: snapshot.app, runtime: {}, bundled: [], assets: [] });
+			}
+		}
+	}
 
 	private readonly _onDidPageEvent = this._register(new Emitter<DshPageEvent>());
 	readonly onDidPageEvent: Event<DshPageEvent> = this._onDidPageEvent.event;
@@ -1303,8 +1317,10 @@ export class DshViewHost extends Disposable {
 		if (!slot) {
 			return;
 		}
+		const seq = ++this._upgradeSeq;
+		state = this._desktopUpdate ? mergeDesktopUpdateReplica(state, this._desktopUpdate, seq) : { ...state, at: Date.now(), seq };
 		slot.lastUpgrade = state;
-		if (!slot.view.webContents.isDestroyed()) {
+		if (!slot.view.webContents.isDestroyed() && slot.view.webContents.mainFrame.origin === this._connection?.origin) {
 			slot.view.webContents.send(DSH_PAGE_IPC_UPGRADE, state);
 		}
 	}
@@ -1911,10 +1927,14 @@ export class DshViewHost extends Disposable {
 	 */
 	private _replayPushedSnapshots(slot: IViewSlot): void {
 		const wc = slot.view.webContents;
-		if (wc.isDestroyed()) {
+		if (wc.isDestroyed() || wc.mainFrame.origin !== this._connection?.origin) {
 			return;
 		}
 		try {
+			if (this._desktopUpdate) {
+				wc.send(DSH_DESKTOP_UPDATE_IPC, this._desktopUpdate.presentation);
+				this.pushUpgrade(slot.id, slot.lastUpgrade ?? { at: Date.now(), app: this._desktopUpdate.app, runtime: {}, bundled: [], assets: [] });
+			}
 			if (slot.lastWorktrees) {
 				wc.send(DSH_PAGE_IPC_WORKTREES, slot.lastWorktrees);
 				this._logService.info(`[dshHarness] view ${slot.id} replayed ${slot.lastWorktrees.length} worktree option(s) after page load`);

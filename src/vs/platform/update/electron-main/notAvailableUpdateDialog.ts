@@ -28,6 +28,7 @@ export class NotAvailableUpdateDialog extends Disposable {
 	constructor(
 		updateService: IUpdateService,
 		private readonly dialogMainService: IDialogMainService,
+		private readonly shouldShow: (window: electron.BrowserWindow | null) => boolean = () => true,
 	) {
 		super();
 
@@ -45,7 +46,7 @@ export class NotAvailableUpdateDialog extends Disposable {
 
 	private show(): void {
 		const focusedWindow = electron.BrowserWindow.getFocusedWindow();
-		if (!focusedWindow && !(isMacintosh && this.macAppActive)) {
+		if (!this.shouldShow(focusedWindow) || (!focusedWindow && !(isMacintosh && this.macAppActive))) {
 			return; // focus is not in this app — let the focused app show the dialog
 		}
 

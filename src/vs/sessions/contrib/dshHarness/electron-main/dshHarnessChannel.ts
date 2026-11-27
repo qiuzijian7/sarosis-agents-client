@@ -32,6 +32,7 @@ import { IWindowsMainService, OpenContext } from '../../../../platform/windows/e
 // ★ 2026-10-31：platform 层的「安装更新之前」注册点（platform 不认识 dsh ⇒ 由这里注入"释放 dsh Host"）
 import { registerBeforeUpdateInstallHook } from '../../../../platform/update/electron-main/updateInstallHooks.js';
 import { toAppUpdateCheckUrl } from '../common/dshAppUpdate.js';
+import type { DshDesktopUpdateController } from './dshDesktopUpdateController.js';
 import { DshBridgeMethod, DshBridgeReverseMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeCodeBuddyImportResult, IBridgeCodeBuddyStatus, IBridgeCreditRecordArgs, IBridgeCreditRecordResult, IBridgeCreditRouteResult, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgeLightAIImportResult, IBridgeLightAIStatus, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeReverseRequest, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofStatus, IBridgeTofSyncResult, IBridgeTofTicketResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateCodeBuddyImportArgs, validateCreditRouteArgs, validateInstallCancelArgs, validateLightAIImportArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs, validateTofSyncArgs, validateWorkspaceContextArgs } from '../common/dshBridgeProtocol.js';
 import { DshCreditProxy, IDshCreditSample } from './dshCreditProxy.js';
 import { localPluginDir, toFileSpec } from '../common/dshCli.js';
@@ -111,9 +112,10 @@ export interface IDshHarnessChannelOptions {
 	/**
 	 * 「检查更新」（2026-11-24）：desktop-only 壳不加载 workbench ⇒ caption 菜单没有
 	 * `IDshHarnessService.getUpgradeState`，只能让主进程代为触发应用更新检查。
-	 * 由 `app.ts` 注入 `IUpdateService.checkForUpdates(true)`；未注入时该菜单项静默跳过。
+	 * 由 `app.ts` 注入原生更新控制器，同时负责结果提示、下载确认和重启确认。
 	 */
 	readonly checkForUpdates?: () => Promise<void>;
+	readonly desktopUpdates?: Pick<DshDesktopUpdateController, 'snapshot' | 'onDidChange' | 'checkForUpdates' | 'skip'>;
 	/** Native update service feed; preserves the installed user/system/archive target. */
 	readonly getAppUpdateFeedUrl?: () => string | undefined;
 }
@@ -128,7 +130,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private readonly _components: DshComponentManager;
 	private readonly _pluginPatches: DshPluginPatchManager;
 	/** 已应用的插件补丁（版本覆盖真源）；构造时读一次，启动清单与界面清单都用它。 */
-	private readonly _pluginOverrides: readonly IDshPluginOverride[];
+	private _pluginOverrides: readonly IDshPluginOverride[];
 	private _pluginPatchStarted = false;
 	private readonly _pluginActivation: DshPluginActivationStore;
 	private readonly _fetch: FetchLike;
@@ -196,6 +198,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private readonly _requestQuit: ((willRestart: boolean) => Promise<boolean>) | undefined;
 	/** desktop-only caption 菜单的「检查更新」（见 `IDshHarnessChannelOptions.checkForUpdates`）。 */
 	private readonly _checkForUpdates: (() => Promise<void>) | undefined;
+	private readonly _desktopUpdates: IDshHarnessChannelOptions['desktopUpdates'];
 	private readonly _getAppUpdateFeedUrl: (() => string | undefined) | undefined;
 	/** 「最后一个界面 ⇒ 退出」这件事**只武装一次**（见 `_requestAppQuit`）。 */
 	private _quitRequested = false;
@@ -232,6 +235,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		this._windowsMainService = windowsMainService;
 		this._requestQuit = options.requestQuit;
 		this._checkForUpdates = options.checkForUpdates;
+		this._desktopUpdates = options.desktopUpdates;
 		this._getAppUpdateFeedUrl = options.getAppUpdateFeedUrl;
 		// 真退出时放行 IDE 主窗口的 close（否则"只隐藏"会把退出流程卡死 ✗）。
 		// `before-quit` 在关闭窗口之前触发 ⇒ 这里置位就够；用 `on`（不是 `once`）因为 quit 可能被取消后重来。
@@ -425,7 +429,26 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			officialProviders: true,
 			allowElevation: options.componentAllowElevation === true || process.env.VSSAROS_ALLOW_ELEVATION === '1',
 		}));
+		if (options.desktopUpdates) {
+			this._views.pushDesktopUpdate(options.desktopUpdates.snapshot);
+			this._register(options.desktopUpdates.onDidChange(snapshot => {
+				if (snapshot.presentation.phase === 'error' || snapshot.presentation.phase === 'idle') { this._supervisor.resumeAfterAppUpdate(); }
+				this._views.pushDesktopUpdate(snapshot);
+			}));
+		}
 		this._views.setPageCommandHandler(async command => {
+			if (command.method === 'desktopUpdateStatus') {
+				return { handled: true, result: this._desktopUpdates?.snapshot.presentation ?? { phase: 'error', failure: 'configuration' } };
+			}
+			if (command.method === 'desktopUpdateOpen' || command.method === 'appUpdateCheck' || command.method === 'upgradeApp' || command.method === 'appUpdateInstall') {
+				if (!this._desktopUpdates) { throw new Error('更新服务不可用'); }
+				await this._desktopUpdates.checkForUpdates();
+				return { handled: true };
+			}
+			if (command.method === 'appUpdateSkip') {
+				await this._desktopUpdates?.skip(command.version);
+				return { handled: true };
+			}
 			if (command.method === 'componentsStatus') {
 				return { handled: true, result: await this._components.status() };
 			}
@@ -447,9 +470,13 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			platform: `${process.platform}-${process.arch}`,
 			fetch: this._fetch,
 			log,
-			install: (name, spec) => this._supervisor.installPluginSpec(spec, name),
+			installedVersion: name => {
+				try { return JSON.parse(readFileSync(join(this._supervisor.profileDirectory(), 'node_modules', ...name.split('/'), 'package.json'), 'utf8')).version; }
+				catch { return undefined; }
+			},
+			runTransaction: apply => this._supervisor.applyPluginPatchTransaction(apply),
 			publicKeyPem: process.env.VSSAROS_DSH_PLUGIN_PATCH_PUBLIC_KEY,
-			allowUnsigned: process.env.VSSAROS_ALLOW_UNSIGNED_PLUGIN_PATCH === '1',
+			allowUnsigned: !options.isBuilt && process.env.VSSAROS_ALLOW_UNSIGNED_PLUGIN_PATCH === '1',
 		});
 		this._workspaces = this._register(new DshWorkspaceSync(log));
 		this._register(windowsMainService.onDidDestroyWindow(w => this._workspaces.removeWindow(w.id)));
@@ -460,7 +487,12 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			// 且此时不会与启动阶段的伴生插件安装互相踩依赖树。
 			if (!this._pluginPatchStarted && status.state === 'running') {
 				this._pluginPatchStarted = true;
-				void this._pluginPatches.start();
+				void this._pluginPatches.start().then(result => {
+					if (result.ok && result.applied) {
+						this._pluginOverrides = readOverrides(this._userDataPath);
+						this._onDidChangePlugins.fire();
+					}
+				});
 			}
 		}));
 		// ★ 2026-10-20：mux 路由可用 ⇒ 让页面跳过 dsh 连接剩余的退避（见 DshViewHost.notifyMuxReady）。
@@ -501,7 +533,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		//   ⇒ 这里注册一条"安装前释放"：spawn 安装包之前先结束 dsh Host
 		//     （`releaseHost()` → `taskkill /T /F` 连带 node / 终端 / MCP 子进程）。
 		//   ⚠ 注册点在主进程（platform 层只提供注册/运行，不认识 dsh）⇒ 这里是唯一持有 supervisor 的地方。
-		this._register(registerBeforeUpdateInstallHook(() => this._supervisor.releaseHost()));
+		this._register(registerBeforeUpdateInstallHook(token => this._supervisor.prepareForAppUpdate(token)));
 		// 抢先启动：与窗口/工作台启动并行（渲染进程那份预热抢不过"聊天框随布局挂载即启动"）。
 		void this._eagerPrewarm();
 	}
@@ -1426,6 +1458,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	}
 
 	listen<T>(_ctx: TContext, event: string): Event<T> {
+		if (event === DshHarnessChannelEvent.OnDidChangeDesktopUpdate) {
+			return this._desktopUpdates?.onDidChange as Event<T> ?? Event.None;
+		}
 		if (event === DshHarnessChannelEvent.OnDidChangeStatus) {
 			return this._onDidChangeStatus.event as Event<T>;
 		}
@@ -1456,6 +1491,14 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 
 	private async _call(command: string, arg: any): Promise<unknown> {
 		switch (command) {
+			case DshHarnessChannelCommand.DesktopUpdateStatus:
+				return this._desktopUpdates?.snapshot;
+			case DshHarnessChannelCommand.DesktopUpdateOpen:
+				await this._desktopUpdates?.checkForUpdates();
+				return undefined;
+			case DshHarnessChannelCommand.DesktopUpdateSkip:
+				if (typeof arg?.version === 'string') { await this._desktopUpdates?.skip(arg.version); }
+				return undefined;
 			case DshHarnessChannelCommand.GetStatus:
 				return this._supervisor.status;
 			// ★★ 2026-10-30（真机 P0：打包 exe 的更新面板红字 `Failed to fetch`）：

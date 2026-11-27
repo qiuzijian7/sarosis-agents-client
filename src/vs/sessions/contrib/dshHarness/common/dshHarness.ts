@@ -980,6 +980,9 @@ export const enum DshHarnessChannelCommand {
 	 * 主进程的 fetch 没有跨域概念 ⇒ 渲染进程把拼好的 URL 传过来、这边代为请求 ✓。
 	 */
 	CheckAppUpdate = 'checkAppUpdate',
+	DesktopUpdateStatus = 'desktopUpdateStatus',
+	DesktopUpdateOpen = 'desktopUpdateOpen',
+	DesktopUpdateSkip = 'desktopUpdateSkip',
 	Start = 'start',
 	Stop = 'stop',
 	Restart = 'restart',
@@ -1368,6 +1371,7 @@ export interface IDshWorkspaceSyncState {
 }
 
 export const enum DshHarnessChannelEvent {
+	OnDidChangeDesktopUpdate = 'onDidChangeDesktopUpdate',
 	OnDidChangeStatus = 'onDidChangeStatus',
 	/** 页面桥命令、快捷键、焦点（DshPageEvent）；renderer 只处理自己创建的视图。 */
 	OnDidPageEvent = 'onDidPageEvent',

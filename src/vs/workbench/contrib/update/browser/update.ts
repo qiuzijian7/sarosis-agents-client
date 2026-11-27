@@ -256,7 +256,7 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 		switch (state.type) {
 			case StateType.Idle: {
 				// vssaros: 用户手动检查更新且无新版本时，提示"当前版本已是最新版本"
-				if (state.notAvailable) {
+				if (state.notAvailable && this.productService.quality !== 'saros') {
 					this.notificationService.info(
 						nls.localize('updateLatestVersion', "当前版本 {0} 已经是最新版本", this.productService.version)
 					);
@@ -265,7 +265,7 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 			}
 			case StateType.AvailableForDownload: {
 				// vssaros: 检测到新版本，弹窗提示用户选择"更新/暂不"
-				this.promptForUpdate(state.update);
+				if (this.productService.quality !== 'saros') { this.promptForUpdate(state.update); }
 				break;
 			}
 		case StateType.Ready: {
@@ -276,7 +276,7 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 				this.majorMinorUpdateAvailableContextKey.set(Boolean(currentVersion && nextVersion && isMajorMinorUpdate(currentVersion, nextVersion)));
 			}
 			// vssaros: 后台安装完成后弹窗询问是否重启
-			this.promptForRestart();
+			if (this.productService.quality !== 'saros') { this.promptForRestart(); }
 			break;
 		}
 		}

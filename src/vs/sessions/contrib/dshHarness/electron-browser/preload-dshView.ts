@@ -344,6 +344,21 @@
 
 	try {
 		contextBridge.exposeInMainWorld('vssarosDsh', api);
+		contextBridge.exposeInMainWorld('dshDesktop', {
+			protocolVersion: 1,
+			updates: {
+				status: () => invoke({ method: 'desktopUpdateStatus' }),
+				open: () => invoke({ method: 'desktopUpdateOpen' }),
+				subscribe: (listener: (state: object) => void) => {
+					if (typeof listener !== 'function') { throw new TypeError('Expected update listener'); }
+					const receive = (_event: unknown, state: object) => { listener(state); };
+					ipcRenderer.on('vssaros:dsh:desktop-update', receive);
+					const dispose = () => ipcRenderer.removeListener('vssaros:dsh:desktop-update', receive);
+					window.addEventListener('unload', dispose, { once: true });
+					return () => { dispose(); window.removeEventListener('unload', dispose); };
+				},
+			},
+		});
 		contextBridge.exposeInMainWorld('vssarosDshPrompt', {
 			version: 2,
 			call: (id: string, body: string) => ipcRenderer.invoke('vssaros:dsh:prompt-rpc', id, body),

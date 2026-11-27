@@ -36,19 +36,15 @@ suite('dshHarness / desktop 窗口的「更新」入口', () => {
 		}
 	});
 
-	test('② 一键升级：降级闸门必须**早于** checkForUpdates', () => {
+	test('② 更新只代理主进程；原生版本闸门必须早于可下载状态', () => {
 		const src = strip(fs.readFileSync(SERVICE, 'utf8'));
 		const at = src.indexOf('public async upgradeApp(');
-		assert.ok(at > 0, '找不到 upgradeApp ✗');
-		const body = src.slice(at, at + 3000);
-		const gate = body.indexOf("checked.action !== 'upgrade'");
-		const download = body.indexOf('checkForUpdates(true)');
-		assert.ok(gate > 0, 'upgradeApp 里必须有"不是 upgrade 就不下载"的闸门 ✗');
-		assert.ok(download > 0, '找不到 checkForUpdates(true)（守卫不能空跑）✗');
-		assert.ok(gate < download, '闸门必须早于 checkForUpdates（晚于它 = 一键降级 ✗）');
-		// 闸门还必须真的 return（不是只打日志）
-		const gateBlock = body.slice(gate, download);
-		assert.ok(/return;/.test(gateBlock), '闸门里必须 return（否则照样往下下载 ✗）');
+		assert.ok(at > 0);
+		assert.match(src.slice(at, src.indexOf('\n\tpublic ', at + 10)), /DshHarnessChannelCommand\.DesktopUpdateOpen/);
+		const native = strip(fs.readFileSync('src/vs/platform/update/electron-main/updateService.win32.ts', 'utf8'));
+		const gate = native.indexOf('!isNewerProductVersion(');
+		const available = native.indexOf('State.AvailableForDownload(', gate);
+		assert.ok(gate > 0 && available > gate);
 	});
 
 	test('③ 页面侧：没有桥就不渲染；状态靠推送；两个动作都接上了', () => {

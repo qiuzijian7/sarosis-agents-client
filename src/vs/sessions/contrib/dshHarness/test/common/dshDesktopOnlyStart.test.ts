@@ -24,6 +24,10 @@ import assert from 'assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDesktopHostRunning } from '../../common/dshDesktopSessionStart.js';
+import { Emitter } from '../../../../../base/common/event.js';
+import { DisablementReason, State, StateType, UpdateType } from '../../../../../platform/update/common/update.js';
+import { DshDesktopUpdateController } from '../../electron-main/dshDesktopUpdateController.js';
+import type { MessageBoxOptions } from 'electron';
 
 const WMS = 'src/vs/platform/windows/electron-main/windowsMainService.ts';
 const CONTRIB = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarness.contribution.ts';
@@ -194,5 +198,147 @@ suite('启动只露桌面窗口（不许 IDE 闪一下）', () => {
 		const channel = code(CHANNEL);
 		assert.match(channel, /add\(getActiveDshDesktopWindow\(\)\)/,
 			'关窗事实里的 desktop 计数必须把 B 方案独立窗口算进去，避免误判为最后一个界面');
+	});
+
+	test('桌面菜单必须接入原生更新反馈，而不是仅触发检查后静默返回', () => {
+		const app = code(APP);
+		assert.match(app, /checkForUpdates: \(\) => desktopUpdateController\.checkForUpdates\(\)/);
+		assert.match(app, /showMessageBox\(options, getActiveDshDesktopWindow\(\)\)/);
+		assert.match(app, /\(\) => !desktopUpdateController\.ownsFeedback/);
+	});
+});
+
+suite('独立桌面窗口更新反馈', () => {
+	const disposables: Array<{ dispose(): void }> = [];
+	teardown(() => {
+		for (const disposable of disposables.splice(0)) {
+			disposable.dispose();
+		}
+	});
+
+	function fixture(initial: State = State.Idle(UpdateType.Setup)) {
+		const changes = new Emitter<State>();
+		disposables.push(changes);
+		const calls: string[] = [];
+		const dialogs: MessageBoxOptions[] = [];
+		const responses: number[] = [];
+		let releaseDialog: (() => void) | undefined;
+		const service = {
+			state: initial,
+			onStateChange: changes.event,
+			async checkForUpdates(explicit: boolean) {
+				calls.push(`check:${explicit}`);
+				setState(State.CheckingForUpdates(explicit));
+			},
+			async downloadUpdate(explicit: boolean) {
+				calls.push(`download:${explicit}`);
+				setState(State.Downloading(update, explicit, false));
+			},
+			async applyUpdate() { calls.push('apply'); },
+			async quitAndInstall() { calls.push('restart'); },
+		};
+		function setState(state: State): void {
+			service.state = state;
+			changes.fire(state);
+		}
+		const controller = new DshDesktopUpdateController(service, async options => {
+			dialogs.push(options);
+			if (releaseDialog) {
+				await new Promise<void>(resolve => releaseDialog = resolve);
+			}
+			return { response: responses.shift() ?? 1, checkboxChecked: false };
+		}, message => calls.push(`error:${message}`));
+		disposables.push(controller);
+		return { controller, service, calls, dialogs, responses, setState, holdDialog: () => { releaseDialog = () => { }; }, releaseDialog: () => { const release = releaseDialog; releaseDialog = undefined; release?.(); } };
+	}
+
+	const update = { version: 'new-commit', productVersion: '9.9.9', url: 'https://example.test/setup.exe' };
+	const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+
+	test('异步检查结束后显示当前已是最新版本，且只显示一次', async () => {
+		const f = fixture();
+		await f.controller.checkForUpdates();
+		assert.strictEqual(f.dialogs.length, 0);
+		f.setState(State.Idle(UpdateType.Setup, undefined, true));
+		await flush();
+		f.setState(State.Idle(UpdateType.Setup, undefined, true));
+		assert.deepStrictEqual({ calls: f.calls, messages: f.dialogs.map(d => d.message) }, { calls: ['check:true'], messages: ['当前已是最新版本。'] });
+	});
+
+	test('网络失败必须显示错误，而不是只写日志', async () => {
+		const f = fixture();
+		await f.controller.checkForUpdates();
+		f.setState(State.Idle(UpdateType.Setup, 'connection refused'));
+		await flush();
+		assert.deepStrictEqual(f.dialogs.map(d => [d.type, d.detail]), [['warning', 'connection refused']]);
+	});
+
+	test('发现新版后取消不会下载，再次检查仍可确认更新', async () => {
+		const f = fixture();
+		await f.controller.checkForUpdates();
+		f.setState(State.AvailableForDownload(update));
+		await flush();
+		assert.deepStrictEqual(f.calls, ['check:true']);
+		f.responses.push(0);
+		await f.controller.checkForUpdates();
+		assert.deepStrictEqual({ calls: f.calls, prompts: f.dialogs.length }, { calls: ['check:true', 'download:true'], prompts: 2 });
+	});
+
+	test('确认下载后持续监听结果，安装完成才提示重启', async () => {
+		const f = fixture(State.AvailableForDownload(update));
+		f.responses.push(0);
+		await f.controller.checkForUpdates();
+		f.setState(State.Downloading(update, true, false, 100, 200));
+		f.setState(State.Downloaded(update, true, false));
+		f.setState(State.Updating(update, true));
+		f.responses.push(0);
+		f.setState(State.Ready(update, true, false));
+		await flush();
+		assert.deepStrictEqual({ calls: f.calls, messages: f.dialogs.map(d => d.message) }, { calls: ['download:true', 'restart'], messages: ['发现新版本（9.9.9），是否更新？', '更新已安装，是否立即重启？'] });
+	});
+
+	test('已下载的更新可以由用户确认安装', async () => {
+		const f = fixture(State.Downloaded(update, true, false));
+		f.responses.push(0);
+		await f.controller.checkForUpdates();
+		assert.deepStrictEqual(f.calls, ['apply']);
+	});
+
+	test('禁用和未初始化状态都有可见提示', async () => {
+		for (const state of [State.Disabled(DisablementReason.RunningAsAdmin), State.Uninitialized]) {
+			const f = fixture(state);
+			await f.controller.checkForUpdates();
+			assert.strictEqual(f.dialogs[0].type, 'warning');
+			assert.ok(f.dialogs[0].detail?.includes(state.type === StateType.Disabled ? '管理员' : '尚未就绪'));
+		}
+	});
+
+	test('已在检查中时不重复发请求，提示期间到达的结果不丢失', async () => {
+		const f = fixture(State.CheckingForUpdates(false));
+		f.holdDialog();
+		const pending = f.controller.checkForUpdates();
+		f.setState(State.AvailableForDownload(update));
+		f.releaseDialog();
+		await pending;
+		assert.deepStrictEqual({ calls: f.calls, messages: f.dialogs.map(d => d.message) }, { calls: [], messages: ['正在检查更新，请稍候。', '发现新版本（9.9.9），是否更新？'] });
+	});
+
+	test('弹窗期间重复点击不会重复弹窗或发请求', async () => {
+		const f = fixture(State.AvailableForDownload(update));
+		f.holdDialog();
+		const pending = f.controller.checkForUpdates();
+		await f.controller.checkForUpdates();
+		f.releaseDialog();
+		await pending;
+		assert.deepStrictEqual({ calls: f.calls, prompts: f.dialogs.length }, { calls: [], prompts: 1 });
+	});
+
+	test('原生检查被跳过或抛错时也必须给出反馈', async () => {
+		const f = fixture();
+		f.service.checkForUpdates = async () => { };
+		await f.controller.checkForUpdates();
+		f.service.checkForUpdates = async () => { throw new Error('IPC unavailable'); };
+		await f.controller.checkForUpdates();
+		assert.deepStrictEqual(f.dialogs.map(d => d.detail), ['更新检查未启动，请稍后重试。', 'IPC unavailable']);
 	});
 });

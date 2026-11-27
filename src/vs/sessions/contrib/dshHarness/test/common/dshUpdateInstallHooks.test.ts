@@ -69,24 +69,35 @@ suite('自动安装更新前必须释放占用者（否则弹「必须重新启�
 			'钩子必须早于 spawn（晚了 = 安装器已经带着 /nocloseapplications 起来了 ⇒ 锁还在 ⇒ 弹重启提示）✗');
 	});
 
+	test('安装准备必须排他且先于标记；拒绝准备保留下载结果', () => {
+		const src = stripComments(read(WIN32_UPDATE));
+		const apply = methodBody(src, 'protected override async doApplyUpdate()');
+		assert.ok(apply.indexOf('this.preparingInstall = true') < apply.indexOf('await runBeforeUpdateInstallHooks('));
+		assert.ok(apply.indexOf('await runBeforeUpdateInstallHooks(') < apply.indexOf('State.Updating('));
+		assert.match(src, /this\.state\.type === StateType\.Downloaded && this\.availableUpdate\) \{\s*throw err;/);
+		const relaunch = src.slice(src.indexOf('handleRelaunch('), src.indexOf('protected override async initialize'));
+		assert.match(relaunch, /this\.preparedRawUpdate !== this\.availableUpdate/);
+		const quit = methodBody(src, 'protected override doQuitAndInstall()');
+		assert.ok(quit.indexOf('this.preparedRawUpdate !== this.availableUpdate') < quit.indexOf('spawn('));
+	});
+
 	test('② 钩子必须带超时（卡死的钩子不许把安装拖死）', () => {
 		const src = stripComments(read(HOOKS));
 		assert.match(src, /BEFORE_UPDATE_HOOK_TIMEOUT_MS\s*=/, '必须定义超时常量 ✗');
 		assert.match(src, /Promise\.race\(/, '必须用 Promise.race 兜超时（直接 await 会被卡住的钩子挂死）✗');
-		assert.match(src, /setTimeout\(resolve,\s*BEFORE_UPDATE_HOOK_TIMEOUT_MS\)/,
-			'超时必须用到那个常量（写死数字会漂）✗');
+		assert.match(src, /timeoutMs = BEFORE_UPDATE_HOOK_TIMEOUT_MS/);
+		assert.match(src, /cancellation\.cancel\(\)/);
+		assert.match(src, /reject\(new Error\(/);
 	});
 
-	test('③ 钩子失败不许阻断安装（兜底是 restartreplace，不是装不上）', () => {
+	test('③ 钩子失败和超时必须拒绝安装', () => {
 		const src = stripComments(read(HOOKS));
 		const at = src.indexOf('export async function runBeforeUpdateInstallHooks(');
-		assert.ok(at > 0, '找不到 runBeforeUpdateInstallHooks ✗');
+		assert.ok(at > 0);
 		const body = src.slice(at);
-		assert.match(body, /try \{/, '必须有 try ✗');
-		assert.match(body, /catch \(e\)/, '必须有 catch ✗');
-		assert.match(body, /logService\?\.warn\(/, '失败必须记日志（否则"谁锁着"永远查不出来）✗');
-		assert.ok(!/throw /.test(body.split('export')[0] ?? body),
-			'catch 里不许把错误再抛出去（装不上比弹一次重启提示更糟）✗');
+		assert.match(body, /logService\?\.warn\(/);
+		assert.match(body, /throw e;/);
+		assert.match(body, /clearTimeout\(timer\)/);
 	});
 
 	test('④ sessions 侧必须真的注册了 releaseHost（platform 层只是空跑）', () => {
@@ -96,8 +107,8 @@ suite('自动安装更新前必须释放占用者（否则弹「必须重新启�
 		const codeLines = read(CHANNEL).split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l));
 		const hit = codeLines.find(l => l.includes('registerBeforeUpdateInstallHook('));
 		assert.ok(hit !== undefined, '主进程 dsh 通道必须注册"安装前释放"钩子 ✗');
-		assert.match(hit, /this\._supervisor\.releaseHost\(\)/,
-			'注册内容必须是 releaseHost（只有它才拿得到 Host 的句柄）✗');
+		assert.match(hit, /this\._supervisor\.prepareForAppUpdate\(token\)/,
+			'注册内容必须检查任务和实际退出，而非盲目停止');
 	});
 
 	test('⑤ platform 层的钩子文件不许反向依赖 sessions（分层）', () => {

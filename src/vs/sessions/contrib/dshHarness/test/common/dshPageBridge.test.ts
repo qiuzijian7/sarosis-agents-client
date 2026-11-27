@@ -524,8 +524,16 @@ suite('dshHarness / page bridge', () => {
 		//     前两者由本用例的前半段守，第四个由"case 存在"间接保证（handler 里 switch），
 		//     第三个此前**没人管** ⇒ 就在这里钉住。
 		const preloadSrc = readFileSync(join(repo, 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'electron-browser', 'preload-dshView.ts'), 'utf8');
+		const officialAliases: Record<string, string> = { desktopUpdateStatus: 'status', desktopUpdateOpen: 'open' };
 		const notExposed = [...declared]
-			.filter(m => !new RegExp(`\\n\\s{1,4}${m}\\s*:`).test(preloadSrc))
+			.filter(m => {
+				const alias = officialAliases[m];
+				if (alias) {
+					return !preloadSrc.includes("contextBridge.exposeInMainWorld('dshDesktop',")
+						|| !new RegExp(`${alias}: \\(\\) => invoke\\(\\{ method: '${m}' \\}\\)`).test(preloadSrc);
+				}
+				return !new RegExp(`\\n\\s{1,4}${m}\\s*:`).test(preloadSrc);
+			})
 			.sort();
 		assert.deepStrictEqual(notExposed, [],
 			`这些命令协议里有、但 preload 没暴露（页面调不到 ⇒ 会静默走"旧宿主"兜底）: ${notExposed.join(', ')}`);

@@ -202,7 +202,12 @@ window.__ModuleLoader__.load({
 			return b;
 		}
 		function call(fn) {
-			try { const r = fn(); if (r && typeof r.catch === "function") { r.catch(() => undefined); } } catch { /* 下一轮状态会纠正 */ }
+			try { return Promise.resolve(fn()).catch(() => undefined); }
+			catch { return Promise.resolve(); }
+		}
+		function openUpdate(fallback) {
+			const carrier = window.dshDesktop;
+			return carrier && carrier.protocolVersion === 1 && carrier.updates ? carrier.updates.open() : fallback();
 		}
 
 		/** 一次「呈现」的身份：新请求重置忽略，历史快照不重开弹窗。 */
@@ -350,7 +355,7 @@ window.__ModuleLoader__.load({
 				actions.appendChild(button("更新", "au-btn au-btn-primary", () => {
 					if (!b) { return; }
 					accepting = true;
-					call(() => b.upgradeApp());
+					call(() => openUpdate(() => b.upgradeApp())).finally(() => { accepting = false; render(); });
 				}, accepting));
 			} else if (s.phase === "downloading") {
 				addSkip();
@@ -359,7 +364,7 @@ window.__ModuleLoader__.load({
 				actions.appendChild(button(installing ? "正在重启…" : "重新启动并安装", "au-btn au-btn-primary", () => {
 					if (!b) { return; }
 					installing = true;
-					call(() => b.appUpdateInstall());
+					call(() => openUpdate(() => b.appUpdateInstall())).finally(() => { installing = false; render(); });
 				}, installing));
 			} else if (centered && ["up-to-date", "error", "unsupported"].indexOf(s.phase) >= 0) {
 				if (s.phase === "error") {

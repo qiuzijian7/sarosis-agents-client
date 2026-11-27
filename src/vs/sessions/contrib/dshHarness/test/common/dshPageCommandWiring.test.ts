@@ -159,7 +159,9 @@ suite('聊天页按钮 → IDE 接线（协议 / preload / 处理器 / 命令 id
 		assert.ok(handledByContribution.size >= 8, `_handle 只扫到 ${handledByContribution.size} 个 case —— 处理器改名/改结构了，本守卫要同步 ✓`);
 		assert.ok(handledByChatHost.size >= 5, `dshChatInstanceHost 只扫到 ${handledByChatHost.size} 个方法 —— 分发链改了，本守卫要同步 ✓`);
 
-		const orphans = methods.filter(m => !handledByContribution.has(m) && !handledByChatHost.has(m) && !HANDLED_ELSEWHERE[m]);
+		const main = stripComments(read('src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts'));
+		const handledByMain = new Set(matchAll(main, /command\.method === '([a-zA-Z]+)'/g));
+		const orphans = methods.filter(m => !handledByContribution.has(m) && !handledByChatHost.has(m) && !handledByMain.has(m) && !HANDLED_ELSEWHERE[m]);
 		assert.deepStrictEqual(orphans, [],
 			'这些页面命令**没人处理** ⇒ 页面点了没反应、日志里也没线索（协议加了命令就要接上宿主 ✗）：\n' + orphans.join('\n'));
 

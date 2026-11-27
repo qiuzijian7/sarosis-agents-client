@@ -215,7 +215,8 @@ import { DshRightbarCdpRelay } from '../../sessions/contrib/dshHarness/electron-
 import { DesktopControlRelay } from '../../sessions/contrib/dshHarness/electron-main/desktopControlRelay.js';
 import { DesktopControlPresence } from '../../sessions/contrib/dshHarness/electron-main/desktopControlPresence.js';
 import { DshViewHost } from '../../sessions/contrib/dshHarness/electron-main/dshViewHost.js';
-import { DshDesktopWindowMainService, focusDshDesktopWindow } from '../../sessions/contrib/dshHarness/electron-main/dshDesktopWindowMainService.js';
+import { DshDesktopWindowMainService, focusDshDesktopWindow, getActiveDshDesktopWindow } from '../../sessions/contrib/dshHarness/electron-main/dshDesktopWindowMainService.js';
+import { DshDesktopUpdateController } from '../../sessions/contrib/dshHarness/electron-main/dshDesktopUpdateController.js';
 import { DSH_HARNESS_CHANNEL, DshHarnessSettings } from '../../sessions/contrib/dshHarness/common/dshHarness.js';
 import { KbDocConvertChannel } from '../../sessions/contrib/agentStudio/electron-main/kbDocConvertChannel.js';
 import { VSSAROS_LLM_CHANNEL } from '../../sessions/contrib/agentStudio/common/llmBridge.js';
@@ -1806,12 +1807,23 @@ export class CodeApplication extends Disposable {
 			));
 			effectiveUpdateService = updateCoordinator;
 		}
-		const updateChannel = new UpdateChannel(effectiveUpdateService);
-		mainProcessElectronServer.registerChannel('update', updateChannel);
-
 		// Show a native "no updates available" dialog from the focused app's main
 		// process to avoid double dialogs across apps and ensure a native dialog.
-		this._register(new NotAvailableUpdateDialog(effectiveUpdateService, accessor.get(IDialogMainService)));
+		const updateDialogService = accessor.get(IDialogMainService);
+		const desktopUpdateController = this._register(new DshDesktopUpdateController(
+			effectiveUpdateService,
+			options => updateDialogService.showMessageBox(options, getActiveDshDesktopWindow()),
+			message => this.logService.warn(`[dshDesktopOnly] update failed: ${message}`),
+			{
+				currentVersion: this.productService.version,
+				startupCheck: this.environmentMainService.isBuilt,
+				skippedVersion: this.stateService.getItem<string>('dsh.appUpdate.skippedVersion'),
+				saveSkippedVersion: version => this.stateService.setItem('dsh.appUpdate.skippedVersion', version ?? ''),
+			},
+		));
+		const updateChannel = new UpdateChannel(effectiveUpdateService, this.productService.quality === 'saros' ? () => desktopUpdateController.checkForUpdates() : undefined);
+		mainProcessElectronServer.registerChannel('update', updateChannel);
+		this._register(new NotAvailableUpdateDialog(effectiveUpdateService, updateDialogService, () => !desktopUpdateController.ownsFeedback));
 
 		// Cross-app secret sharing (macOS only, demand-driven)
 		if (isMacintosh) {
@@ -2005,15 +2017,8 @@ export class CodeApplication extends Disposable {
 				updateUrl: this.productService.updateUrl,
 				getAppUpdateFeedUrl: () => accessor.get(IUpdateService).getUpdateFeedUrl?.(),
 				requestQuit: (willRestart: boolean) => lifecycleMainService.quit(willRestart),
-				// desktop-only 壳（B 方案）没有 IDE 渲染进程 ⇒ caption 菜单的「检查更新」
-				// 只能由主进程代触发；服务不可用时记日志，不让菜单动作抛到页面。
-				checkForUpdates: async () => {
-					try {
-						await accessor.get(IUpdateService).checkForUpdates(true);
-					} catch (error) {
-						this.logService.warn(`[dshDesktopOnly] checkForUpdates failed: ${String((error as Error)?.message ?? error)}`);
-					}
-				},
+				checkForUpdates: () => desktopUpdateController.checkForUpdates(),
+				desktopUpdates: desktopUpdateController,
 			},
 			accessor.get(IWindowsMainService),
 			accessor.get(IAuxiliaryWindowsMainService),

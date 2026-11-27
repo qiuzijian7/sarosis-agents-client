@@ -64,6 +64,8 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 	private availableUpdate: IAvailableUpdate | undefined;
 	private updateCancellationTokenSource: CancellationTokenSource | undefined;
+	private preparingInstall = false;
+	private preparedRawUpdate: IAvailableUpdate | undefined;
 
 	@memoize
 	get cachePath(): Promise<string> {
@@ -94,8 +96,9 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 			return false; // we cannot apply an update and restart with different args
 		}
 
-		if (this.state.type !== StateType.Ready || !this.availableUpdate) {
-			return false; // we only handle the relaunch when we have a pending update
+		if (this.state.type !== StateType.Ready || !this.availableUpdate
+			|| !this.availableUpdate.updateFilePath && this.preparedRawUpdate !== this.availableUpdate) {
+			return false;
 		}
 
 		this.logService.trace('update#handleRelaunch(): running raw#quitAndInstall()');
@@ -409,6 +412,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 				}
 
 				if (update.sha256hash) {
+					this.setState({ ...State.Downloading(update, explicit, this._overwrite), verifying: true });
 					try {
 						await checksum(downloadPath, update.sha256hash);
 					} catch (e) {
@@ -437,6 +441,9 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		} catch (err) {
 			this.telemetryService.publicLog2<{ messageHash: string }, UpdateErrorClassification>('update:error', { messageHash: String(hash(String(err))) });
 			this.logService.error(err);
+			if (this.state.type === StateType.Downloaded && this.availableUpdate) {
+				throw err;
+			}
 			this.setState(State.Idle(getUpdateType(), explicit ? ((err as Error).message || String(err)) : undefined));
 		}
 	}
@@ -469,8 +476,17 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 			return Promise.resolve(undefined);
 		}
 
+		if (this.preparingInstall) { return; }
+		this.preparingInstall = true;
+		const availableUpdate = this.availableUpdate;
 		const update = this.state.update;
 		const explicit = this.state.explicit;
+		try {
+			await runBeforeUpdateInstallHooks(this.logService);
+		} finally {
+			this.preparingInstall = false;
+		}
+		if (this.availableUpdate !== availableUpdate || this.state.type !== StateType.Downloaded) { return; }
 		this.setState(State.Updating(update, explicit));
 
 		const cachePath = await this.cachePath;
@@ -485,14 +501,6 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		this.availableUpdate.cancelFilePath = cancelFilePath;
 
 		await pfs.Promises.writeFile(this.availableUpdate.updateFilePath, 'flag');
-
-		// ★ 2026-10-31：下面这次 spawn 带 **`/nocloseapplications`** ⇒ 安装器**不会**去关闭占用文件的
-		//   进程 ⇒ 任何还被锁着的文件只能排到"重启时替换" ⇒ 用户就会看到
-		//   「要完成 VsSaros 的安装，安装程序必须重新启动您的电脑」（真机：2026-10-31 自动更新后必现）。
-		//   ⇒ 唯一能做的是**我们自己先把占用者收掉**（dsh Host 锁着
-		//   `resources/app/dsh-runtime/*/koffi.node`，由 sessions 侧注册进来）。
-		//   ⚠ 必须在 spawn **之前**；钩子自带超时 + 失败只记日志（装不上比弹一次重启提示更糟）。
-		await runBeforeUpdateInstallHooks(this.logService);
 
 		const child = spawn(this.availableUpdate.packagePath,
 			[
@@ -621,6 +629,20 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		this.availableUpdate = undefined;
 	}
 
+	override async quitAndInstall(): Promise<void> {
+		if (this.preparingInstall) { return; }
+		this.preparingInstall = true;
+		try {
+			if (this.state.type === StateType.Ready && this.availableUpdate && !this.availableUpdate.updateFilePath) {
+				const update = this.availableUpdate;
+				await runBeforeUpdateInstallHooks(this.logService);
+				if (this.availableUpdate !== update || this.state.type !== StateType.Ready) { return; }
+				this.preparedRawUpdate = update;
+			}
+			await super.quitAndInstall();
+		} finally { this.preparingInstall = false; }
+	}
+
 	protected override doQuitAndInstall(): void {
 		if ((this.state.type !== StateType.Ready && this.state.type !== StateType.Restarting) || !this.availableUpdate) {
 			return;
@@ -635,7 +657,11 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 				// ignore
 			}
 		} else {
-			// 异常兜底也不能退回到可见安装向导：/silent 仍会显示进度窗口，统一用完全静默参数。
+			if (this.preparedRawUpdate !== this.availableUpdate) {
+				this.logService.warn('update#quitAndInstall: installation was not prepared, refusing to spawn');
+				return;
+			}
+			this.preparedRawUpdate = undefined;
 			spawn(this.availableUpdate.packagePath, [
 				'/verysilent',
 				'/suppressmsgboxes',

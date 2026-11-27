@@ -30,6 +30,9 @@ import { ClientRequest, request as httpRequest } from 'http';
 import { homedir, tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 import { Emitter, Event } from '../../../../base/common/event.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { assertIdleForUpdate, prepareDshHostForUpdate } from '../common/dshUpdatePreparation.js';
+import { DSH_PLUGIN_PATCH_LOCK, runPluginPatchTransaction } from './dshPluginPatchTransaction.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { basename, delimiter, dirname, join, resolve } from '../../../../base/common/path.js';
 import { DshBridgeMethod, IBridgeHello, IBridgePluginRow, IBridgeReverseRequest, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult } from '../common/dshBridgeProtocol.js';
@@ -522,6 +525,10 @@ export class DshHostSupervisor extends Disposable {
 	 * 这个动作触发，代价是他能预期的一次启动等待，而不是无从解释的静默错版本 ✓。
 	 */
 	private _pluginsStale = false;
+	private _appUpdatePreparing = false;
+	private _appUpdatePrepared = false;
+	private _pluginPatchRunning = false;
+	private _pluginWrites = 0;
 	/**
 	 * 本轮 start 里已判定"控制桥连不上"而拒绝接管的 Host pid（2026-10-30）。
 	 * 拿到启动锁后的第二次接管尝试据此跳过它（否则白等一次 10s 桥超时，结论不变）。
@@ -710,6 +717,39 @@ export class DshHostSupervisor extends Disposable {
 	 * 返回值的 `bundledVersion` 在这条路上 = **实装版本**（spec 安装没有"随包源版本"这个概念 ✓）。
 	 */
 	async installPluginSpec(spec: string, name: string): Promise<IDshBundledInstallResult> {
+		if (this._appUpdatePreparing || this._appUpdatePrepared || this._pluginPatchRunning || existsSync(join(this.profileDirectory(), DSH_PLUGIN_PATCH_LOCK))) {
+			return { name, ok: false, bundledVersion: '', changed: false, error: '更新操作进行中或插件恢复未完成，已阻止并发安装' };
+		}
+		this._pluginWrites++;
+		try { return await this._installPluginSpec(spec, name); }
+		finally { this._pluginWrites--; }
+	}
+
+	async applyPluginPatchTransaction<T>(apply: (install: (name: string, spec: string) => Promise<IDshBundledInstallResult>) => Promise<T>): Promise<T> {
+		if (this._appUpdatePreparing || this._appUpdatePrepared || this._pluginPatchRunning || this._pluginWrites || this._starting || this._stopping || this._reused) {
+			throw new Error('插件更新被阻止：Host 正忙、被共享或已有更新操作');
+		}
+		this._pluginPatchRunning = true;
+		try {
+			if (this._status.state === 'running') { assertIdleForUpdate(await this.getActivity()); }
+			const { profile, dshHome } = this._resolveProfileAndHome();
+			const options = this._requestedOptions ?? {};
+			const node = await this._opts.runtime.resolveNode(options.nodePath);
+			const dsh = await this._opts.runtime.resolveDsh(options.runtimePath, node);
+			const env = sanitizedEnv(dshHome ? { DSH_HOME: dshHome } : {});
+			injectBundledPnpm(env, node.path, this._appRoot(), line => this._appendLog(line));
+			const dir = this._profileDir(profile, env);
+			await this._materializeIfShared(dir);
+			return await runPluginPatchTransaction(dir, () => apply((name, spec) => this._installPluginSpec(spec, name)), async () => {
+				this._pluginsStale = true;
+				await this._runDshChecked(node, [dsh.bin, 'plugin', '--profile', profile, 'install', '--frozen-lockfile'], env, 300_000);
+			});
+		} finally {
+			this._pluginPatchRunning = false;
+		}
+	}
+
+	private async _installPluginSpec(spec: string, name: string): Promise<IDshBundledInstallResult> {
 		const cleanSpec = spec.trim();
 		const pkgName = name.trim();
 		const fail = (error: string): IDshBundledInstallResult =>
@@ -747,7 +787,7 @@ export class DshHostSupervisor extends Disposable {
 			this._pluginsStale = true;
 			// 超时 5 分钟：这条没有商城那条的取消能力，不能照抄 900s（否则卡住时用户只能干等）；
 			// 组合包首次装依赖一般 1-2 分钟量级，够用 ✓。
-			const out = await this._runDsh(node, buildPluginAddArgs(dsh.bin, profile, cleanSpec), env, 300_000);
+			const out = await this._runDshChecked(node, buildPluginAddArgs(dsh.bin, profile, cleanSpec), env, 300_000);
 			// ★★ 2026-11-21：pnpm 重物化整棵依赖树会把随包 `file:` 插件的旧 `.pnpm` 目录换掉
 			//   ⇒ 仍在跑的 Host 按旧路径 import ⇒ `30 entries did not activate / ENOENT lib/index.js`。
 			//   启动前 / 批量安装后都有同一套自愈，spec 安装这条此前没有 ⇒ 装完立刻体检补回。
@@ -780,6 +820,15 @@ export class DshHostSupervisor extends Disposable {
 
 	/** 上面两条公开安装路径的共用实现（差异只有 label 与调用方给的名字）。 */
 	private async _installFromDir(name: string, dir: string, label: string): Promise<IDshBundledInstallResult> {
+		if (this._appUpdatePreparing || this._appUpdatePrepared || this._pluginPatchRunning || existsSync(join(this.profileDirectory(), DSH_PLUGIN_PATCH_LOCK))) {
+			return { name, ok: false, bundledVersion: '', changed: false, error: '更新操作进行中或插件恢复未完成，已阻止并发安装' };
+		}
+		this._pluginWrites++;
+		try { return await this._doInstallFromDir(name, dir, label); }
+		finally { this._pluginWrites--; }
+	}
+
+	private async _doInstallFromDir(name: string, dir: string, label: string): Promise<IDshBundledInstallResult> {
 		const bundledVersion = this._readPkgVersion(join(dir, 'package.json')) ?? '';
 		const { profile, dshHome } = this._resolveProfileAndHome();
 		const options = this._requestedOptions ?? {};
@@ -1107,6 +1156,9 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	start(options: IDshHostStartOptions = {}): Promise<IDshHostStatus> {
+		if (this._appUpdatePreparing || this._appUpdatePrepared || this._pluginPatchRunning || existsSync(join(this.profileDirectory(), DSH_PLUGIN_PATCH_LOCK))) {
+			return Promise.reject(new Error('stop-failed: 更新操作进行中或插件恢复未完成，暂时不能启动 Host'));
+		}
 		// `_keepAlive` 只在真正新起/接管 Host 时由那次 `options` 决定（见 `_doStart` / `_adoptLease`）。
 		// 运行中或启动途中再来一次 `start({})` 不许把预热时的 `keepAlive: true` 降成 false ✗
 		// （B 壳 Bootstrap 曾用空选项触发：应用退出杀 Host ⇒ 每次启动都冷启动 16–20s）。
@@ -2494,6 +2546,9 @@ export class DshHostSupervisor extends Disposable {
 	 */
 	private async _ensureProfile(node: IResolvedNode, dsh: IResolvedDsh, profile: string, env: NodeJS.ProcessEnv): Promise<void> {
 		const dir = this._profileDir(profile, env);
+		if (!this._pluginPatchRunning && existsSync(join(dir, DSH_PLUGIN_PATCH_LOCK))) {
+			throw new Error('插件补丁或恢复操作未完成，已阻止 profile 写入');
+		}
 		const manifest = this._profileManifest(profile, env);
 		const exists = existsSync(manifest);
 		const seedDir = this._profileSeedDir(profile, dsh);
@@ -3299,12 +3354,41 @@ export class DshHostSupervisor extends Disposable {
 		return sample ? dirname(sample) : undefined;
 	}
 
+	public resumeAfterAppUpdate(): void {
+		if (!this._appUpdatePreparing) { this._appUpdatePrepared = false; }
+	}
+
+	public async prepareForAppUpdate(token: CancellationToken): Promise<void> {
+		if (this._appUpdatePrepared) { return; }
+		if (this._appUpdatePreparing || this._starting || this._stopping || this._pluginPatchRunning || this._pluginWrites || existsSync(join(this.profileDirectory(), DSH_PLUGIN_PATCH_LOCK))) { throw new Error('tasks-unavailable: Host 正在启动、停止或更新插件'); }
+		this._appUpdatePreparing = true;
+		const child = this._child;
+		try {
+			const lease = this._leaseStore?.read();
+			await prepareDshHostForUpdate({
+				hasHost: () => this._status.state === 'running' || !!child?.pid && pidAlive(child.pid) || !!lease && pidAlive(lease.pid),
+				ownsHost: () => !!child && !this._reused,
+				getActivity: () => this.getActivity(),
+				stopHost: () => this.releaseHost(),
+				hostStopped: () => !child?.pid || !pidAlive(child.pid),
+			}, token);
+			this._appUpdatePrepared = true;
+		} finally {
+			this._appUpdatePreparing = false;
+		}
+	}
+
 	public async releaseHost(): Promise<void> {
 		if (!this._child) {
 			return;
 		}
 		this._appendLog('releaseHost: 结束 dsh Host（释放 native 模块的文件锁，供升级安装替换文件）');
+		const child = this._child;
 		await this._killChild();
+		if (child.pid && pidAlive(child.pid)) {
+			this._child = child;
+			throw new Error('stop-failed: Host 未退出，已阻止安装');
+		}
 		this._child = undefined;
 		this._connection = undefined;
 		this._bridge?.dispose();
@@ -4127,6 +4211,16 @@ export class DshHostSupervisor extends Disposable {
 	private _entryFingerprint(dir: string): string | undefined {
 		const text = this._readEntryFile(dir);
 		return text === undefined ? undefined : createHash('sha1').update(text).digest('hex').slice(0, 8);
+	}
+
+	private _runDshChecked(node: IResolvedNode, args: string[], env: NodeJS.ProcessEnv, timeout: number): Promise<string> {
+		return new Promise((resolve, reject) => {
+			execFile(node.path, args, { env, timeout, windowsHide: true, cwd: homedir(), maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+				const output = redactSecrets(`${stdout ?? ''}${stderr ?? ''}`);
+				if (error) { reject(new Error(`${error.message}\n${output.slice(-1600)}`)); }
+				else { resolve(output); }
+			});
+		});
 	}
 
 	private _runDsh(node: IResolvedNode, args: string[], env: NodeJS.ProcessEnv, timeout: number): Promise<string> {
