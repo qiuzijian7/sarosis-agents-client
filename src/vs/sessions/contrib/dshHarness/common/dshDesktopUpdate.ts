@@ -27,6 +27,8 @@ export interface IDesktopUpdatePresentation {
 export interface IDesktopUpdateSnapshot {
 	readonly seq: number;
 	readonly presentation: IDesktopUpdatePresentation;
+	/** Only true when the installer has signalled Ready; Downloaded alone does not authorize restart. */
+	readonly restartReady?: boolean;
 	readonly app: IDshUpgradeAppState;
 	readonly metadata?: { readonly minVersion?: string; readonly rolloutPercent?: number };
 }

@@ -533,7 +533,14 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		//   ⇒ 这里注册一条"安装前释放"：spawn 安装包之前先结束 dsh Host
 		//     （`releaseHost()` → `taskkill /T /F` 连带 node / 终端 / MCP 子进程）。
 		//   ⚠ 注册点在主进程（platform 层只提供注册/运行，不认识 dsh）⇒ 这里是唯一持有 supervisor 的地方。
-		this._register(registerBeforeUpdateInstallHook(token => this._supervisor.prepareForAppUpdate(token)));
+		this._register(registerBeforeUpdateInstallHook(async token => {
+			this._views.beginAppUpdate();
+			try { await this._supervisor.prepareForAppUpdate(token); }
+			catch (error) {
+				this._views.appUpdatePreparationFailed();
+				throw error;
+			}
+		}));
 		// 抢先启动：与窗口/工作台启动并行（渲染进程那份预热抢不过"聊天框随布局挂载即启动"）。
 		void this._eagerPrewarm();
 	}

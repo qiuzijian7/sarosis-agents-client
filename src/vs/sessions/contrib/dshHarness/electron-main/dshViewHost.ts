@@ -32,6 +32,7 @@ import { dshDesktopEditingKeys, isDshDesktopMenuAction, type DshDesktopMenuActio
 import { resolveViewUrl } from '../common/dshPluginPage.js';
 import { DshAuthWarmup, sameAuthConnection } from '../common/dshAuthWarmup.js';
 import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
+import { isUpdateStandbyAction, updateStandbyUrl } from '../common/dshUpdateStandby.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
 import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_THEME_SOURCE, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_UPGRADE, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageCommand, DshPageEvent, DshPageThemeSource, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshUpgradeState, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
 import { DSH_DESKTOP_UPDATE_IPC, IDesktopUpdateSnapshot, mergeDesktopUpdateReplica } from '../common/dshDesktopUpdate.js';
@@ -433,6 +434,7 @@ interface IViewSlot {
 	  /** 该视图所属的 Electron 分区（弹窗走独立分区；`_load` 查 cookie 要看**它自己**的分区 ✓）。 */
 	  session?: Session;
 	promptTransport?: DshPromptTransport;
+	updateStandbyUrl?: string;
 	 /** 上一次打全量 `page surface` 时的关键状态签名（见记录处的降量注释）。 */
 	 surfaceSig?: string;
 	 /** 上一次打全量的时间（稳态每 `SURFACE_FULL_LOG_INTERVAL_MS` 补一条，保证日志可回溯 ✓）。 */
@@ -641,13 +643,30 @@ export class DshViewHost extends Disposable {
 	private _desktopPoolSeq = 0;
 	private _connection: IDshHostConnection | undefined;
 	private _desktopUpdate: IDesktopUpdateSnapshot | undefined;
+	private _appUpdateSuspended = false;
+	private _appUpdatePreparationFailed = false;
 	private _upgradeSeq = 0;
+
+	beginAppUpdate(): void {
+		this._appUpdateSuspended = true;
+		this._appUpdatePreparationFailed = false;
+		if (!this._connection) { for (const slot of this._views.values()) { this._showHostUnavailable(slot); } }
+	}
+
+	appUpdatePreparationFailed(): void {
+		this._appUpdatePreparationFailed = true;
+		if (this._connection) { this._appUpdateSuspended = false; }
+		else { for (const slot of this._views.values()) { this._showHostUnavailable(slot); } }
+	}
 
 	pushDesktopUpdate(snapshot: IDesktopUpdateSnapshot): void {
 		this._desktopUpdate = snapshot;
+		this._appUpdatePreparationFailed = false;
 		for (const slot of this._views.values()) {
 			const wc = slot.view.webContents;
-			if (!wc.isDestroyed() && wc.mainFrame.origin === this._connection?.origin) {
+			if (this._appUpdateSuspended && !this._connection) {
+				this._showHostUnavailable(slot);
+			} else if (!wc.isDestroyed() && wc.mainFrame.origin === this._connection?.origin) {
 				wc.send(DSH_DESKTOP_UPDATE_IPC, snapshot.presentation);
 				this.pushUpgrade(slot.id, slot.lastUpgrade ?? { at: Date.now(), app: snapshot.app, runtime: {}, bundled: [], assets: [] });
 			}
@@ -861,6 +880,8 @@ export class DshViewHost extends Disposable {
 		}
 		this._authRefreshed = false;
 		if (connection) {
+			this._appUpdateSuspended = false;
+			this._appUpdatePreparationFailed = false;
 			this._authTimer = setInterval(() => void this._refreshAuth(), AUTH_REFRESH_INTERVAL_MS);
 			(this._authTimer as { unref?: () => void } | undefined)?.unref?.();
 			// P0-3：即使早 auth 事件没赶上，也在 setConnection 时先发起交换，_load 复用 in-flight。
@@ -1796,7 +1817,7 @@ export class DshViewHost extends Disposable {
 	 * 此时用带 token 的认证 URL 再试一次（token 交换同样落到该路由上）。
 	 */
 	/**
-	 * **Host 不可用时的统一出口**：插件页加载可见占位页，其它视图维持原来的 `about:blank`。
+	 * **Host 不可用时的统一出口**：更新停机显示本地状态页；普通插件页加载占位，其它视图保持原行为。
 	 *
 	 * 为什么不能再"静默 about:blank"（2026-10-20 真机报障）：`about:blank` 属于加载**成功** ⇒
 	 * `did-fail-load` 不触发、有界重试不启动、白屏看门狗只管聊天页 ⇒ 插件页得到"整片纯白 +
@@ -1808,6 +1829,23 @@ export class DshViewHost extends Disposable {
 	private _showHostUnavailable(slot: IViewSlot): void {
 		const wc = slot.view.webContents;
 		if (wc.isDestroyed()) {
+			return;
+		}
+		if (this._appUpdateSuspended && !this._connection) {
+			const snapshot = this._appUpdatePreparationFailed ? {
+				seq: 0, presentation: { phase: 'error' as const, failure: 'stop-failed' as const },
+				app: { current: '', action: 'unknown' as const },
+			} : this._desktopUpdate;
+			const url = updateStandbyUrl(snapshot);
+			if (slot.updateStandbyUrl === url && wc.getURL() === url) { return; }
+			slot.updateStandbyUrl = url;
+			slot.blankChecks = 0;
+			this._logService.info(`[dshHarness] view ${slot.id} → 本地更新状态页（Host 已暂停，等待用户确认）`);
+			void wc.loadURL(url).catch(error => {
+				if ((error as { errno?: number }).errno !== -3 && !wc.isDestroyed()) {
+					this._logService.warn(`[dshHarness] update standby page failed: ${(error as Error).message}`);
+				}
+			});
 			return;
 		}
 		if (!slot.pageSurface) {
@@ -2157,7 +2195,7 @@ export class DshViewHost extends Disposable {
 			return;
 		}
 		// 隐藏的视图不体检（后台页不占资源、也不该被重载打断）；恢复可见时计数从头开始。
-		if (!slot.visible) {
+		if (!slot.visible || !this._connection) {
 			slot.blankChecks = 0;
 			return;
 		}
@@ -2378,6 +2416,13 @@ export class DshViewHost extends Disposable {
 			const currentUrl = (() => {
 				try { return wc.getURL(); } catch { return slot.route ?? '/'; }
 			})();
+			if (isUpdateStandbyAction({ target: url, current: currentUrl, expected: slot.updateStandbyUrl, mainFrame: details.isMainFrame, connected: !!this._connection })) {
+				event.preventDefault();
+				void this._pageCommandHandler?.({ method: 'desktopUpdateOpen' }, slot.id).catch(error => {
+					this._logService.warn(`[dshHarness] native update action failed: ${(error as Error).message}`);
+				});
+				return;
+			}
 			// "最近 1.5s 内有用户点击" ⇒ 认为这次导航是用户点出来的（正常页面行为）
 			const userGestureRecently = Date.now() - lastUserInputAt < 1500;
 			// ★ 2026-10-24 应急开关：`VSSAROS_DSH_ALLOW_MODULE_NAV=1` ⇒ 一律放行"到模块页"的同源导航

@@ -481,13 +481,19 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		const availableUpdate = this.availableUpdate;
 		const update = this.state.update;
 		const explicit = this.state.explicit;
+		this.setState(State.Updating(update, explicit));
 		try {
 			await runBeforeUpdateInstallHooks(this.logService);
+		} catch (error) {
+			if (this.availableUpdate === availableUpdate && (this.state as State).type === StateType.Updating) {
+				this.availableUpdate = undefined;
+				this.setState(State.Idle(getUpdateType(), (error as Error).message || String(error)));
+			}
+			throw error;
 		} finally {
 			this.preparingInstall = false;
 		}
-		if (this.availableUpdate !== availableUpdate || this.state.type !== StateType.Downloaded) { return; }
-		this.setState(State.Updating(update, explicit));
+		if (this.availableUpdate !== availableUpdate || (this.state as State).type !== StateType.Updating) { return; }
 
 		const cachePath = await this.cachePath;
 		const sessionEndFlagPath = path.join(cachePath, 'session-ending.flag');

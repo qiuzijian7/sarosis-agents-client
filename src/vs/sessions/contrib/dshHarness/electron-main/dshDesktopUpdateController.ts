@@ -33,6 +33,7 @@ export class DshDesktopUpdateController extends Disposable {
 		const metadata = 'update' in state ? parseAppUpdateResponse(state.update) : undefined;
 		return {
 			seq: this.sequence, presentation: { ...this.presentation },
+			restartReady: state.type === StateType.Ready && this.presentation.phase === 'ready',
 			app: {
 				...desktopUpdateAppState(state, this.presentation, this.options.currentVersion ?? '', this.skippedVersion),
 				...(metadata?.notes ? { releaseNotes: metadata.notes } : {}),

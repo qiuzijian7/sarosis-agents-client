@@ -3386,11 +3386,14 @@ export class DshHostSupervisor extends Disposable {
 		}
 		this._appendLog('releaseHost: 结束 dsh Host（释放 native 模块的文件锁，供升级安装替换文件）');
 		const child = this._child;
+		this._setStatus({ ...this._status, state: 'stopping', bridge: 'none' });
 		await this._killChild();
 		if (child.pid && pidAlive(child.pid)) {
 			this._child = child;
+			this._setStatus({ ...this._status, state: 'error', error: 'stop-failed: Host 未退出，已阻止安装' });
 			throw new Error('stop-failed: Host 未退出，已阻止安装');
 		}
+		this._runDisposables.clear();
 		this._child = undefined;
 		this._connection = undefined;
 		this._bridge?.dispose();

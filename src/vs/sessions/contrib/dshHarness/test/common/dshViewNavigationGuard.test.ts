@@ -76,7 +76,9 @@ suite('dsh 插件页导航守卫（app.ts 全局拦截 ⇄ DshViewHost 同源放
 		const host = stripComments(read(VIEW_HOST));
 		const start = host.indexOf(`wc.on('will-frame-navigate'`);
 		assert.ok(start >= 0, 'dshViewHost.ts 里找不到 will-navigate 守卫 ⇒ 豁免后插件页可以导航到任意地址 ✗');
-		const body = host.slice(start, host.indexOf('});', start));
+		const end = host.indexOf("wc.on('will-redirect'", start);
+		assert.ok(end > start, '找不到主帧守卫结束后的重定向守卫');
+		const body = host.slice(start, end);
 		// ★ 2026-10-23：判据抽进 `common/dshViewNavigation.ts`（纯函数 + 表驱动单测）⇒
 		//   这里改断言"handler 必须调用它，且非 allow 一律 preventDefault"（意图不变：非同源不放行）。
 		assert.ok(/decideMainFrameNavigation\(\s*url\s*,/.test(body) && /event\.preventDefault\(\)/.test(body),

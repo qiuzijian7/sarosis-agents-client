@@ -297,6 +297,24 @@ suite('独立桌面窗口更新反馈', () => {
 		assert.deepStrictEqual({ calls: f.calls, messages: f.dialogs.map(d => d.message) }, { calls: ['download:true', 'restart'], messages: ['发现新版本（9.9.9），是否更新？', '更新已安装，是否立即重启？'] });
 	});
 
+	test('安装Ready未点击任何按钮及选择稍后重启，都不自动安装或重启', async () => {
+		const f = fixture(State.AvailableForDownload(update));
+		f.responses.push(0);
+		await f.controller.checkForUpdates();
+		f.setState(State.Downloaded(update, true, false));
+		assert.strictEqual(f.controller.snapshot.restartReady, false);
+		f.setState(State.Updating(update, true));
+		f.holdDialog();
+		f.setState(State.Ready(update, true, false));
+		await flush();
+		assert.strictEqual(f.controller.snapshot.restartReady, true);
+		assert.deepStrictEqual(f.calls, ['download:true']);
+		f.releaseDialog();
+		await flush();
+		assert.deepStrictEqual(f.calls, ['download:true']);
+		assert.strictEqual(f.controller.snapshot.presentation.phase, 'ready');
+	});
+
 	test('已下载的更新可以由用户确认安装', async () => {
 		const f = fixture(State.Downloaded(update, true, false));
 		f.responses.push(0);
