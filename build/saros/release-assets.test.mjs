@@ -217,7 +217,7 @@ test('both repositories create asset links, update same-name stale URL, and reru
 	}
 });
 
-test('woa id/tag fallback works for GET/POST/PUT and verifies exact names and URLs', () => {
+test('GitLab-compatible id/tag fallback works for GET/POST/PUT and verifies exact names and URLs', () => {
 	const fake = gitlabFake({ byTag: true });
 	fake.set([{ id: 7, name: desired[0].name, url: 'https://old.example/file' }]);
 	links.ensureReleaseLinks(fake.curl, LINK_OPTIONS, desired);
@@ -310,8 +310,10 @@ test('publication consumes archives before git writes and upload preserves/valid
 	assertOrdered(release, 'archivedDownloads = await loadArchivedDownloads', 'const changelog = buildChangelog');
 	assertOrdered(release, 'assertReleaseVersion(version,', 'const changelog = buildChangelog');
 	assert.match(release, /IS_WIN \? archivedDownloads : \[\]/);
-	assert.match(release, /ensureReleaseLinks\(curl, \{ api: GITLAB_API, project: GITLAB_PROJECT,/);
-	assert.match(release, /ensureReleaseLinks\(curl, \{ api: GITLAB_API, project: GITLAB_MAIN_PROJECT,/);
+	assert.ok(!release.includes('ensureReleaseLinks('), 'woa v3 must not call GitLab asset links');
+	assert.match(release, /verifyRelease\(GITLAB_PROJECT, tag, glHeaders, .*expectedLinks: downloads/);
+	assert.match(release, /verifyRelease\(GITLAB_MAIN_PROJECT, tag, glHeaders, .*expectedLinks: downloads/);
+	assert.match(release, /assertExpectedDescriptionLinks\(desc, expectedLinks\)/);
 	const upload = fs.readFileSync(path.join(ROOT, 'deploy-package/scripts/bk-pipeline-upload.ps1'), 'utf8');
 	assert.match(upload, /"-o", \$responseFile/);
 	assertOrdered(upload, '--invalidate-upload', '--check-exes');
@@ -327,7 +329,7 @@ test('publication consumes archives before git writes and upload preserves/valid
 	assertOrdered(generate, '--check-model', 'node --test');
 	assert.match(generate, /--test-timeout=\d+/);
 	assert.match(generate, /\$setupAssets = ConvertFrom-Json/);
-	assert.match(release, /GITLAB_MAIN_PROJECT\}\/repository\/tags\?tag_name=.*&ref=\$\{buildCommit\}/);
+	assert.match(release, /ensureGitlabTag\(curl, \{ api: GITLAB_API, project: GITLAB_MAIN_PROJECT, tag, ref: buildCommit, expectedCommit: buildCommit/);
 });
 
 test('release version and annotated/lightweight tags must match the verified build', () => {
@@ -340,4 +342,89 @@ test('release version and annotated/lightweight tags must match the verified bui
 	assert.throws(() => links.assertTagCommit(`${'b'.repeat(40)}\trefs/tags/${tag}`, tag, commit), /does not point/);
 	assert.throws(() => links.assertTagCommit(`${commit}\trefs/tags/${tag}\n${'b'.repeat(40)}\trefs/tags/${tag}^{}`, tag, commit), /does not point/);
 	assert.throws(() => links.assertTagCommit('', tag, commit), /does not point/);
+});
+
+function descriptionTable(downloads = desired) {
+	return ['### 下载', '| 平台 | 类型 | 下载 |', '|------|------|------|',
+		...downloads.map(item => `| Windows x64 | 用户级安装 | [${item.name}](${item.url}) (408.95 MiB) |`)].join('\n');
+}
+
+test('woa description downloads verify exact names and URLs for both LF and CRLF', () => {
+	for (const description of [descriptionTable(), descriptionTable().replace(/\n/g, '\r\n')]) {
+		assert.deepEqual(links.assertExpectedDescriptionLinks(description, desired), desired);
+	}
+	assert.deepEqual(links.assertExpectedDescriptionLinks(descriptionTable().replace(/ \(408.95 MiB\)/g, ''), desired), desired);
+});
+
+test('woa description verification rejects missing, stale, duplicate and malformed downloads', () => {
+	for (const description of [
+		descriptionTable(desired.slice(1)),
+		descriptionTable().replace(desired[0].url, desired[0].url + '-wrong'),
+		descriptionTable().replace(desired[0].name, 'wrong.exe'),
+		descriptionTable([...desired, desired[0]]),
+		descriptionTable().replace(`](${desired[0].url})`, `](javascript:alert)`),
+		descriptionTable().replace('|------|------|------|', ''),
+		descriptionTable().replace(`[${desired[0].name}]`, `\`${desired[0].name}\``),
+	]) { assert.throws(() => links.assertExpectedDescriptionLinks(description, desired)); }
+	assert.throws(() => links.assertExpectedDescriptionLinks(descriptionTable([{ name: 'VsSarosSetup.exe', url: desired[0].url }]), desired), /System installers/);
+});
+
+test('links hidden in comments, code fences or other sections do not satisfy woa verification', () => {
+	for (const hidden of [`<!--\n${descriptionTable()}\n-->`, `\`\`\`markdown\n${descriptionTable()}\n\`\`\``, `~~~\n${descriptionTable()}\n~~~`]) {
+		assert.throws(() => links.assertExpectedDescriptionLinks(hidden, desired));
+	}
+	const missing = descriptionTable([]);
+	const rows = descriptionTable().split('\n').slice(3);
+	for (const indent of ['    ', '\t']) {
+		assert.throws(() => links.assertExpectedDescriptionLinks(`${missing}\n${rows.map(row => indent + row).join('\n')}`, desired), /missing/);
+	}
+	assert.throws(() => links.assertExpectedDescriptionLinks(`${missing}\n### 其他\n${rows.join('\n')}`, desired), /missing/);
+	assert.throws(() => links.assertExpectedDescriptionLinks(`${descriptionTable()}\n${descriptionTable()}`, desired), /exactly one/);
+});
+
+function tagFake({ createStatus = 200, existing = false, wrongCommit = false, readStatus = 200 } = {}) {
+	const commit = 'a'.repeat(40);
+	const calls = [];
+	let present = existing;
+	const curl = (method, url) => {
+		calls.push({ method, url });
+		if (url.includes('/branches/')) { return { status: 200, data: { commit: { id: commit } } }; }
+		if (method === 'POST') { present = true; return { status: createStatus, data: { name: LINK_OPTIONS.tag, commit: { id: commit } } }; }
+		return present ? { status: readStatus, data: { name: LINK_OPTIONS.tag, commit: { id: wrongCommit ? 'b'.repeat(40) : commit } } } : { status: 404 };
+	};
+	return { curl, calls, commit };
+}
+
+test('woa tag creation accepts 200/201 and verifies the pinned branch commit', () => {
+	for (const createStatus of [200, 201]) {
+		const fake = tagFake({ createStatus });
+		links.ensureGitlabTag(fake.curl, { ...LINK_OPTIONS, ref: 'main' });
+		assert.equal(fake.calls.filter(call => call.method === 'POST').length, 1);
+		assert.ok(fake.calls.find(call => call.method === 'POST').url.includes(`&ref=${fake.commit}&`));
+		assert.equal(fake.calls.at(-1).method, 'GET');
+		links.ensureGitlabTag(fake.curl, { ...LINK_OPTIONS, ref: 'main' });
+		assert.equal(fake.calls.filter(call => call.method === 'POST').length, 1);
+	}
+});
+
+test('main repo tag conflict requires the verified build commit and never moves a tag', () => {
+	for (const createStatus of [400, 409]) {
+		const fake = tagFake({ createStatus });
+		links.ensureGitlabTag(fake.curl, { ...LINK_OPTIONS, ref: fake.commit, expectedCommit: fake.commit });
+		assert.ok(fake.calls.every(call => !call.url.includes('/branches/')));
+	}
+	for (const existing of [true, false]) {
+		const fake = tagFake({ existing, wrongCommit: true });
+		assert.throws(() => links.ensureGitlabTag(fake.curl, { ...LINK_OPTIONS, ref: fake.commit, expectedCommit: fake.commit }), /expected commit/);
+		assert.ok(fake.calls.every(call => !['PUT', 'DELETE'].includes(call.method)));
+	}
+});
+
+test('tag transport, permission and ignored-write failures never pass verification', () => {
+	for (const createStatus of [401, 403, 500]) {
+		const fake = tagFake({ createStatus });
+		assert.throws(() => links.ensureGitlabTag(fake.curl, { ...LINK_OPTIONS, ref: fake.commit, expectedCommit: fake.commit }), /HTTP/);
+	}
+	const missing = tagFake({ readStatus: 404 });
+	assert.throws(() => links.ensureGitlabTag(missing.curl, { ...LINK_OPTIONS, ref: missing.commit, expectedCommit: missing.commit }), /HTTP 404/);
 });

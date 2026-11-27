@@ -324,6 +324,86 @@ test('GitLab 401 still switches headers only once and reports invalid credential
 	assert.equal(calls, 2);
 });
 
+function releaseWithApi(handler) {
+	return releaseWithExecutor((_bin, args) => {
+		const method = args[args.indexOf('-X') + 1];
+		const url = args.at(-1);
+		assert.ok(!url.includes('/assets/links') && !url.includes('/attachments'), 'woa archives are linked from description, never reuploaded');
+		const bodyIndex = args.indexOf('--data-binary');
+		const json = bodyIndex >= 0 ? JSON.parse(fs.readFileSync(args[bodyIndex + 1].slice(1), 'utf8')) : undefined;
+		const result = handler(method, url, json);
+		fs.writeFileSync(args[args.indexOf('-o') + 1], JSON.stringify(result.data || {}));
+		return { status: 0, stdout: `\n${result.status}`, stderr: '' };
+	});
+}
+
+const releaseTag = 'v2.2.26289';
+const releaseDownloads = [{ name: 'VsSarosUserSetup.exe', url: 'http://downloads.example/archive/2.2.26289/user/VsSarosUserSetup.exe' }];
+const releaseDescription = ['## VsSaros ' + releaseTag, '发布记录 '.repeat(50), '### 下载', '| 平台 | 类型 | 下载 |', '|------|------|------|',
+	`| Windows x64 | 用户级安装 | [${releaseDownloads[0].name}](${releaseDownloads[0].url}) (408.95 MiB) |`].join('\n');
+const verifyOptions = { minDescLen: 200, minLinks: 1, expectedLinks: releaseDownloads };
+
+test('woa v3 publishes and reruns both repositories without any assets.links support', () => {
+	for (const project of ['1790708', '1764429']) {
+		for (const existing of [false, true]) {
+			let remote = existing ? { id: 42, tag: releaseTag, type: 'none', description: 'old tag baseline', attachments: [] } : undefined;
+			const calls = [];
+			const release = releaseWithApi((method, url, json) => {
+				calls.push({ method, url, json });
+				if (method === 'GET') { return remote ? { status: 200, data: remote } : { status: 404 }; }
+				if (method === 'POST') {
+					assert.equal(url, `https://git.woa.com/api/v3/projects/${project}/releases`);
+					assert.ok(!Object.hasOwn(json, 'name'));
+					remote = { id: 42, tag: releaseTag, type: 'release', attachments: [], description: 'created stub' };
+					return { status: 201, data: remote };
+				}
+				assert.equal(method, 'PUT');
+				assert.equal(url, `https://git.woa.com/api/v3/projects/${project}/releases/${releaseTag}`);
+				remote = { ...remote, type: json.type, description: json.description };
+				return { status: 200, data: remote };
+			});
+			assert.ok(release.upsertGitlabRelease(project, releaseTag, `VsSaros ${releaseTag}`, releaseDescription, {}).status < 300);
+			assert.equal(release.verifyRelease(project, releaseTag, {}, verifyOptions).description, releaseDescription);
+			release.upsertGitlabRelease(project, releaseTag, `VsSaros ${releaseTag}`, releaseDescription, {});
+			release.verifyRelease(project, releaseTag, {}, verifyOptions);
+			assert.equal(calls.filter(call => call.method === 'POST').length, existing ? 0 : 1);
+		}
+	}
+});
+
+test('release lookup permissions and malformed replies never trigger creation', () => {
+	for (const response of [{ status: 403 }, { status: 500 }, { status: 200, data: { id: 0, tag: releaseTag } }, { status: 200, data: { id: 42, tag: 'wrong' } }]) {
+		const release = releaseWithApi(method => { assert.equal(method, 'GET'); return response; });
+		assert.throws(() => release.upsertGitlabRelease('1790708', releaseTag, 'VsSaros', releaseDescription, {}), /lookup failed/);
+	}
+});
+
+test('a failed post-create PUT is propagated rather than accepting the created stub', () => {
+	for (const status of [401, 403, 404, 500]) {
+		const release = releaseWithApi(method => method === 'GET' ? { status: 404 }
+			: method === 'POST' ? { status: 201, data: { id: 42 } } : { status });
+		assert.equal(release.upsertGitlabRelease('1790708', releaseTag, 'VsSaros', releaseDescription, {}).status, status);
+	}
+});
+
+test('woa release readback rejects stale links, stubs, wrong types and wrong tags', () => {
+	const valid = { id: 42, tag: releaseTag, type: 'release', description: releaseDescription, attachments: [] };
+	for (const data of [
+		{ ...valid, description: 'created stub' },
+		{ ...valid, description: releaseDescription.replace(releaseDownloads[0].url, 'https://wrong.example/file') },
+		{ ...valid, description: 'long changelog '.repeat(30) },
+		{ ...valid, type: 'none' },
+		{ ...valid, tag: 'v2.2.26290' },
+	]) {
+		const release = releaseWithApi(method => { assert.equal(method, 'GET'); return { status: 200, data }; });
+		assert.throws(() => release.verifyRelease('1790708', releaseTag, {}, verifyOptions));
+	}
+	for (const status of [401, 403, 404, 500]) {
+		const release = releaseWithApi(() => ({ status }));
+		assert.throws(() => release.verifyRelease('1790708', releaseTag, {}, verifyOptions), /verification failed/);
+	}
+});
+
 test('PowerShell wrapper outputs UTF-8 under a legacy code page and preserves failure exit status', { skip: process.platform !== 'win32' }, async () => {
 	const script = path.resolve('.ci/scripts/create-release.ps1').replace(/'/g, "''");
 	for (const exitCode of [0, 7]) {
