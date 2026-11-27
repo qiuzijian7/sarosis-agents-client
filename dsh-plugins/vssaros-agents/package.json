@@ -49,6 +49,7 @@
     "lib/gzip.js",
     "lib/home.js",
     "lib/hostSelfWatch.js",
+    "lib/lazyPresetFill.js",
     "lib/imCredentials.js",
     "lib/imInboundLock.js",
     "lib/feishuAppInbounds.js",

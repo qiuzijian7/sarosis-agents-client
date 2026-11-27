@@ -38,6 +38,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { backgroundForPageSurface, DshThemeTokens, IDshViewBackgrounds } from '../common/dshThemeBridge.js';
 import { IIdeViewSlotForTargeting } from '../common/dshIdeTargeting.js';
 import { IDshHostConnection } from './dshHostSupervisor.js';
+import { DSH_PROMPT_IPC_CALL, DSH_PROMPT_IPC_CANCEL, DshPromptTransport } from './dshPromptTransport.js';
 import { markMainThreadPhase } from '../../../../code/electron-main/mainThreadBreadcrumb.js';
 
 const PRELOAD = 'vs/sessions/contrib/dshHarness/electron-browser/preload-dshView.js';
@@ -238,6 +239,7 @@ const PAGE_SURFACE_REPORT = `(() => { try {
     // ⚠ 本段是**模板字符串**：注释里绝不能出现反引号 ✗。
     workspaceUi: s.workspaceUi || null,
     workspaceUiLog: s.workspaceUiLog || null,
+    interactionRecovery: s.interactionRecovery || null,
     rebinds: (typeof s.workspaceRebinds === "number" ? s.workspaceRebinds : 0),
     // ★ 2026-10-17（真机「弹窗停在 hero，选了工作区也不能输入」）：全窗视图被这条自证**跳过**了
     //   （调用点只看 surface === 'chat'）⇒ 页面侧一切判据都拿不到，只能猜 ✗。
@@ -429,6 +431,7 @@ interface IViewSlot {
 	  rosterReloaded?: boolean;
 	  /** 该视图所属的 Electron 分区（弹窗走独立分区；`_load` 查 cookie 要看**它自己**的分区 ✓）。 */
 	  session?: Session;
+	promptTransport?: DshPromptTransport;
 	 /** 上一次打全量 `page surface` 时的关键状态签名（见记录处的降量注释）。 */
 	 surfaceSig?: string;
 	 /** 上一次打全量的时间（稳态每 `SURFACE_FULL_LOG_INTERVAL_MS` 补一条，保证日志可回溯 ✓）。 */
@@ -1715,6 +1718,7 @@ export class DshViewHost extends Disposable {
 		if (!slot) {
 			return;
 		}
+		slot.promptTransport?.dispose();
 		this._views.delete(viewId);
 		if (slot.attachedTo && !slot.attachedTo.isDestroyed()) {
 			slot.attachedTo.contentView.removeChildView(slot.view);
@@ -2479,6 +2483,34 @@ export class DshViewHost extends Disposable {
 			// 重载后启动参数里的会话 id 是创建时的旧值：按 slot 记录重发重绑（页面幂等处理）。
 			if (slot.surface === 'chat' && slot.sessionId) {
 				wc.send(DSH_PAGE_IPC_REBIND, { sessionId: slot.sessionId });
+			}
+		});
+
+		const promptTransport = slot.promptTransport = new DshPromptTransport({
+			origin: () => this._connection?.origin,
+			sessionId: () => slot.sessionId,
+			cookies: origin => wc.session.cookies.get({ url: origin }),
+		});
+		wc.once('destroyed', () => promptTransport.dispose());
+		wc.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+			if (isMainFrame && !isInPlace) {
+				promptTransport.cancelAll();
+			}
+		});
+		wc.ipc.handle(DSH_PROMPT_IPC_CALL, async (event, id: string, body: string) => {
+			if (!this._isTrustedSender(event)) {
+				throw new Error('dsh prompt: untrusted sender');
+			}
+			try {
+				return await promptTransport.call(id, body);
+			} catch (error) {
+				this._logService.warn(`[dshHarness] view ${slot.id} prompt transport failed: ${error instanceof Error ? error.message : String(error)}`);
+				throw error;
+			}
+		});
+		wc.ipc.on(DSH_PROMPT_IPC_CANCEL, (event, id: unknown) => {
+			if (this._isTrustedSender(event) && typeof id === 'string') {
+				promptTransport.cancel(id);
 			}
 		});
 

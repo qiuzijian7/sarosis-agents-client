@@ -224,4 +224,72 @@ suite('dshHarness / 并发目录复制', () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	test('升级比较真实字节，相同文件零写入，等长内容变更仍更新', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-cc-delta-'));
+		try {
+			const seed = makeSeed(root);
+			const dest = path.join(root, 'dest');
+			await copyDirectoryConcurrently(seed, dest, { dereference: true });
+			const one = path.join(dest, 'a', 'one.txt');
+			fs.writeFileSync(one, 'OLD');
+			const sourceTime = fs.statSync(path.join(seed, 'a', 'one.txt')).mtime;
+			fs.utimesSync(one, sourceTime, sourceTime);
+			const writes: string[] = [];
+			const options = { dereference: true, skipUnchanged: true, copyFile: async (from: string, to: string) => { writes.push(from); await fs.promises.copyFile(from, to); } };
+			await copyDirectoryConcurrently(seed, dest, options);
+			assert.deepStrictEqual(snapshot(dest), snapshot(seed));
+			assert.deepStrictEqual(writes, [path.join(seed, 'a', 'one.txt')]);
+			writes.length = 0;
+			await copyDirectoryConcurrently(seed, dest, options);
+			assert.deepStrictEqual(writes, []);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	test('升级缺失文件与64KiB之后的差异不会被跳过', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-cc-large-'));
+		try {
+			const seed = makeSeed(root);
+			const large = path.join(seed, 'large.bin');
+			const bytes = Buffer.alloc(160 * 1024, 7);
+			fs.writeFileSync(large, bytes);
+			const dest = path.join(root, 'dest');
+			await copyDirectoryConcurrently(seed, dest, { dereference: true });
+			const changed = Buffer.from(bytes); changed[bytes.length - 1] = 8;
+			fs.writeFileSync(path.join(dest, 'large.bin'), changed);
+			fs.rmSync(path.join(dest, 'a', 'one.txt'));
+			let writes = 0;
+			await copyDirectoryConcurrently(seed, dest, { dereference: true, skipUnchanged: true, copyFile: async (from, to) => { writes++; await fs.promises.copyFile(from, to); } });
+			assert.strictEqual(writes, 2);
+			assert.deepStrictEqual(fs.readFileSync(path.join(dest, 'large.bin')), bytes);
+			assert.deepStrictEqual(snapshot(dest), snapshot(seed));
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	test('差量模式仍传播内容不同文件的永久锁失败', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-cc-delta-lock-'));
+		try {
+			const seed = makeSeed(root);
+			const dest = path.join(root, 'dest');
+			const error = Object.assign(new Error('locked'), { code: 'EBUSY' });
+			let writes = 0;
+			await assert.rejects(copyDirectoryConcurrently(seed, dest, { concurrency: 1, skipUnchanged: true, retryDelaysMs: [0], sleep: async () => undefined,
+				copyFile: async () => { writes++; throw error; } }), e => e === error);
+			assert.strictEqual(writes, 2);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	test('差量模式拒绝嵌套目标junction且不写入链接外部', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-cc-target-link-'));
+		try {
+			const seed = makeSeed(root);
+			const dest = path.join(root, 'dest');
+			const outside = path.join(root, 'outside');
+			fs.mkdirSync(dest); fs.mkdirSync(outside);
+			fs.writeFileSync(path.join(outside, 'one.txt'), 'KEEP');
+			fs.symlinkSync(outside, path.join(dest, 'a'), 'junction');
+			await assert.rejects(copyDirectoryConcurrently(seed, dest, { dereference: true, skipUnchanged: true }), /linked profile directory/);
+			assert.strictEqual(fs.readFileSync(path.join(outside, 'one.txt'), 'utf8'), 'KEEP');
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
 });

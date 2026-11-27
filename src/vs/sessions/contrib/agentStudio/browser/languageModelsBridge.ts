@@ -1327,6 +1327,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 					const _cachedTokens = raw.prompt_tokens_details?.cached_tokens
 						?? raw.cache_read_input_tokens
 						?? raw.prompt_cache_hit_tokens
+						?? raw.cached_tokens
 						?? undefined;
 					const _cacheWriteTokens = raw.prompt_tokens_details?.cache_write_tokens
 						?? raw.prompt_cache_write_tokens

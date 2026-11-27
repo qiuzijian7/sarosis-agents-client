@@ -26,6 +26,50 @@ export interface ICopyFileRetryOptions {
 	readonly retryDelaysMs?: readonly number[];
 	readonly copyFile?: (from: string, to: string) => Promise<void>;
 	readonly sleep?: (delayMs: number) => Promise<void>;
+	/** Upgrade-only fast path: skip writes only after comparing the actual file bytes. */
+	readonly skipUnchanged?: boolean;
+	/** Only for seed-owned upgrade paths: remove the link itself before copying, never its target. */
+	readonly replaceLinkedTargets?: boolean;
+}
+
+/** Bounded-memory byte comparison; never use timestamps alone as a content proof. */
+async function sameFileContents(from: string, to: string, replaceLinkedTargets = false): Promise<boolean> {
+	let targetInfo;
+	try { targetInfo = await fsp.lstat(to, { bigint: true }); } catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return false; }
+		throw error;
+	}
+	if (targetInfo.isSymbolicLink()) {
+		if (!replaceLinkedTargets) { throw new Error(`Refusing to overwrite a linked profile file: ${to}`); }
+		await fsp.unlink(to);
+		return false;
+	}
+	if (!targetInfo.isFile()) { return false; }
+	const source = await fsp.open(from, 'r');
+	let target: Awaited<ReturnType<typeof fsp.open>> | undefined;
+	try {
+		target = await fsp.open(to, 'r');
+		const sourceInfo = await source.stat({ bigint: true });
+		const before = await target.stat({ bigint: true });
+		if (!sourceInfo.isFile() || sourceInfo.size !== before.size || before.ino !== targetInfo.ino || before.dev !== targetInfo.dev) { return false; }
+		const a = Buffer.allocUnsafe(64 * 1024);
+		const b = Buffer.allocUnsafe(a.length);
+		let position = 0;
+		for (;;) {
+			const [left, right] = await Promise.all([source.read(a, 0, a.length, position), target.read(b, 0, b.length, position)]);
+			if (left.bytesRead !== right.bytesRead || !a.subarray(0, left.bytesRead).equals(b.subarray(0, right.bytesRead))) { return false; }
+			if (!left.bytesRead) { break; }
+			position += left.bytesRead;
+		}
+		const [sourceAfter, sourcePathAfter, targetAfter, pathAfter] = await Promise.all([source.stat({ bigint: true }), fsp.stat(from, { bigint: true }), target.stat({ bigint: true }), fsp.lstat(to, { bigint: true })]);
+		const stable = (a: typeof before, b: typeof before) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+		return !pathAfter.isSymbolicLink() && stable(sourceInfo, sourceAfter) && stable(sourceAfter, sourcePathAfter) && stable(before, targetAfter) && stable(targetAfter, pathAfter);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return false; }
+		throw error;
+	} finally {
+		await Promise.all([source.close(), target?.close()]);
+	}
 }
 
 /** 暂态文件锁最多重试五次；耗尽后保留原错误，绝不跳过失败文件。 */
@@ -35,6 +79,11 @@ export async function copyFileWithRetry(from: string, to: string, options?: ICop
 	const sleep = options?.sleep ?? (delayMs => new Promise<void>(resolve => setTimeout(resolve, delayMs)));
 	for (let attempt = 0; ; attempt++) {
 		try {
+			if (options?.replaceLinkedTargets && !options.skipUnchanged) {
+				const info = await fsp.lstat(to).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') { throw error; } return undefined; });
+				if (info?.isSymbolicLink()) { await fsp.unlink(to); }
+			}
+			if (options?.skipUnchanged && await sameFileContents(from, to, options.replaceLinkedTargets)) { return; }
 			await copy(from, to);
 			return;
 		} catch (error) {
@@ -92,6 +141,13 @@ export async function copyDirectoryConcurrently(srcDir: string, destDir: string,
 	await walk(srcDir, destDir);
 
 	for (const dir of dirs) {
+		if (options?.skipUnchanged) {
+			const info = await fsp.lstat(dir).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') { throw error; } return undefined; });
+			if (info?.isSymbolicLink()) {
+				if (!options.replaceLinkedTargets) { throw new Error(`Refusing to copy into a linked profile directory: ${dir}`); }
+				try { await fsp.rmdir(dir); } catch { await fsp.unlink(dir); }
+			}
+		}
 		await fsp.mkdir(dir, { recursive: true });
 	}
 

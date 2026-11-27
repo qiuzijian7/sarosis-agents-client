@@ -3084,8 +3084,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// KV Cache: accumulated token usage across the turn.
 		let usageInput = 0;
 		let usageOutput = 0;
-		let usageCached = 0;
-		let usageCacheWrite = 0;
+		let usageCached: number | undefined;
+		let usageCacheWrite: number | undefined;
 		let usageCredit = 0;
 		let usageCreditSeen = false; // 2026-07-27：区分"网关返回 credit=0"与"网关根本未提供该字段"
 		let usageTotalReported = 0; // total_tokens as reported by the gateway (preferred over input+output)
@@ -3479,8 +3479,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					// ★ 2026-09-21：同时记录**最近一次**的 input（= 当前上下文占用）——只覆盖、不累加。
 					if (typeof delta.usage.inputTokens === 'number') { usagePromptTokens = delta.usage.inputTokens; }
 					if (typeof delta.usage.outputTokens === 'number') { usageOutput += delta.usage.outputTokens; }
-					if (typeof delta.usage.cachedTokens === 'number') { usageCached += delta.usage.cachedTokens; }
-					if (typeof delta.usage.cacheWriteTokens === 'number') { usageCacheWrite += delta.usage.cacheWriteTokens; }
+					if (typeof delta.usage.cachedTokens === 'number') { usageCached = (usageCached ?? 0) + delta.usage.cachedTokens; }
+					if (typeof delta.usage.cacheWriteTokens === 'number') { usageCacheWrite = (usageCacheWrite ?? 0) + delta.usage.cacheWriteTokens; }
 					// ★ 与 live 路径对齐 ✓：推理 token（OpenAI reasoning_tokens 系 ✓）与真实命中的 provider/model ✓
 					if (typeof delta.usage.reasoning === 'number') { usageReasoning += delta.usage.reasoning; }
 					if (delta.usage.providerId) { usageProviderId = delta.usage.providerId; }
@@ -3575,7 +3575,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				? (() => {
 					const input = usageInput;
 					const cachedRead = usageCached;
-					const cacheMiss = Math.max(0, input - cachedRead - usageCacheWrite);
+					const cacheMiss = cachedRead !== undefined ? Math.max(0, input - cachedRead - (usageCacheWrite ?? 0)) : undefined;
 					return {
 						input,
 						output: usageOutput,
@@ -3591,7 +3591,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						cacheWrite: usageCacheWrite,
 						cacheMiss,
 						// 命中率：与 live 路径同式 ✓（百分比，一位小数展示由 UI 负责 ✓）
-						cacheHitRate: input > 0 ? (cachedRead / input) * 100 : 0,
+						cacheHitRate: cachedRead !== undefined && input > 0 ? (cachedRead / input) * 100 : undefined,
 						reasoning: usageReasoning,
 						credit: usageCreditSeen ? usageCredit : undefined,
 						// 真实命中的 provider/model（"UI 选 A 实际用 B"场景的真相 ✓）——

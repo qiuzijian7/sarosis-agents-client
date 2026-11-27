@@ -27,6 +27,8 @@ const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z
 const PLUGIN_DIR = path.join(HERE, 'vssaros-chat-surface');
 const LIB = path.join(PLUGIN_DIR, 'lib');
 
+execFileSync(process.execPath, ['--test', path.join(PLUGIN_DIR, 'test', 'prompt-transport.test.mjs'), path.join(PLUGIN_DIR, 'test', 'interaction-recovery.test.mjs'), path.join(PLUGIN_DIR, 'test', 'submission-controls.test.mjs')], { stdio: 'inherit' });
+
 /** 官方占位（真源：官方包里 registration 原文，行号写在这里，便于 dsh 升级后复核）。 */
 const OFFICIAL_ENTRIES = [
 	// dsh-client-ui-conversation/lib/client.js:17752-17759（todo）/ 15677-15695（queue）
@@ -2223,7 +2225,9 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		//   否则切到 Bots 页签就是长时间「正在读取名册…」白屏。
 		['const BOTS_CACHE_KEY = "vssaros.ws.bots.v1";', 'Bots 名册必须有本地缓存（慢接口不能每次都等网络）'],
 		['const BOTS_TIMEOUT_MS = 8000;', 'Bots 名册请求必须有超时（否则永远停在"正在读取"）'],
-		['Promise.race([fetchBotsData(), timeout])', '名册请求必须真的套上超时（只定义常量不算）'],
+		['getJson(AGENTS_API_HOME, BOTS_TIMEOUT_MS)', '名册请求必须使用独立超时'],
+		['Promise.race([request, timeout])', '请求必须真的套上超时（只定义常量不算）'],
+		['controller.abort();', '超时必须取消底层请求，不能只结束 UI 等待'],
 		['saveBotsCache(d);', '名册成功后必须落缓存（下次进页签秒开）'],
 		['const cached = readBotsCache();', '进 Bots 页签必须先读缓存（先给能看的，再纠正）'],
 		// ★★★ 2026-11-02 **React #310 根因**：rail 形态的提前 return 曾在 hooks 中间

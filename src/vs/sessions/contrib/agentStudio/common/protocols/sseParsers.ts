@@ -53,6 +53,7 @@ export function extractUsage(parsed: any, onCacheHit?: (cachedTokens: number, in
 	const cachedTokens = usage.prompt_tokens_details?.cached_tokens
 		?? usage.cache_read_input_tokens
 		?? usage.prompt_cache_hit_tokens
+		?? usage.cached_tokens
 		?? undefined;
 	const cacheWriteTokens = usage.cache_creation_input_tokens
 		?? usage.prompt_cache_write_tokens

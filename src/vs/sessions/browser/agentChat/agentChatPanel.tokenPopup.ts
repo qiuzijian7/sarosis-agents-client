@@ -55,14 +55,14 @@ function fmtNum(n: number | undefined): string {
  * 返回浮层根节点（测试用 ✓）。
  */
 export function appendTokenUsagePopup(host: HTMLElement, tu: ITokenUsageLike): HTMLElement {
-	const cachedRead = tu.cachedRead ?? tu.cached ?? 0;
+	const cachedRead = tu.cachedRead ?? tu.cached;
 	const cacheWrite = tu.cacheWrite ?? 0;
 	// 旧记录可能没有 cacheMiss ⇒ 由 input − cached − write 派生（与落盘侧同式 ✓）
-	const cacheMiss = tu.cacheMiss ?? Math.max(0, tu.input - cachedRead - cacheWrite);
+	const cacheMiss = tu.cacheMiss ?? (cachedRead !== undefined ? Math.max(0, tu.input - cachedRead - cacheWrite) : undefined);
 	const reasoning = tu.reasoning ?? 0;
 	const contentTokens = Math.max(0, tu.output - reasoning);
 	// 命中率：优先用落盘值 ✓（percentage ✓），否则现算 ✓
-	const hitRate = tu.cacheHitRate ?? (tu.input > 0 ? (cachedRead / tu.input) * 100 : 0);
+	const hitRate = tu.cacheHitRate ?? (cachedRead !== undefined && tu.input > 0 ? (cachedRead / tu.input) * 100 : undefined);
 
 	const popup = append(host, $('div.tokens-popup'));
 	// 标题行：左侧 "Token 消耗明细" + 右侧 "总计 X"
@@ -108,9 +108,9 @@ export function appendTokenUsagePopup(host: HTMLElement, tu: ITokenUsageLike): H
 	const rateHeader = append(hitRateEl, $('div.rate-header'));
 	append(rateHeader, $('span.rate-icon.codicon.codicon-zap'));
 	append(rateHeader, $('span.rate-label', undefined, '缓存命中率'));
-	append(rateHeader, $('span.rate-value', undefined, `${hitRate.toFixed(1)}%`));
+	append(rateHeader, $('span.rate-value', undefined, hitRate !== undefined ? `${hitRate.toFixed(1)}%` : '—'));
 	const bar = append(hitRateEl, $('div.tokens-popup-hit-bar'));
-	if (tu.input > 0) {
+	if (tu.input > 0 && cachedRead !== undefined && cacheMiss !== undefined) {
 		const hitSeg = append(bar, $('span.seg.hit')) as HTMLElement;
 		hitSeg.style.width = `${(cachedRead / tu.input) * 100}%`;
 		const writeSeg = append(bar, $('span.seg.write')) as HTMLElement;

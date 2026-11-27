@@ -72,6 +72,33 @@ const SELF_PLUGIN_NAME = ['@vssaros/dsh-skills', '@vssaros/dsh-marketplace'];
 /** 页面路由前缀。 */
 const ROUTE_PREFIX = '/x/marketplace';
 
+/** One route per actual server; surviving planes keep their own handler and credentials. */
+export function registerPageRouteOnce(page, route) {
+	const server = page.webServer;
+	const identity = server[Symbol.for('cordis.original')] ?? server;
+	const registry = globalThis[Symbol.for('vssaros.sharedPageRoutes.v2')] ??= new WeakMap();
+	let routes = registry.get(identity);
+	if (!routes) { routes = new Map(); registry.set(identity, routes); }
+	const key = `${route.kind}:${route.path}`;
+	let entry = routes.get(key);
+	const member = { handler: route.handler };
+	if (!entry) {
+		entry = { members: new Set([member]), dispose: null };
+		routes.set(key, entry);
+		try {
+			entry.dispose = server.register({ ...route, handler: (...args) => entry.members.values().next().value.handler(...args) });
+		} catch (error) { routes.delete(key); throw error; }
+	} else { entry.members.add(member); }
+	let closed = false;
+	return () => {
+		if (closed) { return; }
+		closed = true;
+		entry.members.delete(member);
+		if (entry.members.size) { return; }
+		try { entry.dispose(); } finally { if (routes.get(key) === entry) { routes.delete(key); } }
+	};
+}
+
 /** 转发给 IDE 的超时（读类给短档，写类给长档 —— 安装可能几分钟 ✓）。 */
 const READ_TIMEOUT_MS = 60_000;
 const WRITE_TIMEOUT_MS = 8 * 60_000;
@@ -1529,7 +1556,7 @@ export async function apply(ctx, config) {
 		}).map(def => tools.register(def)), 'vssaros-marketplace: agent tools');
 	});
 
-	ctx.inject(['webServer', 'connection'], webCtx => webCtx.effect(() => webCtx.webServer.register({
+	ctx.inject(['webServer', 'connection'], webCtx => webCtx.effect(() => registerPageRouteOnce(webCtx, {
 		kind: 'prefix',
 		path: ROUTE_PREFIX,
 		handler: async (req, res) => {

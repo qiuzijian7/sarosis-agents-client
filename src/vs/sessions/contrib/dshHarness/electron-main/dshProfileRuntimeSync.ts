@@ -253,7 +253,7 @@ export async function copyProfileSeed(seedDir: string, destDir: string): Promise
  *
  * - 先校验种子 `package.json`，坏种子绝不写 profile；
  * - 只覆盖种子**顶层**列出的条目；用户自有的其它文件/目录不枚举、不删除、原样保留；
- * - `node_modules` 等目录用并发复制覆盖，符号链接目标按内容复制；
+ * - `node_modules` 等目录按真实字节跳过相同文件，变化项用并发复制覆盖，源符号链接按内容复制；
  * - profile 中已是链接的条目（shared junction）跳过，避免顺着链接写进安装目录；
  * - marker 由调用方仅在成功后写入；中途失败下次启动会重试，不会留下「已升级」假标记。
  */
@@ -263,11 +263,11 @@ export async function syncProfilePluginLayer(
 	// 注入仅为让「复制失败」可被精确单测；生产用并发复制 / copyFile。
 	copyEntry: (from: string, to: string, isDirectory: boolean) => Promise<void> = async (from, to, isDirectory) => {
 		if (isDirectory) {
-			await copyDirectoryConcurrently(from, to, { dereference: true });
+			await copyDirectoryConcurrently(from, to, { dereference: true, skipUnchanged: true, replaceLinkedTargets: true });
 			return;
 		}
 		await fsp.mkdir(dirname(to), { recursive: true });
-		await copyFileWithRetry(from, to);
+		await copyFileWithRetry(from, to, { skipUnchanged: true, replaceLinkedTargets: true });
 	},
 ): Promise<{ restoredUserData: string[] }> {
 	// 坏种子不许在 profile 里留下一个会被误认成「已同步」的混合状态。
@@ -291,10 +291,7 @@ export async function syncProfilePluginLayer(
 			continue;
 		}
 		// stat 跟随链接，拿到种子条目真实形态；dereference 复制避免 Windows 非管理员建 symlink。
-		const sourceStat = await fsp.stat(from).catch(() => undefined);
-		if (!sourceStat) {
-			continue;
-		}
+		const sourceStat = await fsp.stat(from);
 		const isDirectory = sourceStat.isDirectory();
 		if (targetStat && targetStat.isDirectory() !== isDirectory) {
 			await fsp.rm(to, { recursive: true, force: true }).catch(() => undefined);

@@ -95,9 +95,24 @@ suite('Token 消耗明细浮层格式契约（2026-09-21）', () => {
 		assert.strictEqual(r.get('缓存命中'), '—', '缺数据用 — ✓（与 0 区分 ✗）');
 		assert.strictEqual(r.get('缓存写入'), '—');
 		assert.strictEqual(r.get('思考过程'), '—');
-		assert.strictEqual(r.get('缓存未命中'), (1000).toLocaleString(), '未命中可由 input 派生 ⇒ 有值 ✓');
-		// 命中率缺省 ⇒ 由 cached/input 现算（0 ✓）
-		assert.strictEqual(popup.querySelector('.rate-value')?.textContent, '0.0%');
+		assert.strictEqual(r.get('缓存未命中'), '—');
+		assert.strictEqual(popup.querySelector('.rate-value')?.textContent, '—');
+		assert.strictEqual(popup.querySelectorAll('.tokens-popup-hit-bar .seg').length, 0);
 		assert.ok(!popup.querySelector('.tokens-popup-meta'), '无 provider/model ⇒ 不渲染「模型」行 ✓（该行是可选信息 ✓）');
+	});
+
+	test('无落盘命中率时由真实缓存字段派生，旧 cached 字段仍兼容', () => {
+		for (const cached of [0, 80]) {
+			const popup = render({ input: 100, output: 20, total: 120, cached });
+			assert.deepStrictEqual({
+				rate: popup.querySelector('.rate-value')?.textContent,
+				hit: rows(popup).get('缓存命中'),
+			}, { rate: `${cached.toFixed(1)}%`, hit: String(cached) });
+		}
+	});
+
+	test('没有输入量时命中率保持未知', () => {
+		const popup = render({ input: 0, output: 20, total: 20, cachedRead: 0 });
+		assert.strictEqual(popup.querySelector('.rate-value')?.textContent, '—');
 	});
 });

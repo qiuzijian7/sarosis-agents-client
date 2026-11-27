@@ -321,13 +321,56 @@ suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 		}
 	});
 
+	test('升级摘除种子覆盖路径的旧core junction，不修改安装目录与用户额外文件', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-layer-core-link-'));
+		try {
+			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile'), runtime = path.join(root, 'old-runtime');
+			const relative = path.join('node_modules', '@deepseek-ai', 'dsh-core');
+			fs.mkdirSync(path.join(seed, relative), { recursive: true });
+			fs.mkdirSync(path.join(profile, 'node_modules', '@deepseek-ai'), { recursive: true });
+			fs.mkdirSync(runtime);
+			fs.writeFileSync(path.join(seed, 'package.json'), '{"name":"new-seed"}');
+			fs.writeFileSync(path.join(seed, relative, 'index.js'), 'NEW CORE');
+			fs.writeFileSync(path.join(runtime, 'index.js'), 'OLD INSTALLATION');
+			fs.writeFileSync(path.join(profile, 'user.txt'), 'KEEP USER');
+			fs.symlinkSync(runtime, path.join(profile, relative), 'junction');
+			await syncProfilePluginLayer(seed, profile);
+			assert.strictEqual(fs.lstatSync(path.join(profile, relative)).isSymbolicLink(), false);
+			assert.strictEqual(fs.readFileSync(path.join(profile, relative, 'index.js'), 'utf8'), 'NEW CORE');
+			assert.strictEqual(fs.readFileSync(path.join(runtime, 'index.js'), 'utf8'), 'OLD INSTALLATION');
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'user.txt'), 'utf8'), 'KEEP USER');
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	test('同步期间源条目消失必须失败，旧marker不变', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-layer-source-missing-'));
+		try {
+			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile');
+			fs.mkdirSync(seed); fs.mkdirSync(profile);
+			fs.writeFileSync(path.join(seed, 'package.json'), '{"name":"seed"}');
+			fs.writeFileSync(path.join(seed, '00-trigger.txt'), 'TRIGGER');
+			fs.writeFileSync(path.join(seed, '01-required.txt'), 'REQUIRED');
+			await writeProfileRuntimeMarker(profile, '0.2.2-rc.2');
+			const before = fs.readFileSync(path.join(profile, PROFILE_RUNTIME_MARKER_REL), 'utf8');
+			await assert.rejects(async () => {
+				await syncProfilePluginLayer(seed, profile, async (from, to) => {
+					await fs.promises.copyFile(from, to);
+					if (path.basename(from) === '00-trigger.txt') { fs.unlinkSync(path.join(seed, '01-required.txt')); }
+				});
+				await writeProfileRuntimeMarker(profile, '0.2.2-rc.5');
+			}, (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
+			assert.strictEqual(fs.readFileSync(path.join(profile, PROFILE_RUNTIME_MARKER_REL), 'utf8'), before);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
 	test('插件层普通文件与目录都用重试复制，marker 写入保持在成功同步之后', () => {
 		const sync = code('src/vs/sessions/contrib/dshHarness/electron-main/dshProfileRuntimeSync.ts');
 		const at = sync.indexOf('export async function syncProfilePluginLayer(');
 		const end = sync.indexOf('export function profileSeedDirFor(', at);
 		const layer = sync.slice(at, end);
-		assert.match(layer, /await copyFileWithRetry\(from, to\)/);
-		assert.match(layer, /await copyDirectoryConcurrently\(from, to, \{ dereference: true \}\)/);
+		assert.match(layer, /await copyFileWithRetry\(from, to, \{ skipUnchanged: true, replaceLinkedTargets: true \}\)/);
+		assert.match(layer, /await copyDirectoryConcurrently\(from, to, \{ dereference: true, skipUnchanged: true, replaceLinkedTargets: true \}\)/);
+		assert.match(sync, /copyDirectoryConcurrently\(seedDir, destDir, \{ dereference: true \}\)/, '全新profile仍完整复制，不使用升级快路径');
 		assert.doesNotMatch(layer, /await fsp\.copyFile\(from, to\)/);
 		const supervisor = code(SUPERVISOR);
 		const rebuildAt = supervisor.indexOf("plan.kind === 'rebuild'");

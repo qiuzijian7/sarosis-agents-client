@@ -512,15 +512,27 @@ window.__ModuleLoader__.load({
 		function fetchBotsData(fetchImpl) {
 			const f = fetchImpl || (typeof fetch === "function" ? fetch : null);
 			if (!f) { return Promise.resolve({ ok: false, error: "当前环境没有 fetch" }); }
-			const getJson = (url) => Promise.resolve(f(url, { headers: { accept: "application/json" } }))
-				.then((r) => (r && r.ok ? r.json() : Promise.reject(new Error("HTTP " + (r && r.status)))));
-			const rooms = getJson(AGENTS_API_ROOMS).then(
+			const getJson = (url, timeoutMs) => {
+				const controller = typeof AbortController === "function" ? new AbortController() : null;
+				let timer;
+				const request = Promise.resolve().then(() => f(url, {
+					headers: { accept: "application/json" }, signal: controller ? controller.signal : undefined,
+				})).then((r) => (r && r.ok ? r.json() : Promise.reject(new Error("HTTP " + (r && r.status)))));
+				const timeout = new Promise((_, reject) => {
+					timer = setTimeout(() => {
+						reject(new Error("读取超时（" + Math.round(timeoutMs / 1000) + "s 未返回）"));
+						if (controller) { controller.abort(); }
+					}, timeoutMs);
+				});
+				return Promise.race([request, timeout]).finally(() => clearTimeout(timer));
+			};
+			const rooms = getJson(AGENTS_API_ROOMS, 2000).then(
 				(j) => ({ rooms: Array.isArray(j && j.rooms) ? j.rooms : [], roomsError: "" }),
 				(e) => ({ rooms: [], roomsError: String((e && e.message) || e) }));
-			const im = getJson(AGENTS_API_BINDINGS).then(
+			const im = getJson(AGENTS_API_BINDINGS, 2000).then(
 				(j) => imBadgeOf(j && j.bindings),
 				() => ({}));
-			return Promise.all([getJson(AGENTS_API_HOME), rooms, im]).then(([home, r, imBadges]) => ({
+			return Promise.all([getJson(AGENTS_API_HOME, BOTS_TIMEOUT_MS), rooms, im]).then(([home, r, imBadges]) => ({
 				ok: true,
 				agents: Array.isArray(home && home.agents) ? home.agents : [],
 				home: (home && home.home) || {},
@@ -4571,12 +4583,7 @@ window.__ModuleLoader__.load({
 						}
 						return Object.assign({}, b, { status: "loading" });
 					});
-					const timeout = new Promise((_, rej) => {
-						try {
-							window.setTimeout(() => rej(new Error("读取超时（" + Math.round(BOTS_TIMEOUT_MS / 1000) + "s 未返回）")), BOTS_TIMEOUT_MS);
-						} catch { /* 无 window ⇒ 不设超时 */ }
-					});
-					void Promise.race([fetchBotsData(), timeout]).then((d) => {
+					void fetchBotsData().then((d) => {
 						if (d && d.ok) {
 							saveBotsCache(d);
 							setBots({
@@ -4915,7 +4922,7 @@ window.__ModuleLoader__.load({
 								/* ★ 只读 HTTP 200 就提示成功 = 假成功：列表按 registered 隐藏未注册 bot，
 								   用户会看到「已新建」却找不到刚建的 bot ⇒ 把 host 的原因原样说出来。 */
 								if (res.registered === false) {
-									setBotsMsg({ kind: "error", text: base + "，但 preset 未注册（点了也开不了会话、列表会先隐藏它）：" + String(res.syncError || "同步 preset 失败") + " ⇒ 请稍后点 ＋ → 刷新名册 重试" });
+									setBotsMsg({ kind: "error", text: base + "，但 preset 未注册（点了也开不了会话、列表会先隐藏它）：" + String(res.syncError || "同步 preset 失败") + " ⇒ 请稍后点击顶部刷新按钮重试" });
 								} else {
 									const warnings = (v && Array.isArray(v.warnings)) ? v.warnings : [];
 									const needsPersona = warnings.some((w) => String(w).indexOf("人格正文") >= 0);
@@ -5435,19 +5442,19 @@ window.__ModuleLoader__.load({
 							}),
 						}, botsMsg.text) : null,
 						bots.status === "error" ? react.createElement("div", { style: S.botsHint },
-							"读不到 Bots（" + bots.error + "）—— agents 插件没装、或 Host 没起来。点 ＋ → 刷新名册 重试。") : null,
+							"读不到 Bots（" + bots.error + "）—— 点击顶部刷新按钮重试；若持续失败，请查看 Host 日志。") : null,
 						// ★ 慢接口的兜底说明（2026-11-02）：有缓存内容时**不整块报错**，
 						//   只在顶部说一句"显示的是上次结果"（列表照常可点）。
 						bots.stale && list.length && bots.error ? react.createElement("div", { style: S.botsHint },
-							"显示上次结果（" + bots.error + "）—— 点 ＋ → 刷新名册 重试。") : null,
+							"显示上次结果（" + bots.error + "）—— 点击顶部刷新按钮重试。") : null,
 						bots.status === "idle" || (loading && !list.length) ? react.createElement("div", { style: S.botsHint }, "正在读取名册…") : null,
-						ready && !list.length ? react.createElement("div", { style: S.botsHint },
+						ready && !list.length && bots.presetsPending !== true ? react.createElement("div", { style: S.botsHint },
 							"还没有 bot（每个子目录需要一个带 name 的 .agent.md）。") : null,
 						// ★ 2026-11-03：preset 分批注册期间说明一下（此时"少几个 bot"是正常中间态，不是名册丢了）
 						bots.presetsPending === true ? react.createElement("div", {
 							"data-vssaros-bots-pending": "1",
 							style: S.botsHint,
-						}, "dsh 正在分批注册 preset（启动时先注册首批，其余十几秒后补齐）—— 还没注册好的 bot 暂不显示，本页每 3 秒自动刷新。") : null,
+						}, "dsh 正在注册 preset —— 尚未注册的 bot 暂不显示，本页每 3 秒自动刷新。") : null,
 						// 搜索无结果时说清楚（否则看起来像"名册空了"✗）
 						searching && shownCount === 0 ? react.createElement("div", { style: S.botsHint },
 							"没有匹配「" + botsQuery.trim() + "」的 Bot 或群聊。") : null,
@@ -5456,7 +5463,7 @@ window.__ModuleLoader__.load({
 						!searching && hiddenUnregistered > 0 && bots.presetsPending !== true ? react.createElement("div", {
 							"data-vssaros-bots-hidden": String(hiddenUnregistered),
 							style: S.botsHint,
-						}, "另有 " + hiddenUnregistered + " 个 bot 的 preset 未注册（点了也开不了会话）⇒ 已隐藏。改了 .agent.md 或刚启动时可点 ＋ → 刷新名册 重试。") : null,
+						}, "另有 " + hiddenUnregistered + " 个 bot 的 preset 未注册（点了也开不了会话）⇒ 已隐藏。改了 .agent.md 或刚启动时可点击顶部刷新按钮重试。") : null,
 						react.createElement("div", { style: S.list, "data-vssaros-rooms": String(roomsShown.length) },
 							botsSection("群聊", roomsShown.length, roomsShown.map(roomRow)),
 							botsSection("已注册", reg.length, reg.map(botRow))),

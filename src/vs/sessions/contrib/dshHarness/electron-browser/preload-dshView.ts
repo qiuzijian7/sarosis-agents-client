@@ -344,6 +344,11 @@
 
 	try {
 		contextBridge.exposeInMainWorld('vssarosDsh', api);
+		contextBridge.exposeInMainWorld('vssarosDshPrompt', {
+			version: 2,
+			call: (id: string, body: string) => ipcRenderer.invoke('vssaros:dsh:prompt-rpc', id, body),
+			cancel: (id: string) => ipcRenderer.send('vssaros:dsh:prompt-rpc-cancel', id),
+		});
 
 	// 主题同步（方案 5.13.2 P2）：工作台推 dsh token 覆盖层。preload 与页面是隔离世界但共享 DOM ——
 	// 数据存 documentElement.dataset（插件晚于推送加载也能读到），事件经 DOM 派发给已加载的插件。

@@ -29,6 +29,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { askAssignment, cancelAssignment, createAssignment, installAssignmentTracker, listAssignments } from './assignments.js';
 import { installOfficialTeamAdapter } from './officialTeamAdapter.js';
+import { createLazyPresetFill } from './lazyPresetFill.js';
 import { allowlistDenyOf, pickLazyEagerKeys, avatarColorOf, isDelegatableAgent, isShownAgent, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
 import { agentModelRouteOf, applyModelSelection, prevalidateRoutes, setAgentModelRoutes } from './modelSelection.js';
 import { botIdentityProjection } from './core/botIdentity.js';
@@ -150,7 +151,7 @@ const lazyPresetHooks = { state: null };
 
 /**
  * P2 深度延后：首轮全量 preset 同步不再由 apply / `setTimeout(0)` 触发，
- * 而是等页面首次请求 `/x/agents/*`（UI 已加载）或 `LAZY_FILL_DELAY_MS` 兜底。
+ * 而是等页面首次请求 `/x/agents/*`，或在 appReady 之后再等待 `LAZY_FILL_DELAY_MS` 兜底。
  * hook 由 `agentPresets` 注入时登记，`fillNow()` 自身幂等且走 syncSerial 去重。
  */
 let agentsBootSyncHook = null;
@@ -170,34 +171,24 @@ function scheduleLazyFill(state, config, total) {
 	if (state.lazyFill) {
 		return;
 	}
-	let timer;
-	let running;
-	const fillNow = () => {
-		if (running) {
-			return running;
-		}
-		clearTimeout(timer);
+	state.lazyFill = createLazyPresetFill(async () => {
 		state.lazyFilled = true;
-		running = (async () => {
-			// 源文件签名在补齐前后不变，必须 force 绕开前置缓存，否则全量补齐会被吃掉 ✗。
+		state.lazyFillDone = false;
+		let completed = false;
+		try {
 			await syncSerial(state, state.presets, config, { force: true });
+			completed = true;
 			console.warn(`[vssaros-agents] lazy 补齐完成：preset 共 ${state.registered.size} 个`);
-		})().catch((e) => {
+		} catch (e) {
 			console.error(`[vssaros-agents] lazy 补齐 preset 失败：${String(e?.message ?? e)}`);
-		}).finally(() => {
-			// ★ 2026-11-03：给 HTTP 层一个"补齐已结束"的判据 —— Bots 页签据此自动重拉一次，
-			//   否则它会一直显示启动早期那份"大量未注册"的快照（用户截图里 24 个未注册就是这么来的）。
-			state.lazyFillDone = true;
-			if (lazyPresetHooks.state === state) {
-				lazyPresetHooks.state = null;
-			}
-		});
-		return running;
-	};
-	state.lazyFill = { fillNow };
+			throw e;
+		} finally {
+			state.lazyFillDone = completed;
+			if (completed && lazyPresetHooks.state === state) { lazyPresetHooks.state = null; }
+		}
+	}, { delayMs: LAZY_FILL_DELAY_MS });
 	lazyPresetHooks.state = state;
-	timer = setTimeout(() => { void fillNow(); }, LAZY_FILL_DELAY_MS);
-	console.warn(`[vssaros-agents] lazy 注册：启动注册 ${state.registered.size} 个 preset，其余 ${Math.max(0, total - state.registered.size)} 个 ${Math.round(LAZY_FILL_DELAY_MS / 1000)}s 后补齐`);
+	console.warn(`[vssaros-agents] lazy 注册：启动注册 ${state.registered.size} 个 preset，其余 ${Math.max(0, total - state.registered.size)} 个按需补齐，兜底等待 appReady 后 ${Math.round(LAZY_FILL_DELAY_MS / 1000)}s`);
 }
 
 /** lazy 窗口内要用一个还没注册的 preset 建会话 ⇒ 先补齐（否则 session.create 会报未知 preset）。 */
@@ -1531,21 +1522,21 @@ function applyTopLevel(ctx, config) {
 	ctx.inject(['agentPresets'], child => child.effect(() => {
 		console.log(`[vssaros-agents] 计时 agentPresets 就绪（进程启动后 ${Math.round(process.uptime() * 1000)}ms；apply 于 ${agentsApplyAt}ms）`);
 		state.presets = child.agentPresets; // ← 回调内取服务对象（子 ctx 事后就 inactive 了）
-		// ★ P2 深度延后（2026-11-24）：首轮全量 preset 扫描/注册不再在 apply 或 `setTimeout(0)` 上跑。
-		//   `setTimeout(0)` 实测仍在 Host ready 关键路径里占 13s。现在启动期只登记 lazy 窗口：
-		//   `scheduleLazyFill()` 立刻设置 `lazyPresetHooks.state` 与 15s 兜底；页面首次请求 `/x/agents/*`
-		//   或会话需要未注册 preset 时，由 `fillNow()` 按需启动全量同步。
-		//   ⇒ UI 先可交互；`ensureLazyPreset()` / rescan / lazy 补齐全部保留，不会回到 `never started` ✗。
 		scheduleLazyFill(state, config, 0);
+		const fill = state.lazyFill;
+		const ready = child.get?.('appReady');
+		const stopReady = ready?.onReady ? ready.onReady(() => fill.arm()) : undefined;
+		if (!ready?.onReady) { fill.arm(); }
 		agentsBootSyncHook = (reason) => {
 			console.log(`[vssaros-agents] 延后首轮 preset 同步开始（${reason}）`);
 			return state.lazyFill?.fillNow() ?? Promise.resolve();
 		};
 		return async () => {
 			agentsBootSyncHook = null;
+			stopReady?.();
+			await fill.dispose();
+			if (lazyPresetHooks.state === state) { lazyPresetHooks.state = null; }
 			state.presets = null;
-			// 卸载前若在飞 / 未跑过，都通过 fillNow 收敛一次，避免"卸载后又注册回来"的泄漏。
-			await (state.lazyFill?.fillNow() ?? Promise.resolve()).catch(() => undefined);
 			await disposeAllPresets(state);
 		};
 	}));
@@ -2462,9 +2453,13 @@ function applyTopLevel(ctx, config) {
 				return;
 			}
 			try {
-				// 页面 GET：源文件签名没变时直接吃 registrar.cache；变了才排队真扫。
-				// 同步失败不影响读页面（退回一次只读全量扫描）。
-				const scan = state.presets
+				const isHome = pathname === `${ROUTE_PREFIX}/api/home` && req.method === 'GET';
+				if (isHome && state.presets) {
+					void syncOnce(state, state.presets, config).catch(e => {
+						state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
+					});
+				}
+				const scan = state.presets && !isHome
 					? (await scheduleSync(state, config, { wait: true }).catch(e => {
 						state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
 						return null;
@@ -2615,7 +2610,7 @@ function applyTopLevel(ctx, config) {
 						roster: state.roster,
 						// ★ 2026-11-03：lazy 补齐还没结束（preset 正在陆续注册）⇒ 前端据此自动重拉，
 						//   否则 Bots 页签会一直显示启动早期那份"大量未注册"的快照。
-						presetsPending: !!state.lazyFill && state.lazyFillDone !== true,
+						presetsPending: !!state.syncing || (!!state.lazyFill && state.lazyFillDone !== true),
 						diagnostics: state.diagnostics,
 						errors: [...scan.errors, ...state.errors],
 						missing: scan.missing ?? '',

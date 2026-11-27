@@ -24,6 +24,33 @@ export const inject = ['tools'];
 
 const EXPECTED_TOOLS = ['loop_list', 'loop_show', 'loop_dry_run', 'loop_run', 'loop_answer'];
 
+/** One route per actual server; surviving planes keep their own handler and credentials. */
+export function registerPageRouteOnce(page, route) {
+	const server = page.webServer;
+	const identity = server[Symbol.for('cordis.original')] ?? server;
+	const registry = globalThis[Symbol.for('vssaros.sharedPageRoutes.v2')] ??= new WeakMap();
+	let routes = registry.get(identity);
+	if (!routes) { routes = new Map(); registry.set(identity, routes); }
+	const key = `${route.kind}:${route.path}`;
+	let entry = routes.get(key);
+	const member = { handler: route.handler };
+	if (!entry) {
+		entry = { members: new Set([member]), dispose: null };
+		routes.set(key, entry);
+		try {
+			entry.dispose = server.register({ ...route, handler: (...args) => entry.members.values().next().value.handler(...args) });
+		} catch (error) { routes.delete(key); throw error; }
+	} else { entry.members.add(member); }
+	let closed = false;
+	return () => {
+		if (closed) { return; }
+		closed = true;
+		entry.members.delete(member);
+		if (entry.members.size) { return; }
+		try { entry.dispose(); } finally { if (routes.get(key) === entry) { routes.delete(key); } }
+	};
+}
+
 const LOOP_NAME_SCHEMA = { type: 'string', description: 'loop 目录名（= loop 的身份，见 loop_list）' };
 
 function validateConfig(config) {
@@ -362,7 +389,7 @@ export function apply(ctx, config = {}) {
 	// ── 工作台数据接口（2026-11-02：用户「缺少 UI 入口」）────────────────────────
 	//   与工具共用同一套 store/runner（**不重写一份判定**）。
 	//   `webServer` + `connection` 走可选注入：headless/tui 里没有它们 ⇒ 工具面照常，只是没有页面。
-	ctx.inject(['webServer', 'connection'], scope => scope.effect(() => scope.webServer.register({
+	ctx.inject(['webServer', 'connection'], scope => scope.effect(() => registerPageRouteOnce(scope, {
 		kind: 'prefix',
 		path: '/x/loop',
 		handler: async (req, res) => {

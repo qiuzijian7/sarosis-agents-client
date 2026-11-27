@@ -101,8 +101,9 @@ test('非法 owner、agents、非安全 id 和重复 id 拒绝且不留下半注
 	assert.deepEqual((await store.scanAgentsFromConfig(config)).agents, []);
 });
 
-function hostFixture(presets) {
+function hostFixture(presets, appReady) {
 	const services = new Map();
+	if (appReady) { services.set('appReady', appReady); }
 	const cleanups = [];
 	const injectors = [];
 	const routes = [];
@@ -112,11 +113,12 @@ function hostFixture(presets) {
 		logger: () => ({ info: noop, warn: noop, error: noop }),
 		on: () => noop,
 		reflect: { get: (name) => services.get(name) },
+		get: (name) => services.get(name),
 		provide: (name, value) => services.set(name, value),
 		inject: (deps, callback) => {
 			if (deps.length === 1 && deps[0] === 'agentPresets') {
 				injectors.push(callback);
-				if (presets) { callback({ agentPresets: presets, effect: ctx.effect }); }
+				if (presets) { callback({ agentPresets: presets, effect: ctx.effect, get: ctx.get }); }
 			} else if (deps.join(',') === 'webServer,connection') {
 				callback({ webServer: { register: route => { routes.push(route); return noop; } }, connection: { requestRejection: () => 0 }, effect: ctx.effect });
 			}
@@ -129,7 +131,7 @@ function hostFixture(presets) {
 	};
 	return {
 		ctx, services, routes,
-		attachPresets: (value) => injectors.forEach(callback => callback({ agentPresets: value, effect: ctx.effect })),
+		attachPresets: (value) => injectors.forEach(callback => callback({ agentPresets: value, effect: ctx.effect, get: ctx.get })),
 		close: async () => { for (const cleanup of cleanups.splice(0).reverse()) { await cleanup(); } },
 	};
 }
@@ -158,6 +160,33 @@ const deferred = () => {
 	return { promise, resolve };
 };
 
+test('真实apply的兜底等待appReady，慢启动60秒也不提前扫描', async t => {
+	const config = await fixture(t);
+	await writeAgent(join(config.dataRoot, 'agents'), 'ready-helper', '就绪助手');
+	const presets = presetFixture();
+	const started = deferred();
+	presets.setRegisterHook(() => started.resolve());
+	let readyCallback;
+	const host = hostFixture(presets, { onReady(callback) { readyCallback = callback; return () => { readyCallback = undefined; }; } });
+	t.after(host.close);
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const { apply } = await import('../lib/index.js');
+	apply(host.ctx, config);
+	assert.equal(typeof readyCallback, 'function');
+	t.mock.timers.tick(60_000);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(presets.registrations.length, 0);
+	readyCallback();
+	t.mock.timers.tick(14_999);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(presets.registrations.length, 0);
+	t.mock.timers.tick(1);
+	await started.promise;
+	await host.close();
+	assert.equal(readyCallback, undefined);
+	assert.equal(presets.definitions.size, 0);
+});
+
 test('服务注册等待在飞同步；lazy 下插件立即可用，附件与异步撤销共享事实', async (t) => {
 	const config = await fixture(t);
 	for (let i = 0; i < 4; i++) { await writeAgent(join(config.dataRoot, 'agents'), `user-${i}`, `用户${i}`); }
@@ -175,6 +204,7 @@ test('服务注册等待在飞同步；lazy 下插件立即可用，附件与异
 	const service = host.services.get('vssarosAgents');
 	assert.equal(typeof service?.registerSource, 'function');
 	assert.equal(service.presetIdOf(bot().id), presetIdOf(bot().id));
+	const firstSync = service.rescan();
 	await firstStarted.promise;
 	let registered = false;
 	const sourceBots = [bot(), bot('wb-audit-second'), bot('wb-audit-third'), bot('wb-audit-fourth')];
@@ -182,6 +212,7 @@ test('服务注册等待在飞同步；lazy 下插件立即可用，附件与异
 	await new Promise(resolve => setImmediate(resolve));
 	assert.equal(registered, false);
 	firstAllowed.resolve();
+	await firstSync;
 	const dispose = await registration;
 	assert.equal(typeof dispose, 'function');
 	assert.ok(sourceBots.every(row => presets.definitions.has(presetIdOf(row.id))), '全部插件 Bot 都必须绕过 lazy 上限');
@@ -236,6 +267,36 @@ test('agentPresets 未就绪时注册拒绝且不留 source，rescan 保持明�
 	await assert.rejects(() => service.registerSource({ owner: 'workbench:audit', agents: [bot()] }), /还没就绪/);
 	await assert.rejects(() => service.rescan(), /还没就绪/);
 	assert.deepEqual((await store.scanAgentsFromConfig(config)).agents, []);
+});
+
+test('HTTP home 不等待冷启动 preset 注册，返回 pending 并在注册完成后收敛', { timeout: 5000 }, async t => {
+	const config = await fixture(t);
+	await writeAgent(join(config.dataRoot, 'agents'), 'cold-helper', '冷启动助手');
+	const presets = presetFixture();
+	const started = deferred();
+	const allowed = deferred();
+	presets.setRegisterHook(async () => { started.resolve(); await allowed.promise; });
+	const host = hostFixture(presets);
+	t.after(async () => { allowed.resolve(); await host.close(); });
+	const { apply } = await import('../lib/index.js');
+	apply(host.ctx, config);
+	const route = host.routes.find(row => row.path === '/x/agents');
+	const call = async () => {
+		const response = { status: 0, body: '', writeHead(status) { this.status = status; }, end(text) { this.body = text; } };
+		await route.handler({ url: '/x/agents/api/home', method: 'GET', headers: {} }, response);
+		assert.equal(response.status, 200, response.body);
+		return JSON.parse(response.body);
+	};
+	const first = call();
+	await started.promise;
+	const pending = await first;
+	assert.deepEqual({ pending: pending.presetsPending, ids: pending.agents.map(row => row.id), registered: pending.agents[0].registered },
+		{ pending: true, ids: ['cold-helper'], registered: false });
+	assert.equal((await call()).presetsPending, true);
+	allowed.resolve();
+	await host.services.get('vssarosAgents').registrar.lazyFill.fillNow();
+	const ready = await call();
+	assert.deepEqual({ pending: ready.presetsPending, registered: ready.agents[0].registered }, { pending: false, registered: true });
 });
 
 test('无 preset 的 HTTP 花名册和未读读口也包含插件 source', async (t) => {

@@ -458,7 +458,7 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 			/async function syncSerial\(state, presets, config, options = \{\}\) \{\s*try \{ await state\.syncing; \}[\s\S]{0,80}return syncOnce\(state, presets, config, options\);/.test(idx)
 			&& (idx.match(/await syncSerial\(state, state\.presets, config(?:, \{ force: true \})?\)/g) || []).length >= 2,
 			(idx.match(/await syncSerial\(state, state\.presets, config(?:, \{ force: true \})?\)/g) || []).length + ' 处');
-		check('P2 深度延后：首轮 preset 同步只在页面请求 / 15s 兜底 / 按需补齐时启动',
+		check('P2 深度延后：页面按需同步，15s 兜底必须从 appReady 后开始',
 			/function requestAgentsBootSync\(reason\)/.test(rawIdx)
 			&& /requestAgentsBootSync\('page-request'\)/.test(rawIdx)
 			&& /scheduleLazyFill\(state, config, 0\)/.test(rawIdx)
@@ -466,6 +466,8 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 			&& /return state\.lazyFill\?\.fillNow\(\)/.test(rawIdx)
 			&& !/const bootSyncTimer = setTimeout/.test(rawIdx)
 			&& /const LAZY_FILL_DELAY_MS = 15_000;/.test(rawIdx)
+			&& /ready\.onReady\(\(\) => fill\.arm\(\)\)/.test(rawIdx)
+			&& /await fill\.dispose\(\)/.test(rawIdx)
 			&& /async function ensureLazyPreset\(presetId\)/.test(rawIdx));
 		check('P0-2：页面/后台同步走稳定签名缓存 + debounce，且 lazy 补齐带 force',
 			/const sourceSig = await quickScanSignatureOf\(config\);/.test(idx)
@@ -573,7 +575,7 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 		// ★ 2026-11-06：团队总线（含契约修订 2）、团队步骤记忆（模型提炼）、DS Bot 团队离线导入
 		'team-bus.test.mjs', 'step-memory.test.mjs', 'ds-bot-import.test.mjs',
 		// ★ 2026-11-09：创建链的纯函数回归 + HTTP 级集成测试（假 ctx 真跑 apply）
-		'create.test.mjs', 'create-http.test.mjs']) {
+		'create.test.mjs', 'create-http.test.mjs', 'lazy-preset-fill.test.mjs', 'plugin-source.test.mjs']) {
 		const r = spawnSync(process.execPath, [path.join(HERE, t)], { encoding: 'utf8' });
 		const last = String(r.stdout || '').trim().split('\n').filter(Boolean).pop()
 			|| String(r.stderr || '').slice(0, 120);

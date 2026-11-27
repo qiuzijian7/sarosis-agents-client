@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 //    ⇒ CI 全新构建会误报拦出包）。详见 build/saros/prune-list.mjs。
 import { PRUNE_LIST, VIRTUAL_STORE_HEAVY_RE } from './saros/prune-list.mjs';
 import { SEED_GENERATOR_REVISION, archiveSeedPlugin, relativizeSeedPaths } from './saros/seed-package.mjs';
+import { patchPiAiUsage } from './saros/patch-pi-ai-usage.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const UNSCOPED_VENDORED = new Set(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar', 'dsh-deep-ptc-mode']);
@@ -238,6 +239,7 @@ if (existsSync(bin) && !force) {
 	//   ⇒ 这里核对自报版本，对不上就重装（并把失败原因留在日志里）。
 	const actual0 = execFileSync(process.execPath, [bin, '--version'], { encoding: 'utf8' }).trim().split(/\r?\n/).pop();
 	if (actual0 === version) {
+		patchPiAiUsage(target);
 		console.log(`[prepack-dsh] dsh ${version} 已在 ${target}，跳过安装（${Math.round(dirSize(target) / 1024 / 1024)} MB）`);
 		await safeBuildProfileSeed(target, bin, version); // 种子缺失/过期时补建（失败不拦出包）
 		process.exit(0);
@@ -272,6 +274,7 @@ if (actual !== version) {
 	process.exit(1);
 }
 
+patchPiAiUsage(target);
 prune(target);
 console.log(`[prepack-dsh] done: dsh ${actual} ready at ${target} (${Math.round(dirSize(target) / 1024 / 1024)} MB)`);
 

@@ -78,6 +78,17 @@ suite('sseParsers / extractUsage', () => {
 		assert.strictEqual((both as any).usage.cachedTokens, 7, '两类字段同时存在时保持旧优先级 ✗');
 	});
 
+	test('顶层 cached_tokens 保留正数、零值及既有字段优先级', () => {
+		for (const cachedTokens of [80, 0]) {
+			assert.deepStrictEqual(extractUsage({ usage: { prompt_tokens: 100, cached_tokens: cachedTokens } }), {
+				type: 'usage', usage: { inputTokens: 100, outputTokens: undefined, cachedTokens, cacheWriteTokens: undefined, reasoning: undefined },
+			});
+		}
+		assert.deepStrictEqual(extractUsage({ usage: { prompt_tokens: 100, prompt_tokens_details: { cached_tokens: 0 }, cached_tokens: 80 } }), {
+			type: 'usage', usage: { inputTokens: 100, outputTokens: undefined, cachedTokens: 0, cacheWriteTokens: undefined, reasoning: undefined },
+		});
+	});
+
 	test('reasoning tokens 两种来源', () => {
 		const a = extractUsage({ usage: { completion_tokens: 5, completion_tokens_details: { reasoning_tokens: 7 } } });
 		assert.strictEqual((a as any).usage.reasoning, 7);

@@ -706,6 +706,25 @@ test('CI seed preflight must stop before Office preparation when prepack only wa
 	assert.match(source.slice(check, check + 240), /if \(\$LASTEXITCODE -ne 0\).*exit 1/);
 });
 
+test('gulp plugin packaging includes both agents bundle patches', async t => {
+	const f = fixture(t);
+	const source = fs.readFileSync(path.join(ROOT, 'build/gulpfile.vscode.ts'), 'utf8');
+	const match = /const dshPlugins = gulp\.src\((\[[\s\S]*?\]), \{ base: '\.', allowEmpty: true \}\)/.exec(source);
+	assert.ok(match);
+	const globs = Array.from(runInNewContext(match[1]));
+	const files = ['package.json', 'cordis.patch.yml', 'cordis.presets.yml', 'lib/index.js'];
+	for (const file of files) { f.write(`repo/dsh-plugins/vssaros-agents/${file}`); }
+	const gulp = (await import('gulp')).default;
+	const shipped = [];
+	await new Promise((resolve, reject) => {
+		gulp.src(globs, { cwd: f.repo, base: f.repo, allowEmpty: true })
+			.on('data', file => { if (!file.isDirectory()) { shipped.push(file.relative.replaceAll('\\', '/')); } })
+			.on('error', reject)
+			.on('end', resolve);
+	});
+	assert.deepEqual(shipped.sort(), files.map(file => `dsh-plugins/vssaros-agents/${file}`).sort());
+});
+
 test('seed archives preserve complete plugin payload and are immutable pnpm inputs', async t => {
 	const f = fixture(t);
 	const source = path.join(f.repo, 'dsh-plugins/demo');
@@ -770,7 +789,7 @@ test('fresh and reused runtime entry paths discover every unscoped vendored plug
 			readFileSync: fs.readFileSync, readdirSync: fs.readdirSync,
 			existsSync: candidate => candidate.endsWith(`${path.sep}dsh${path.sep}lib${path.sep}bin.js`) ? installed : fs.existsSync(candidate),
 			execFileSync: (_file, args) => { if (args.includes('--version')) { return '0.2.2-rc.2\n'; } installed = true; return ''; },
-			prune() {}, dirSize: () => 0,
+			patchPiAiUsage() {}, prune() {}, dirSize: () => 0,
 			process: { argv: [], platform: 'win32', execPath: 'node.exe', exit: () => { throw new Error('unexpected early exit'); } },
 			console: { log() {}, error() {} },
 		});

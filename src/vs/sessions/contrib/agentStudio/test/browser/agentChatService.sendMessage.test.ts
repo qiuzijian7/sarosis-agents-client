@@ -270,6 +270,34 @@ suite('sendMessage 行为基线 — 思考 / 丢弃 / 工具 / usage', () => {
 		const json = JSON.stringify(final);
 		assert.ok(json.includes('222'), `usage 必须留存（期望含 outputTokens=222 ✓ 实际：${json.slice(0, 400)} ✗）`);
 	});
+
+	for (const cachedTokens of [undefined, 0, 80]) {
+		test(`缓存字段 ${cachedTokens} 在返回值和重启恢复后保持一致`, async () => {
+			const fs = makeFakeFs();
+			const { driver } = makeDriver([
+				{ type: 'text', content: 'x' },
+				{ type: 'usage', usage: { inputTokens: 100, outputTokens: 20, cachedTokens } },
+				{ type: 'done' },
+			]);
+			const svc = makeService(fs, driver);
+			const final = await svc.sendMessage('agent-1', 'q', sendOpts, () => { });
+			await settle();
+			const restored = await makeService(fs, makeDriver([]).driver).getHistory('agent-1', 'sess-1');
+			const snapshot = (message: ChatMessage) => ({
+				cached: message.tokenUsage?.cached,
+				cachedRead: message.tokenUsage?.cachedRead,
+				cacheWrite: message.tokenUsage?.cacheWrite,
+				cacheMiss: message.tokenUsage?.cacheMiss,
+				cacheHitRate: message.tokenUsage?.cacheHitRate,
+			});
+			const expected = {
+				cached: cachedTokens, cachedRead: cachedTokens, cacheWrite: undefined,
+				cacheMiss: cachedTokens === undefined ? undefined : 100 - cachedTokens,
+				cacheHitRate: cachedTokens,
+			};
+			assert.deepStrictEqual([snapshot(final), snapshot(restored.find(m => m.role === 'assistant')!)], [expected, expected]);
+		});
+	}
 });
 suite('sendMessage 行为基线 — 多轮 / 跨轮 usage / 压缩边界', () => {
 

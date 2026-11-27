@@ -382,7 +382,7 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 		const dshPlugins = gulp.src([
 			'dsh-plugins/dsh-compat.json',
 			'dsh-plugins/*/package.json',
-			'dsh-plugins/*/cordis.patch.yml',
+			'dsh-plugins/*/cordis.*.yml',
 			'dsh-plugins/*/lib/**',
 			// ★ 2026-10-14：**vendored 第三方技能包**（`dsh-plugins/vssaros-archify/`）的负载在 `skills/**`
 			//   （技能本体：SKILL.md / bin / schemas / references…），不在 `lib/**` 里 ⇒ 不显式列出就会被
