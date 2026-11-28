@@ -71,7 +71,7 @@ suite('每次启动前都要体检 profile 依赖树', () => {
 
 	test('3) 成功批量安装只在 spawn 前深扫，CLI 重试之前仍保留自愈', () => {
 		const src = stripComments(read(SUPERVISOR));
-		const begin = src.indexOf('const missed = wants.filter(');
+		const begin = src.indexOf("const missed = await trace.measure('plugin-install-verify'");
 		const end = src.indexOf('const staleAfterInstall =', begin);
 		assert.ok(begin > 0 && end > begin);
 		const beforeRetry = src.slice(begin, end);

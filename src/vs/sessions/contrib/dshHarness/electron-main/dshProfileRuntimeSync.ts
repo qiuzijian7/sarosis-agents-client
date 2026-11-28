@@ -174,27 +174,17 @@ export async function syncBundledPluginDirs(
 		if (options.matches(sourceDir, installedPackageDir)) {
 			continue;
 		}
-		const installedStat = await fsp.lstat(installedPackageDir).catch(() => undefined);
-		if (installedStat?.isSymbolicLink()) {
-			// ★ 2026-11-24：pnpm 会把随包插件装成 junction/symlink。之前 skip 会让
-			//   `_planPluginInstall` 继续判同版本内容漂移 ⇒ 24s pnpm 重装 + Host 冷启动。
-			//   白名单内插件应摘掉链接本身（绝不递归删目标），再用源码目录原子落位。
-			try {
-				await fsp.unlink(installedPackageDir);
-			} catch {
-				await fsp.rmdir(installedPackageDir); // Windows junction 只能 rmdir 摘链接
-			}
-			log(`bundled plugin sync: ${name} was a pnpm link; replaced by the source directory`);
-		}
+		const started = performance.now();
 		try {
-			await (options.stage ?? ((src, destDir) => stagePluginDir({ sourceDir: src, destDir })))(sourceDir, installedPackageDir);
-			result.synced.push(name);
+			await (options.stage ?? ((src, destDir) => stagePluginDir({ sourceDir: src, destDir, verify: directory => options.matches(src, directory) })))(sourceDir, installedPackageDir);
 			result.changed = true;
 			if (!options.matches(sourceDir, installedPackageDir)) {
 				result.errors.push(`${name}（同步后入口仍不一致）`);
-			}
+			} else { result.synced.push(name); }
 		} catch (e) {
 			result.errors.push(`${name}（${String((e as Error)?.message ?? e).slice(0, 160)}）`);
+		} finally {
+			log(`bundled plugin sync: ${name} durationMs=${Math.round(performance.now() - started)} outcome=${result.synced.includes(name) ? 'ok' : 'error'}`);
 		}
 	}
 	if (result.changed) {

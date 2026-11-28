@@ -36,7 +36,7 @@
 
 import { promises as fsp } from 'fs';
 import { randomBytes } from 'crypto';
-import { join, resolve } from '../../../../base/common/path.js';
+import { dirname, join, resolve } from '../../../../base/common/path.js';
 
 /** 同一个 `<dest>` 的进程内串行化：并行装同一插件时不要互相看着对方写。 */
 const stageLocks = new Map<string, Promise<string>>();
@@ -57,6 +57,8 @@ export interface IStagePluginOptions {
 	 * "临时目录 + rename 原子落位"本身。这条开关让单进程测试能真的把并发写撞在一起。
 	 */
 	readonly serialize?: boolean;
+	/** Strict content proof for profile replacement; stale but usable destinations are not success. */
+	readonly verify?: (directory: string) => boolean | Promise<boolean>;
 }
 
 /** 目标是否已经是可用副本（有 `package.json` = 装完整了）。 */
@@ -97,7 +99,7 @@ export async function stagePluginDir(options: IStagePluginOptions): Promise<stri
 	if (norm(sourceDir) === norm(destDir)) {
 		return destDir;
 	}
-	const once = (): Promise<string> => stageOnce({ sourceDir, destDir, uniqueSuffix: options.uniqueSuffix });
+	const once = (): Promise<string> => stageOnce(options);
 	if (options.serialize === false) {
 		return once();   // 测试：模拟"没有共享内存锁的另一个进程"
 	}
@@ -113,53 +115,51 @@ export async function stagePluginDir(options: IStagePluginOptions): Promise<stri
 	}
 }
 
-async function stageOnce({ sourceDir, destDir, uniqueSuffix }: { sourceDir: string; destDir: string; uniqueSuffix?: () => string }): Promise<string> {
-	// ⚠ 这里**故意不**"目标已存在就直接复用"：见文件头"每次都刷新"那条。
+async function stageOnce({ sourceDir, destDir, uniqueSuffix, verify }: IStagePluginOptions): Promise<string> {
 	const uniq = uniqueSuffix ? uniqueSuffix() : `${process.pid}-${randomBytes(4).toString('hex')}`;
 	const tmp = `${destDir}.staging-${uniq}`;
 	const stale = `${destDir}.stale-${uniq}`;
-	await fsp.rm(tmp, { recursive: true, force: true });
-	await fsp.mkdir(tmp, { recursive: true });
-	// 只排源目录**内部**的 node_modules：源本身可能就在 node_modules 里
-	//（如官方 voice-input bundle 随运行时分发），按绝对路径排会把所有文件滤光（实测）。
-	// ★ 2026-11-05：插件顶层的开发工作区 `dev/`（有 `dev/package.json`，如 vssaros-superagent 的源码/测试/工具链）
-	//   也不进暂存 ⇒ 不进 profile（与 build/saros/strip-before-pack.mjs、dshProfileDepsRepair.ts 同一判据）。
-	const devWorkspace = await isDevWorkspace(sourceDir);
-	await fsp.cp(sourceDir, tmp, {
-		recursive: true,
-		filter: (src: string) => {
-			const rel = src.slice(sourceDir.length);
-			return !/[\\/]node_modules([\\/]|$)/.test(rel) && !(devWorkspace && /^[\\/]dev([\\/]|$)/.test(rel));
-		},
-	});
-	// 旧的就挪开（不存在 / 正被别的进程用着 ⇒ 都只影响这一份旧副本）
+	await fsp.mkdir(dirname(destDir), { recursive: true });
+	await fsp.mkdir(tmp);
 	let movedAside = false;
+	let installed = false;
+	let committed = false;
 	try {
-		await fsp.rename(destDir, stale);
-		movedAside = true;
-	} catch { /* ENOENT = 本来没有；EPERM/EBUSY = 别人在用 ⇒ 下面 rename 会失败，走"用他那份" */ }
-	try {
-		await fsp.rename(tmp, destDir);
-	} catch (e) {
-		// 另一个进程抢先生成了目标（或旧副本挪不动）⇒ 弃掉自己这份，用现成的
-		await fsp.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
-		if (await isUsable(destDir)) {
-			// ⚠ 这里**必须先把自己挪开的旧副本删掉**再返回：并发时很常见的序列是
-			//   「A 把旧 dest 挪成 stale-A → B 抢先 rename 成功 → A 的 rename 失败」，
-			//   若直接 return，stale-A 就永久留在 plugins 目录里（行为测试 6 个用例里的第 4 个抓到）。
-			if (movedAside) {
-				await fsp.rm(stale, { recursive: true, force: true }).catch(() => undefined);
+		const devWorkspace = await isDevWorkspace(sourceDir);
+		await fsp.cp(sourceDir, tmp, {
+			recursive: true,
+			filter: (src: string) => {
+				const rel = src.slice(sourceDir.length);
+				return !/[\\/]node_modules([\\/]|$)/.test(rel) && !(devWorkspace && /^[\\/]dev([\\/]|$)/.test(rel));
+			},
+		});
+		if (verify && !await verify(tmp)) { throw new Error('Plugin staging content verification failed'); }
+		try {
+			await fsp.rename(destDir, stale);
+			movedAside = true;
+		} catch (error) {
+			if (verify && (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+				if (await verify(destDir)) { return destDir; }
+				throw error;
 			}
-			return destDir;
 		}
-		// 旧副本被挪开了、新副本又没落位 ⇒ 把它挪回来，至少别让插件消失
-		if (movedAside) {
-			await fsp.rename(stale, destDir).catch(() => undefined);
+		for (let attempt = 0; ; attempt++) {
+			try { await fsp.rename(tmp, destDir); installed = true; break; }
+			catch (error) {
+				if (verify ? await verify(destDir) : await isUsable(destDir)) { committed = true; return destDir; }
+				if (attempt >= 4 || !['EPERM', 'EBUSY', 'EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) { throw error; }
+				await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+			}
 		}
-		throw e;
+		if (verify && !await verify(destDir)) { throw new Error('Installed plugin content verification failed'); }
+		committed = true;
+		return destDir;
+	} catch (error) {
+		if (installed) { await fsp.rm(destDir, { recursive: true, force: true }); }
+		if (movedAside) { await fsp.rename(stale, destDir); movedAside = false; }
+		throw error;
+	} finally {
+		await fsp.rm(tmp, { recursive: true, force: true });
+		if (movedAside && committed) { await fsp.rm(stale, { recursive: true, force: true }); }
 	}
-	if (movedAside) {
-		await fsp.rm(stale, { recursive: true, force: true }).catch(() => undefined);
-	}
-	return destDir;
 }

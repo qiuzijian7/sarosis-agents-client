@@ -395,9 +395,10 @@ suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 		// 这里读原文：该文件的注释里含 `/*` 片段，块注释剥离正则会吞掉后续代码造成假红。
 		const src = read(SUPERVISOR);
 		const syncAt = src.indexOf('private async _syncBundledPluginDirs(');
-		const depsCallAt = src.indexOf('await this._writeBundledPluginDeps(profileDir, sources)', syncAt);
-		const syncCallAt = src.indexOf('return await syncBundledPluginDirs(sources, profileDir', syncAt);
-		assert.ok(syncAt > 0 && depsCallAt > syncAt && syncCallAt > depsCallAt, '源码同步前必须先写 dependencies');
+		const syncCallAt = src.indexOf('const result = await syncBundledPluginDirs(sources, profileDir', syncAt);
+		const depsCallAt = src.indexOf('await this._writeBundledPluginDeps(profileDir, verifiedSources)', syncAt);
+		assert.ok(syncAt > 0 && syncCallAt > syncAt && depsCallAt > syncCallAt, '成功落位并验收后才登记 dependencies，登记必须在返回/后续CLI之前');
+		assert.match(src.slice(syncCallAt, depsCallAt), /result\.synced\.includes\(item\.name\)/, '失败包不能登记');
 
 		const depsAt = src.indexOf('private async _writeBundledPluginDeps(');
 		const depsEnd = src.indexOf('private _profileSeedDir(', depsAt);

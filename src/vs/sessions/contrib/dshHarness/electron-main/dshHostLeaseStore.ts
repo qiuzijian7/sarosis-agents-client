@@ -111,9 +111,9 @@ export class DshHostLeaseStore {
 	/**
 	 * 启动锁：同一 DSH_HOME 上两个实例同时启动时，后到者等待先者写出租约。
 	 * 返回 undefined 表示拿到锁；返回租约表示等待期间先者已经就绪（调用方直接复用）。
-	 * 死锁（持锁 pid 已死或超时）会被破门。
+	 * 持锁 pid 已死才破门；未知半写锁需过保护期。exclusive 模式必须取得锁，不返回租约。
 	 */
-	async acquireStartLock(waitMs: number): Promise<IDshHostLease | undefined> {
+	async acquireStartLock(waitMs: number, exclusive = false): Promise<IDshHostLease | undefined> {
 		const deadline = Date.now() + waitMs;
 		for (; ;) {
 			try {
@@ -133,7 +133,9 @@ export class DshHostLeaseStore {
 			try {
 				holder = JSON.parse(readFileSync(this._lockPath, 'utf8'));
 			} catch { /* 锁文件刚被删掉或写了一半 */ }
-			const stale = !holder.pid || !pidAlive(holder.pid) || (typeof holder.at === 'number' && Date.now() - holder.at > LOCK_STALE_MS);
+			const stale = typeof holder.pid === 'number' && Number.isInteger(holder.pid) && holder.pid > 0
+				? !pidAlive(holder.pid)
+				: Date.now() - (await fsp.stat(this._lockPath)).mtimeMs > LOCK_STALE_MS;
 			if (stale) {
 				this._log(`host.json.lock 持锁者（pid ${holder.pid ?? '?'}）已不在或超时，破门`);
 				await fsp.rm(this._lockPath, { force: true }).catch(() => undefined);
@@ -145,7 +147,7 @@ export class DshHostLeaseStore {
 			// 等一等，看先者是否已写好租约。
 			await new Promise(r => setTimeout(r, 500));
 			const lease = this.read();
-			if (lease && pidAlive(lease.pid)) {
+			if (!exclusive && lease && pidAlive(lease.pid)) {
 				return lease;
 			}
 		}

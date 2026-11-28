@@ -224,9 +224,9 @@ suite('dshHarness / 暂存目录的内容指纹（同版本改内容也要真装
 			'批量暂存必须把计划阶段算出的指纹传下去（漏了 ⇒ 退回同路径 no-op ✗）');
 		assert.ok(/const wants: \{[^\n]*fingerprint\?: string \}\[\]/.test(src),
 			'`wants` 的元素类型要带上 `fingerprint`（与 `_planPluginInstall` 的返回契约同一口径）');
-		const missedLine = src.split('\n').find(l => l.includes('const missed = wants.filter')) ?? '';
-		assert.ok(missedLine.includes('_installedEntryMatches'),
-			'复核必须**按内容**：只看版本时"内容没换上"会被报成 `N ok`（真机就是这条把 8 秒白花埋掉的 ✗✗）');
+		const missedLine = stripComments(src).split('\n').find(l => l.includes('const missed =')) ?? '';
+		assert.match(missedLine, /wants\.filter\(w => installedVersionOf\(w\.name\) !== w\.bundled \|\| !this\._installedEntryMatches\(w\.dir, installedDirOf\(w\.name\)\)\)/,
+			'复核必须同时检查版本与内容，允许外层增加耗时追踪');
 	});
 
 	test('★ 兜底单装路径（`_ensurePlugin`）同样带指纹', () => {

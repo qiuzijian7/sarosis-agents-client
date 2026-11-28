@@ -23,7 +23,7 @@ import { promises as fsp } from 'fs';
 import { join } from '../../../../base/common/path.js';
 // ⚠ 类型导入必须带 `type` ✓：本文件要能被**探针直接 import**（Node 22 类型剥离 ⇒ 裸的 `import { X }`
 // 若 X 只是个 interface，运行时会去要一个不存在的导出 ⇒ SyntaxError ✗）。
-import { type IHostRunOwnership, type IHostRunVerdict, hostRunOwnershipFileName, parseHostRunOwnership, planOrphanHosts, runIdOfHostOverlayFile, runIdOfHostRunOwnershipFile } from '../common/dshHostRunOwnership.js';
+import { appPidOfInstanceId, type IHostRunOwnership, type IHostRunVerdict, hostRunOwnershipFileName, parseHostRunOwnership, planOrphanHosts, runIdOfHostOverlayFile, runIdOfHostRunOwnershipFile } from '../common/dshHostRunOwnership.js';
 import { pidAlive } from './dshHostLeaseStore.js';
 
 /** 覆盖层文件被回收的**兜底**年龄：没有拥有者记录（本机制上线前的遗留）且这么老才删。 */
@@ -76,11 +76,12 @@ export interface IHostReapReport {
 }
 
 /** 读 runDir 下的全部拥有者记录。 */
-export async function readHostRunOwnerships(runDir: string): Promise<{ readonly records: readonly IHostRunOwnership[]; readonly unreadable: readonly string[] }> {
+export async function readHostRunOwnerships(runDir: string, strict = false): Promise<{ readonly records: readonly IHostRunOwnership[]; readonly unreadable: readonly string[] }> {
 	let names: string[];
 	try {
 		names = await fsp.readdir(runDir);
-	} catch {
+	} catch (error) {
+		if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
 		return { records: [], unreadable: [] };
 	}
 	const records: IHostRunOwnership[] = [];
@@ -131,6 +132,59 @@ async function defaultWaitExit(isAlive: (pid: number) => boolean, pid: number, t
 		}
 		await new Promise(resolve => setTimeout(resolve, 100));
 	}
+}
+
+export interface IProfilePluginWriteOptions extends IHostReapOptions {
+	readonly profile: string;
+	readonly lease: { readonly pid: number; readonly instanceId: string; readonly profile: string } | undefined;
+	readonly assertCurrent: () => void;
+}
+
+/** Caller holds the home startup lock and has already decided that plugin contents must change. */
+export async function prepareProfilePluginWrites(options: IProfilePluginWriteOptions): Promise<void> {
+	const alive = options.isAlive ?? pidAlive;
+	const kill = options.killTree ?? defaultKillTree;
+	const wait = options.waitExit ?? ((pid, ms) => defaultWaitExit(alive, pid, ms));
+	options.assertCurrent();
+	const { records, unreadable } = await readHostRunOwnerships(options.runDir, true);
+	options.assertCurrent();
+	if (unreadable.length) { throw new Error('plugin-write-blocked: Host 所有权记录不可读，请关闭其它实例后重试'); }
+	const targets = records.filter(record => record.profile === options.profile);
+	const pids = new Set(targets.map(record => record.hostPid));
+	const lease = options.lease?.profile === options.profile ? options.lease : undefined;
+	if (lease) { pids.add(lease.pid); }
+	const plan = planOrphanHosts(records, { selfAppPid: options.selfAppPid, isAlive: alive, now: options.now ?? Date.now(), graceMs: options.graceMs ?? OWNERSHIP_GRACE_MS });
+	for (const pid of pids) {
+		if (!alive(pid)) { continue; }
+		if (plan.keep.some(item => item.record.hostPid === pid)
+			|| records.some(record => record.hostPid === pid && (record.profile !== options.profile || record.appPid === options.selfAppPid))) {
+			throw new Error(`plugin-write-blocked: Host ${pid} 仍被实例使用或所有权范围不明，未写入插件`);
+		}
+		if (lease?.pid === pid) {
+			const owner = appPidOfInstanceId(lease.instanceId);
+			if (!owner || owner === options.selfAppPid || alive(owner)) { throw new Error(`plugin-write-blocked: 租约 Host ${pid} 的拥有者仍存活或未知`); }
+		}
+	}
+	for (const pid of pids) {
+		options.assertCurrent();
+		if (!alive(pid)) { continue; }
+		options.log(`plugin-write: reclaim orphan Host ${pid} before replacing plugins`);
+		await kill(pid);
+		const gone = await wait(pid, KILL_EXIT_WAIT_MS);
+		options.assertCurrent();
+		if (!gone || alive(pid)) { throw new Error(`plugin-write-blocked: Host ${pid} 未确认退出，未写入插件`); }
+	}
+	const after = await readHostRunOwnerships(options.runDir, true);
+	options.assertCurrent();
+	if (after.unreadable.length || after.records.some(record => record.profile === options.profile && alive(record.hostPid))) {
+		throw new Error('plugin-write-blocked: 等待期间有实例接管 Host，未写入插件');
+	}
+	for (const record of targets) {
+		for (const file of [...record.files, hostRunOwnershipFileName(record.runId)]) {
+			if (file && !/[\\/]/.test(file)) { await fsp.rm(join(options.runDir, file), { force: true }); }
+		}
+	}
+	options.assertCurrent();
 }
 
 /**

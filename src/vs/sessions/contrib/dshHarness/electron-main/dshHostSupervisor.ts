@@ -25,7 +25,6 @@ import { existsSync, promises as fsp, readdirSync, readFileSync, rmSync, statSyn
  *   ⇒ 打包产物**不能**把"装插件"这件事依赖在用户机器上（普通用户既没有 pnpm、很可能也没有 node）。
  *   ⇒ 探测一次即可（一次启动只问一次，缓存在这里）。
  */
-let pnpmAvailableCache: boolean | undefined;
 import { ClientRequest, request as httpRequest } from 'http';
 import { homedir, tmpdir } from 'os';
 import { pathToFileURL } from 'url';
@@ -58,7 +57,7 @@ import { DshHostLeaseStore, pidAlive } from './dshHostLeaseStore.js';
 import { stagePluginDir } from './dshPluginStaging.js';
 import { orphanLeaseCandidates } from '../common/dshHostRunOwnership.js';
 import { readPreferredHostPort, reclaimLoopbackPort, rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
-import { reapOrphanHosts } from './dshHostReaper.js';
+import { prepareProfilePluginWrites, reapOrphanHosts } from './dshHostReaper.js';
 import { repairBundledPluginFiles, repairProfileDeps } from './dshProfileDepsRepair.js';
 import { copyProfileSeed, IBundledPluginSyncResult, isBundledRepoPluginName, planProfileRuntimeSync, profileSeedDirFor, readProfileRuntimeVersion, syncBundledPluginDirs, syncProfilePluginLayer, writeProfileRuntimeMarker } from './dshProfileRuntimeSync.js';
 import { createSharedProfile, isSharedProfile, isSharedSeedInRuntimeTree, materializeSharedProfile, removeProfileSafely, sharedProfileEnabled, unlinkSharedNodeModules } from './dshSharedProfile.js';
@@ -1242,6 +1241,7 @@ export class DshHostSupervisor extends Disposable {
 		const t0 = Date.now();
 		const trace = new DshStartupTrace(`${process.pid}-${generation}`, line => this._appendLog(line));
 		const { profile, dshHome } = this._resolveProfileAndHome(options);
+		let pluginWriteLeases: DshHostLeaseStore | undefined;
 		// 新 Host ⇒ mux 路由要重新注册 ⇒ 先当"没就绪"（复用路径另有一处置 true）。
 		this._muxReady = false;
 		this._muxProbePending = undefined;
@@ -1490,20 +1490,11 @@ export class DshHostSupervisor extends Disposable {
 				plugins.length = 0;
 				plugins.push(...deduped);
 			}
-			// ★ 2026-11-24（打包版启动慢定位）：用户 profile 里的随包插件同版本但入口内容陈旧时，
-			//   `_planPluginInstall` 会判 wants > 0 ⇒ pnpm 重装 5s + `_pluginsStale` ⇒ 放弃复用
-			//   常驻 Host ⇒ 每次冷启动 18–19s。这里用 `dsh-plugins` 当前源码直接修好漂移插件，
-			//   让 wants 归零；不从 profile-seed 同步，避免种子自身也可能落后于源码。
-			const bundledSync = await trace.measure('bundled-source-sync', () => this._syncBundledPluginDirs(plugins, this._profileDir(profile, env)));
-			if (bundledSync.changed) {
-				this._pluginsStale = true;
-				this._appendLog(`bundled plugin sync: refreshed ${bundledSync.synced.length} plugin(s) from source; existing Host must not be reused`);
-			}
 			trace.mark('plugin-plan.begin');
 			const wants: { name: string; dir: string; label: string; bundled: string; installed?: string; fingerprint?: string }[] = [];
 			for (let i = 0; i < plugins.length; i++) {
 				const [name, dir, label] = plugins[i];
-				this._progress(`正在安装伴生插件（${i + 1}/${plugins.length}）…`);
+				this._progress(`正在检查伴生插件（${i + 1}/${plugins.length}）…`);
 				const want = this._planPluginInstall(name, dir, label, profile, env, options.skipPluginInstall === true);
 				if (want) {
 					wants.push(want);
@@ -1514,7 +1505,41 @@ export class DshHostSupervisor extends Disposable {
 			// ★ 2026-10-21：版本错配自检（profile 已装 vs 随包）—— 漏装/不同代要**在日志里点名**。
 			this._auditBundledVersions(plugins, pluginProfileDir);
 			trace.mark('plugin-plan.end');
+			this._appendLog(`plugin plan: checked ${plugins.length}, changed ${wants.length}`);
 			if (wants.length) {
+				const home = this.effectiveDshHome(options.dshHome);
+				if (normalizeExistingPath(home) !== normalizeExistingPath(this.effectiveDshHome())) {
+					throw new Error('plugin-write-blocked: 自定义 DSH_HOME 的拥有者范围无法确认，请先在该环境更新插件');
+				}
+				pluginWriteLeases = new DshHostLeaseStore(home, line => this._appendLog(line));
+				this._leaseStore = pluginWriteLeases;
+				await trace.measure('plugin-write-lock', () => pluginWriteLeases!.acquireStartLock(START_LOCK_WAIT_MS, true));
+				this._throwIfStale(generation);
+				for (let i = wants.length - 1; i >= 0; i--) {
+					const w = wants[i];
+					if (installedVersionOf(w.name) === w.bundled && this._installedEntryMatches(w.dir, join(pluginProfileDir, 'node_modules', ...w.name.split('/')))) { wants.splice(i, 1); }
+				}
+				if (wants.length) {
+					await trace.measure('plugin-write-quiesce', () => prepareProfilePluginWrites({
+						runDir: this._opts.runDir, profile, selfAppPid: process.pid,
+						lease: pluginWriteLeases!.read(), assertCurrent: () => this._throwIfStale(generation),
+						log: line => this._appendLog(line),
+					}));
+					this._throwIfStale(generation);
+					this._progress(`正在刷新 ${wants.length} 个变化插件…`);
+					const changedSources = wants.filter(w => this._canInstallLocally(w.name, w.dir)).map(w => [w.name, w.dir, w.label] as [string, string, string]);
+					const bundledSync = await trace.measure('bundled-source-sync', () => this._syncBundledPluginDirs(changedSources, pluginProfileDir, () => this._throwIfStale(generation)));
+					if (bundledSync.changed) { this._pluginsStale = true; }
+					this._throwIfStale(generation);
+					for (let i = wants.length - 1; i >= 0; i--) {
+						const w = wants[i];
+						if (installedVersionOf(w.name) === w.bundled && this._installedEntryMatches(w.dir, join(pluginProfileDir, 'node_modules', ...w.name.split('/')))) { wants.splice(i, 1); }
+					}
+					this._appendLog(`plugin sync: refreshed ${bundledSync.synced.join(', ') || 'none'}; remaining ${wants.length}`);
+				}
+			}
+			if (wants.length) {
+				this._progress(`正在安装 ${wants.length} 个伴生插件…`);
 				trace.mark('plugin-install.begin');
 				// 共享态首启 `wants` 正常为空（种子里已预装伴生插件）⇒ 不物化；真要装就先落可写副本。
 				await this._materializeIfShared(pluginProfileDir);
@@ -1525,22 +1550,29 @@ export class DshHostSupervisor extends Disposable {
 					this._appendLog(`installing ${w.name}@${w.bundled} (was ${w.installed ?? 'absent'})`);
 				}
 				const t0 = Date.now();
-				const stagedDirs = await Promise.all(wants.map(w => this._stagePlugin(w.name, w.dir, w.bundled, pluginProfileDir, w.fingerprint)));
-				const specs = stagedDirs.map(toFileSpec);
+				const stagedDirs = await trace.measure('plugin-stage', () => Promise.all(wants.map(w => this._stagePlugin(w.name, w.dir, w.bundled, pluginProfileDir, w.fingerprint))));
+				this._throwIfStale(generation);
+				const localIndices = wants.map((w, i) => this._canInstallLocally(w.name, w.dir) ? i : -1).filter(i => i >= 0);
+				const cliIndices = wants.map((_w, i) => i).filter(i => !localIndices.includes(i));
 				let out = '';
-				if (this._pnpmAvailable()) {
-					out = await this._runDsh(node, buildPluginAddArgsMany(dsh.bin, profile, specs), env, 120_000 + wants.length * 15_000);
-				} else {
-					// ★★ 2026-10-29（真机：别人机器上没 pnpm ⇒ 35 个插件全没装上 ⇒ 界面只剩官方页）：
-					//   随包插件**零外部依赖**（`dependencies` 全为空 ⇒ 全是本地 file: 链接）⇒
-					//   本来就不需要包管理器 ⇒ 直接把暂存副本落进 profile 即可（秒级、不会失败）。
-					out = await this._installPluginsDirect(wants, stagedDirs, pluginProfileDir);
+				if (localIndices.length) {
+					out = await trace.measure('plugin-local-install', () => this._installPluginsDirect(localIndices.map(i => wants[i]), localIndices.map(i => stagedDirs[i]), pluginProfileDir, () => this._throwIfStale(generation)));
 				}
+				this._throwIfStale(generation);
+				if (cliIndices.length) {
+					if (process.env.DSH_DISABLE_PNPM === '1') { throw new Error('plugin-deps-unavailable: 已禁用 pnpm，但部分插件需要解析外部依赖'); }
+					const specs = cliIndices.map(i => toFileSpec(stagedDirs[i]));
+					this._progress(`正在解析 ${cliIndices.length} 个插件的依赖…`);
+					out += await trace.measure('plugin-cli-install', () => this._runDsh(node, buildPluginAddArgsMany(dsh.bin, profile, specs), env, 120_000 + cliIndices.length * 15_000));
+				}
+				this._throwIfStale(generation);
 				// 复核口径 = **版本 + 入口内容**（2026-10-14）：只看版本时，"同版本内容变了"的假成功会被报成
 				// `N ok`（现场：`4 ok, 0 to retry`，而其中一个副本是两天前的旧代码 ✗✗），谁也不知道那 8 秒
 				// 是白花的、跑的还是旧代码。内容判据与 `_installedEntryMatches` 共用同一份定义 ✓。
 				const installedDirOf = (name: string) => join(pluginProfileDir, 'node_modules', ...name.split('/'));
-				const missed = wants.filter(w => installedVersionOf(w.name) !== w.bundled || !this._installedEntryMatches(w.dir, installedDirOf(w.name)));
+				const missed = await trace.measure('plugin-install-verify', () => wants.filter(w => installedVersionOf(w.name) !== w.bundled || !this._installedEntryMatches(w.dir, installedDirOf(w.name))));
+				const localFailed = missed.filter(w => this._canInstallLocally(w.name, w.dir));
+				if (localFailed.length) { throw new Error(`plugin-local-install-failed: ${localFailed.map(w => w.name).join(', ')}；本地替换失败，未尝试 pnpm 重写依赖树`); }
 				this._appendLog(`one-shot install of ${wants.length} plugin(s) took ${Date.now() - t0} ms: ${wants.length - missed.length} ok, ${missed.length} to retry`);
 				// ★★ 2026-10-29（真机：10:01 / 10:06 / 10:55 三次启动全是同一个错）：装插件会让 pnpm
 				//   **重物化整棵依赖树** ⇒ `compression/node_modules/negotiator` 这类嵌套副本会被装成
@@ -1660,7 +1692,7 @@ export class DshHostSupervisor extends Disposable {
 			this._throwIfStale(generation);
 
 			// 多实例复用（方案 7.5）：先试 `$DSH_HOME/host.json` 里的既有 Host。
-			const leases = new DshHostLeaseStore(this.effectiveDshHome(options.dshHome), line => this._appendLog(line));
+			const leases = pluginWriteLeases ?? new DshHostLeaseStore(this.effectiveDshHome(options.dshHome), line => this._appendLog(line));
 			this._leaseStore = leases;
 			const existing = leases.read();
 			if (existing && (await fsp.stat(sessionIdentityPreload)).mtimeMs > existing.startedAt) {
@@ -1715,7 +1747,7 @@ export class DshHostSupervisor extends Disposable {
 			// 走到这里就是在"要起一个新 Host"了 —— 但**先别清标记**：清早了会让并发的第二次 start
 			// 又去接管旧进程 ✗（2026-10-12 实测），统一在**真正 spawn 成功**之后清 ✓。
 			const pluginsWereStale = this._pluginsStale;
-			const leaseFromLock = await leases.acquireStartLock(START_LOCK_WAIT_MS);
+			const leaseFromLock = pluginWriteLeases ? undefined : await leases.acquireStartLock(START_LOCK_WAIT_MS);
 			try {
 				this._throwIfStale(generation);
 				// 锁竞争里那个 Host 同样可能是旧代码（别的实例拉起它时还没装上新插件）⇒ 同样不接管 ✓。
@@ -2199,6 +2231,7 @@ export class DshHostSupervisor extends Disposable {
 			}
 			return this._status;
 		} finally {
+			await pluginWriteLeases?.releaseStartLock();
 			trace.finish(generation === this._generation ? this._status.state : 'superseded');
 		}
 	}
@@ -3034,9 +3067,20 @@ export class DshHostSupervisor extends Disposable {
 	 * 放在 `_planPluginInstall` 之前：修好后 `wants` 归零，既不会启动 pnpm，也不会因
 	 * `_pluginsStale` 放弃复用常驻 Host。失败只记日志，既有安装链继续兜底。
 	 */
+	private _canInstallLocally(name: string, dir: string): boolean {
+		if (!isBundledRepoPluginName(name)) { return false; }
+		try {
+			const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+			return pkg.name === name && Object.keys(pkg.dependencies ?? {}).length === 0
+				&& Object.keys(pkg.optionalDependencies ?? {}).length === 0
+				&& Object.keys(pkg.peerDependencies ?? {}).every(peer => peer === '@deepseek-ai/dsh');
+		} catch { return false; }
+	}
+
 	private async _syncBundledPluginDirs(
 		plugins: readonly [string, string | undefined, string][],
 		profileDir: string,
+		assertCurrent: () => void = () => undefined,
 	): Promise<IBundledPluginSyncResult> {
 		const empty: IBundledPluginSyncResult = { scanned: 0, synced: [], skipped: [], errors: [], changed: false };
 		const sources = plugins
@@ -3049,18 +3093,23 @@ export class DshHostSupervisor extends Disposable {
 		//   package.json.dependencies 仍只有官方模板项；随后 `dsh plugin add` 会把未登记的
 		//   `@vssaros/*` 当 extraneous 清掉，最终 bundles 也只剩官方项 ⇒ 原生 UI。
 		//   先把随包源码 spec 写进 dependencies，再让 pnpm / bundle 修复跑。
-		await this._writeBundledPluginDeps(profileDir, sources);
+		assertCurrent();
 		try {
-			return await syncBundledPluginDirs(sources, profileDir, {
+			const result = await syncBundledPluginDirs(sources, profileDir, {
 				matches: (sourceDir, installedPackageDir) => {
+					assertCurrent();
 					const want = this._readPkgVersion(join(sourceDir, 'package.json'));
 					const have = this._readPkgVersion(join(installedPackageDir, 'package.json'));
 					return want !== undefined && want === have && this._installedEntryMatches(sourceDir, installedPackageDir);
 				},
 				log: line => this._appendLog(line),
 			});
+			assertCurrent();
+			const verifiedSources = sources.filter(item => result.synced.includes(item.name));
+			if (verifiedSources.length) { await this._writeBundledPluginDeps(profileDir, verifiedSources); }
+			return result;
 		} catch (e) {
-			this._appendLog(`bundled plugin sync failed, falling back to the legacy install path: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+			this._appendLog(`bundled plugin sync failed, local replacement will be verified before continuing: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
 			return empty;
 		}
 	}
@@ -3209,33 +3258,6 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	/** 把一个随产品分发的插件装进 profile（版本相同则跳过）；装不上时返回已装版本并记日志。 */
-	/**
-	 * pnpm 在这台机器上能不能用（**只探测一次**）。
-	 *
-	 * ★ 2026-10-29：用户机器上通常**没有** pnpm（那是开发工具）⇒ 随包插件的安装必须有
-	 *   「不依赖包管理器」的退路，否则界面就只剩 dsh 官方外壳（见 `pnpmAvailableCache` 的注释）。
-	 */
-	private _pnpmAvailable(): boolean {
-		if (pnpmAvailableCache !== undefined) {
-			return pnpmAvailableCache;
-		}
-		// ★ 2026-10-29：测试钩子 / 用户逃生门 —— `DSH_DISABLE_PNPM=1` 强制走直装
-		//   （也用于验证"没有 pnpm 的机器"那条路径，而不必真的把 pnpm 从 PATH 里拿走）。
-		if (process.env['DSH_DISABLE_PNPM'] === '1') {
-			pnpmAvailableCache = false;
-			this._appendLog('DSH_DISABLE_PNPM=1 ⇒ 强制走「直装」（不调用 pnpm）');
-			return false;
-		}
-		try {
-			// ⚠ Windows 下 pnpm 是 `pnpm.cmd` ⇒ 必须走 shell 才能解析到。
-			execFileSync('pnpm', ['--version'], { encoding: 'utf8', shell: true, windowsHide: true, timeout: 10_000 });
-			pnpmAvailableCache = true;
-		} catch {
-			pnpmAvailableCache = false;
-			this._appendLog('⚠ 找不到 pnpm ⇒ 随包插件改用「直装」安装（随包插件零外部依赖，不需要包管理器）');
-		}
-		return pnpmAvailableCache;
-	}
 
 	/**
 	 * **直装**：把暂存副本直接落到 profile 的 node_modules（不经 pnpm）。
@@ -3250,19 +3272,24 @@ export class DshHostSupervisor extends Disposable {
 		wants: { name: string; dir: string; label: string; bundled: string; installed?: string; fingerprint?: string }[],
 		stagedDirs: string[],
 		pluginProfileDir: string,
+		assertCurrent: () => void = () => undefined,
 	): Promise<string> {
 		let ok = 0;
 		const failures: string[] = [];
 		const verified: string[] = [];
 		for (let i = 0; i < wants.length; i++) {
+			assertCurrent();
 			const w = wants[i];
 			const parts = w.name.split('/');
 			const dest = join(pluginProfileDir, 'node_modules', ...parts);
-			const parent = join(pluginProfileDir, 'node_modules', ...parts.slice(0, -1));
 			try {
-				await fsp.rm(dest, { recursive: true, force: true });
-				await fsp.mkdir(parent, { recursive: true });
-				await fsp.cp(stagedDirs[i], dest, { recursive: true });
+				await stagePluginDir({
+					sourceDir: stagedDirs[i], destDir: dest,
+					verify: directory => {
+						assertCurrent();
+						return this._readPkgVersion(join(directory, 'package.json')) === w.bundled && this._installedEntryMatches(w.dir, directory);
+					},
+				});
 				// ★★ 2026-10-29（真机：别人机器上 35 个插件全没装上 ⇒ 界面只剩官方页）：
 				//   直装**成功**必须校验（版本 + 入口内容，与 `_installedEntryMatches` 同一口径）——
 				//   否则会留下「spec 写了、文件却没装好」的**半装状态** ⇒ 下次启动判"已装"
@@ -3279,7 +3306,9 @@ export class DshHostSupervisor extends Disposable {
 				failures.push(w.name + '（' + String((e as Error)?.message ?? e).slice(0, 80) + '）');
 			}
 		}
-		await this._writeProfileDeps(pluginProfileDir, wants, stagedDirs, verified);
+		assertCurrent();
+		const completed = wants.map((w, i) => verified.includes(w.name) ? i : -1).filter(i => i >= 0);
+		if (completed.length) { await this._writeProfileDeps(pluginProfileDir, completed.map(i => wants[i]), completed.map(i => stagedDirs[i]), verified); }
 		// ★ 2026-10-29：失败必须**进启动失败文案**（`_startupPluginProblems` ⇒ status.pluginProblems）
 		//   ⇒ 渲染侧能看到（真机：35 个插件全没装上 ⇒ 界面只剩 dsh 官方页、且一句提示都没有
 		//   ⇒ 用户以为产品坏了 ✗✗）。⚠ 复用既有通道，不另开一套（两套并行只会各说各话）。

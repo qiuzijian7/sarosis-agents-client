@@ -38,45 +38,37 @@ function stripComments(s: string): string {
 
 suite('没有 pnpm 时的直装退路', () => {
 
-	test('必须探测 pnpm，并且只探一次', () => {
+	test('本地包不能同步探测未使用的PATH pnpm，禁用开关仍限制依赖解析', () => {
 		const body = stripComments(read(SUPERVISOR));
-		assert.match(body, /private _pnpmAvailable\(\)/, '必须有 pnpm 探测方法');
-		assert.match(body, /execFileSync\('pnpm', \['--version'\]/,
-			'必须真的执行 pnpm --version（只看 PATH 不算，Windows 下要 shell 才能解析 pnpm.cmd）');
-		assert.match(body, /pnpmAvailableCache/,
-			'探测结果必须缓存（逐项重试 35 次时不能问 35 次）');
-		assert.match(body, /DSH_DISABLE_PNPM/,
-			'必须有测试钩子 / 逃生门（否则"没有 pnpm 的机器"那条路径无法验证）');
+		assert.doesNotMatch(body, /execFileSync\('pnpm'/);
+		assert.match(body, /DSH_DISABLE_PNPM/);
+		assert.match(body, /_canInstallLocally\(w\.name, w\.dir\)/);
 	});
 
-	test('批量安装必须按 pnpm 可用性分叉', () => {
+	test('批量安装按依赖要求分组，本地优先，CLI只接收需要依赖解析的spec', () => {
 		const body = stripComments(read(SUPERVISOR));
-		const at = body.indexOf('const stagedDirs = await Promise.all(wants.map');
-		assert.ok(at > 0, '找不到暂存那行（stagedDirs）');
-		const iAvail = body.indexOf('this._pnpmAvailable()', at);
-		const iPnpm = body.indexOf('buildPluginAddArgsMany(', at);
-		// ⚠ 必须找**调用点**（`this._installPluginsDirect(wants…`）：只找方法名会命中**方法定义**
-		//   （定义在文件后面）⇒ "删掉调用点"这种突变会假绿（实测踩过 ✗）。
-		const iDirect = body.indexOf('this._installPluginsDirect(wants', at);
-		assert.ok(iAvail > at, '暂存之后必须先探测 pnpm');
-		assert.ok(iDirect > 0, '必须真的调用直装方法（删掉调用点 ⇒ 没 pnpm 的机器上又全失败 ✗）');
-		// ⚠ 直装调用在 `else` 分支里 ⇒ 源码位置上**必然在** pnpm 调用之后 ⇒ 不能断言"在前"（实测踩过 ✗）。
-		//   真正要保证的是：**两者都在探测之后**（同一个分叉里）。
-		assert.ok(iDirect > iAvail, '直装调用必须与 pnpm 调用同在探测之后的分叉里');
-		assert.ok(iPnpm > iAvail, 'pnpm 批量调用必须受探测结果保护（否则没 pnpm 的机器上必然全失败）');
+		const at = body.indexOf("const stagedDirs = await trace.measure('plugin-stage'");
+		assert.ok(at > 0);
+		const end = body.indexOf('const missed =', at);
+		const block = body.slice(at, end);
+		assert.match(block, /this\._installPluginsDirect\(localIndices\.map/);
+		assert.match(block, /if \(cliIndices\.length\)/);
+		assert.match(block, /cliIndices\.map\(i => toFileSpec\(stagedDirs\[i\]\)\)/);
+		assert.ok(block.indexOf('this._installPluginsDirect(') < block.indexOf('buildPluginAddArgsMany('));
 	});
 
 	test('直装必须真的落文件，且同步 profile/package.json', () => {
 		const body = stripComments(read(SUPERVISOR));
-		const at = body.indexOf('const stagedDirs = await Promise.all(wants.map');
+		const at = body.indexOf("const stagedDirs = await trace.measure('plugin-stage'");
 		assert.ok(at > 0, '找不到暂存那行（stagedDirs）');
 		const dAt = body.indexOf('private async _installPluginsDirect(');
 		assert.ok(dAt > 0, '缺少 _installPluginsDirect');
 		const dEnd = body.indexOf('private async _writeProfileDeps(', dAt);
 		const dBody = body.slice(dAt, dEnd > dAt ? dEnd : dAt + 4000);
 		assert.match(dBody, /node_modules/, '直装必须落到 profile/node_modules');
-		assert.match(dBody, /fsp\.cp\(/, '直装必须真的拷贝文件');
-		assert.match(dBody, /fsp\.rm\(/, '直装前必须先清掉旧副本（否则会残留上一次的旧文件）');
+		assert.match(dBody, /await stagePluginDir\(/, '直装必须通过原子目录落位');
+		assert.doesNotMatch(dBody, /await fsp\.rm\(dest/, '不得先删last-good副本');
+		assert.match(dBody, /verify: directory =>/, '临时目录与落位副本都必须验收');
 		assert.match(dBody, /_readPkgVersion\(/, '直装后必须校验版本（不校验 ⇒ 半装状态 ⇒ 永远不重装 ✗）');
 		assert.match(dBody, /_installedEntryMatches\(/, '直装后必须校验入口内容（同上 ✗）');
 
