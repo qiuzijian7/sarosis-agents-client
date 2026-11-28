@@ -112,10 +112,10 @@ export interface IDshHarnessChannelOptions {
 	/**
 	 * 「检查更新」（2026-11-24）：desktop-only 壳不加载 workbench ⇒ caption 菜单没有
 	 * `IDshHarnessService.getUpgradeState`，只能让主进程代为触发应用更新检查。
-	 * 由 `app.ts` 注入原生更新控制器，同时负责结果提示、下载确认和重启确认。
+	 * 由 `app.ts` 注入原生更新控制器；反馈统一走 dsh 通知卡片，不弹 messagebox。
 	 */
 	readonly checkForUpdates?: () => Promise<void>;
-	readonly desktopUpdates?: Pick<DshDesktopUpdateController, 'snapshot' | 'onDidChange' | 'checkForUpdates' | 'skip'>;
+	readonly desktopUpdates?: Pick<DshDesktopUpdateController, 'snapshot' | 'onDidChange' | 'checkForUpdates' | 'confirmUpdate' | 'retry' | 'skip'>;
 	/** Native update service feed; preserves the installed user/system/archive target. */
 	readonly getAppUpdateFeedUrl?: () => string | undefined;
 }
@@ -440,9 +440,18 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			if (command.method === 'desktopUpdateStatus') {
 				return { handled: true, result: this._desktopUpdates?.snapshot.presentation ?? { phase: 'error', failure: 'configuration' } };
 			}
-			if (command.method === 'desktopUpdateOpen' || command.method === 'appUpdateCheck' || command.method === 'upgradeApp' || command.method === 'appUpdateInstall') {
+			// dsh 通知卡片的按钮：`open()`/「更新」/「重新启动并安装」是**已确认的动作** ⇒
+			// 直接推进下载 / 安装 / 重启，不再弹 IDE messagebox 做二次确认。
+			if (command.method === 'desktopUpdateOpen' || command.method === 'upgradeApp' || command.method === 'appUpdateInstall') {
 				if (!this._desktopUpdates) { throw new Error('更新服务不可用'); }
-				await this._desktopUpdates.checkForUpdates();
+				await this._desktopUpdates.confirmUpdate();
+				return { handled: true };
+			}
+			// 「重试」：失败发生在下载/安装阶段时重做该动作，否则重新检查。
+			// 面板的「检查更新」走 DshHarnessService.checkAppUpdate()（只检查），不在这里。
+			if (command.method === 'appUpdateCheck') {
+				if (!this._desktopUpdates) { throw new Error('更新服务不可用'); }
+				await this._desktopUpdates.retry();
 				return { handled: true };
 			}
 			if (command.method === 'appUpdateSkip') {
@@ -1501,7 +1510,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			case DshHarnessChannelCommand.DesktopUpdateStatus:
 				return this._desktopUpdates?.snapshot;
 			case DshHarnessChannelCommand.DesktopUpdateOpen:
-				await this._desktopUpdates?.checkForUpdates();
+				// IDE 内嵌视图的 fallback：`upgradeApp` / `installAppUpdate` 带 confirm，
+				// `checkAppUpdate` 不带 ⇒ 一条通道同时表达「执行动作」和「只检查」。
+				await (arg?.confirm === true ? this._desktopUpdates?.confirmUpdate() : this._desktopUpdates?.checkForUpdates());
 				return undefined;
 			case DshHarnessChannelCommand.DesktopUpdateSkip:
 				if (typeof arg?.version === 'string') { await this._desktopUpdates?.skip(arg.version); }

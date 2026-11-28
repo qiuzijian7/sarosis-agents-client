@@ -7,7 +7,10 @@ import type { IDesktopUpdateSnapshot } from './dshDesktopUpdate.js';
 export const DSH_UPDATE_STANDBY_ACTION = 'vssaros-update-standby://open';
 const escape = (value: string): string => value.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!));
 
-/** Host-independent read-only fallback. The only action opens the existing native confirmation flow. */
+/**
+ * 后台安装**不再自动加载本页**（整页会盖住 dsh UI、且可能卡在 100%）。
+ * 保留纯函数与固定动作判据供历史/外部页面使用；状态统一由页内通知卡片呈现。
+ */
 export function updateStandbyHtml(snapshot?: IDesktopUpdateSnapshot): string {
 	const phase = snapshot?.presentation.phase;
 	const restartReady = phase === 'ready' && snapshot?.restartReady === true;

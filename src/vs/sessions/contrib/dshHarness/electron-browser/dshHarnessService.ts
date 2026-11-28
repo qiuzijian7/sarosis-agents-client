@@ -2124,7 +2124,8 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	public async upgradeApp(): Promise<void> {
-		await this._channel.call<void>(DshHarnessChannelCommand.DesktopUpdateOpen);
+		// 页面回退路径（没有 dshDesktop.updates 桥时）：这颗按钮是用户已确认的「更新」动作。
+		await this._channel.call<void>(DshHarnessChannelCommand.DesktopUpdateOpen, { confirm: true });
 	}
 
 	public async upgradeAsset(kind: string, slug: string): Promise<{ ok: boolean; error?: string }> {
@@ -2212,7 +2213,10 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		this._appUpdateStatus = {
 			phase: snapshot.app.phase ?? 'idle', currentVersion: snapshot.app.current,
 			availableVersion: snapshot.app.availableVersion, percent: snapshot.app.percent,
-			message: snapshot.app.error, releaseNotes: snapshot.app.releaseNotes, manual: false,
+			message: snapshot.app.error, releaseNotes: snapshot.app.releaseNotes,
+			// 显式检查 / 失败反馈只由 dsh 通知卡片呈现 ⇒ manual 与呈现编号不能在这里丢掉。
+			manual: snapshot.app.manual === true,
+			...(snapshot.app.presentationId !== undefined ? { presentationId: snapshot.app.presentationId } : {}),
 		};
 		void this._pushUpgradeToAll();
 	}
@@ -2226,7 +2230,8 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	public async installAppUpdate(): Promise<void> {
-		await this._channel.call<void>(DshHarnessChannelCommand.DesktopUpdateOpen);
+		// 卡片「重新启动并安装」的回退路径：同样不再经过 IDE 的确认弹窗。
+		await this._channel.call<void>(DshHarnessChannelCommand.DesktopUpdateOpen, { confirm: true });
 	}
 
 	/** 算一份全量升级状态（不联网；`app` 用最近一次的结论）。 */

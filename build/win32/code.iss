@@ -1372,6 +1372,8 @@ begin
   Result := '{#VersionedResourcesFolder}' <> '';
 end;
 
+#include "update-lock-guard.iss"
+
 // Don't allow installing conflicting architectures
 function InitializeSetup(): Boolean;
 var
@@ -1379,7 +1381,8 @@ var
   ThisArch: String;
   AltArch: String;
 begin
-  Result := True;
+  Result := CaptureUpdateOwner();
+  if not Result then exit;
 
   #if "user" == InstallTarget
     if not WizardSilent() and IsAdmin() then begin
@@ -1584,6 +1587,10 @@ end;
 
 function ShouldRunAfterUpdate(): Boolean;
 begin
+  if UpdateReplacementFailed then begin
+    Result := False;
+    exit;
+  end;
   if IsBackgroundUpdate() then
 #ifdef ProxyMutex
     Result := (not LockFileExists()) and AppWasRunning
@@ -1945,9 +1952,18 @@ begin
       Log('Application appears not to be running.');
 
       if not SessionEndFileExists() and not CancelFileExists() then begin
+        UpdateReplacementFailed := True;
+        if not WaitForUpdateOwnerExit() then
+          RaiseException('Application exit was not confirmed or update was cancelled. Replacement was not started.');
         StopTunnelServiceIfNeeded();
+        if not WaitForUpdateArchiveUnlock() then
+          RaiseException('Application files are still in use or update was cancelled. Close the application before retrying.');
         Log('Invoking inno_updater for background update');
-        Exec(ExpandConstant('{app}\{#VersionedResourcesFolder}\tools\inno_updater.exe'), ExpandConstant('"{app}\{#ExeBasename}.exe" ' + BoolToStr(LockFileExists()) + ' "{cm:UpdatingVisualStudioCode}"' {#ifdef ProxyExeBasename} + ' "{#ProxyExeBasename}.exe"' {#endif}), '', SW_SHOW, ewWaitUntilTerminated, UpdateResultCode);
+        if not Exec(ExpandConstant('{app}\{#VersionedResourcesFolder}\tools\inno_updater.exe'), ExpandConstant('"{app}\{#ExeBasename}.exe" ' + BoolToStr(LockFileExists()) + ' "{cm:UpdatingVisualStudioCode}"' {#ifdef ProxyExeBasename} + ' "{#ProxyExeBasename}.exe"' {#endif}), '', SW_SHOW, ewWaitUntilTerminated, UpdateResultCode) then
+          RaiseException('Unable to start inno_updater: ' + IntToStr(UpdateResultCode));
+        if UpdateResultCode <> 0 then
+          RaiseException('inno_updater failed with exit code ' + IntToStr(UpdateResultCode));
+        UpdateReplacementFailed := False;
         DeleteFile(ExpandConstant('{app}\updating_version'));
         Log('inno_updater completed successfully');
         #if "system" == InstallTarget

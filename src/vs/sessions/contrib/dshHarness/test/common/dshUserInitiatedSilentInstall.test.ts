@@ -12,6 +12,7 @@
  *   ③ 安装器使用 /verysilent 后台更新协议，兜底路径也不许退回 /silent；
  *   ④ Ready 状态仍弹重启提示，文案改成「已安装完成」；
  *   ⑤ update.mode 保持 manual，避免把本次需求误做成自动更新。
+ *   ⑦ 后台安装的 -ready mutex 必须与 Inno 的 AppMutex 对齐（否则进度停在 100% 直到超时）。
  *
  * 运行：node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs dshUserInitiatedSilentInstall
  */
@@ -110,5 +111,20 @@ suite('用户点击更新后必须后台静默安装，完成后提示重启', (
 	test('⑥ update.mode 保持 manual：不是自动更新', () => {
 		const cfg = read(UPDATE_CONFIG);
 		assert.match(cfg, /default: 'manual'/, '用户点击前不许自动检查/自动安装');
+	});
+
+	test('⑦ 后台安装的 -ready 信号必须对齐 Inno 的 AppMutex，且进度文件消失可兜底', () => {
+		const src = stripComments(read(WIN32_UPDATE));
+		assert.match(src, /win32SetupMutexName\s*\?\?\s*this\.productService\.win32MutexName/,
+			'main.ts 无条件设 isEmbeddedApp=true 而 product.json 没有 win32SetupMutexName ⇒ 必须回退 ✗');
+		const product = JSON.parse(read('product.json')) as { win32MutexName?: string; win32SetupMutexName?: string };
+		assert.ok(product.win32MutexName, 'product.json 必须提供 win32MutexName');
+		assert.strictEqual(product.win32SetupMutexName, undefined, '本产品没有 embedded overlay，不该有 win32SetupMutexName');
+		assert.match(read('build/gulpfile.vscode.win32.ts'), /AppMutex: product\.win32MutexName/,
+			'Inno 创建的是 `${win32MutexName}-ready` ✗');
+		assert.match(src, /let sawProgress = false;/);
+		assert.match(src, /\(error as NodeJS\.ErrnoException\)\.code === 'ENOENT'/,
+			'Inno 在 ssPostInstall 删掉进度文件，必须作为不依赖 mutex 名字的第二 ready 信号 ✗');
+		assert.match(src, /progress file removed before -ready mutex was observed/);
 	});
 });

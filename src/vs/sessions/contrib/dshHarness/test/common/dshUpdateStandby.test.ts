@@ -47,58 +47,76 @@ function fixture() {
 	let probes = 0;
 	let loads = 0;
 	let reloads = 0;
-	const names = ['beginAppUpdate', 'appUpdatePreparationFailed', 'pushDesktopUpdate', 'setConnection', '_showHostUnavailable', '_checkPageAlive'];
+	const sends: Array<[string, unknown]> = [];
+	const upgrades: string[] = [];
+	const names = ['beginAppUpdate', 'appUpdatePreparationFailed', 'pushDesktopUpdate', 'setConnection', '_showHostUnavailable', '_checkPageAlive', '_pageOrigin', '_pushAppUpdateToSlot'];
 	const code = ts.transpileModule(`class Host { ${methods(VIEW, names)} } globalThis.Host = Host;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 	interface Slot { id: string; visible: boolean; view: { webContents: object }; blankChecks?: number; updateStandbyUrl?: string }
 	interface Host {
-		_views: Map<string, Slot>; _connection: object | undefined; _appUpdateSuspended: boolean; _desktopUpdate?: IDesktopUpdateSnapshot;
+		_views: Map<string, Slot>; _connection: object | undefined; _lastHostOrigin?: string; _appUpdateSuspended: boolean; _desktopUpdate?: IDesktopUpdateSnapshot;
 		beginAppUpdate(): void; appUpdatePreparationFailed(): void; pushDesktopUpdate(value: IDesktopUpdateSnapshot): void;
 		setConnection(value: object | undefined): void; _checkPageAlive(slot: Slot): Promise<void>;
 	}
 	const context = {
 		Host: undefined as unknown as { new(): Host },
 		updateStandbyUrl, isUpdateStandbyAction, sameAuthConnection: (a: object, b: object) => a === b,
+		DSH_DESKTOP_UPDATE_IPC: 'vssaros:dsh:desktop-update',
 		resetViewLoadRetry: () => ({}), setInterval: () => 1, clearInterval() {}, AUTH_REFRESH_INTERVAL_MS: 100,
 	};
 	vm.runInNewContext(code, context);
 	const host = new context.Host();
-	const wc = { isDestroyed: () => false, getURL: () => url, mainFrame: { origin: 'http://127.0.0.1:12333' }, send() {},
+	const wc = { isDestroyed: () => false, getURL: () => url, mainFrame: { origin: 'http://127.0.0.1:12333' },
+		send: (channel: string, value: unknown) => { sends.push([channel, value]); },
 		loadURL: async (value: string) => { loads++; url = value; }, executeJavaScript: async () => { probes++; return false; } };
 	const slot = { id: 'desktop', visible: true, view: { webContents: wc } };
-	Object.assign(host, { _views: new Map([[slot.id, slot]]), _connection: {}, _appUpdateSuspended: false,
+	Object.assign(host, { _views: new Map([[slot.id, slot]]), _connection: { origin: 'http://127.0.0.1:12333' },
+		_lastHostOrigin: 'http://127.0.0.1:12333', _appUpdateSuspended: false,
 		_authWarmup: { setConnection() {} }, prefetchAuth() {}, _load() { reloads++; },
-		_logService: { info() {}, warn() {} }, pushUpgrade() {} });
-	return { host, slot, url: () => url, counts: () => ({ probes, loads, reloads }) };
+		_logService: { info() {}, warn() {} }, pushUpgrade(viewId: string) { upgrades.push(viewId); } });
+	return { host, slot, url: () => url, counts: () => ({ probes, loads, reloads }), sends, upgrades };
 }
 
-suite('更新停机的本地状态页', () => {
-	test('Host停止、更新Ready但未点击任何按钮仍有可见页面，稍后确认也不白屏', async () => {
+suite('更新在后台安装，不遮挡页面 UI', () => {
+	test('Host停止、更新Ready但未点击任何按钮都保留原页面，状态只推给页内通知卡片', async () => {
 		const f = fixture();
 		f.host.pushDesktopUpdate(snapshot('installing'));
 		f.host.beginAppUpdate();
 		f.host.setConnection(undefined);
-		assert.ok(decodeURIComponent(f.url()).includes('正在准备或安装更新'));
+		assert.strictEqual(f.url(), 'http://127.0.0.1:12333/');
+		assert.strictEqual(f.counts().loads, 0, '后台安装不许加载全屏本地状态页');
 		f.host.pushDesktopUpdate(snapshot('ready', true));
-		const readyUrl = f.url();
-		assert.ok(decodeURIComponent(readyUrl).includes('更新已安装，等待重启'));
 		for (let i = 0; i < 10; i++) { await f.host._checkPageAlive(f.slot); }
-		assert.strictEqual(f.url(), readyUrl);
-		assert.deepStrictEqual(f.counts(), { probes: 0, loads: 2, reloads: 0 });
-		f.host.pushDesktopUpdate(snapshot('ready', true));
-		assert.strictEqual(f.counts().loads, 2, 'Identical snapshots must not navigate again');
+		assert.deepStrictEqual(f.counts(), { probes: 0, loads: 0, reloads: 0 });
+		assert.ok(f.sends.some(([channel, value]) => channel === 'vssaros:dsh:desktop-update' && (value as { phase?: string }).phase === 'ready'));
+		assert.ok(f.upgrades.includes('desktop'), '全量升级状态必须推给页面（通知卡片据此重画）');
 	});
 
-	test('安装准备失败/取消也留可见反馈；真实新连接才恢复Host页面', async () => {
+	test('安装准备失败/取消也只推错误状态；真实新连接才恢复Host页面', async () => {
 		const f = fixture();
+		f.host.pushDesktopUpdate(snapshot('installing'));
 		f.host.beginAppUpdate();
 		f.host.setConnection(undefined);
 		f.host.appUpdatePreparationFailed();
-		assert.ok(decodeURIComponent(f.url()).includes('更新未完成'));
+		assert.strictEqual(f.counts().loads, 0);
+		assert.strictEqual(f.url(), 'http://127.0.0.1:12333/');
+		assert.ok(f.sends.some(([, value]) => (value as { phase?: string }).phase === 'error'));
+		assert.strictEqual(f.host._desktopUpdate?.app.error, '会话服务未能安全停止，安装已中止');
 		f.host.pushDesktopUpdate(snapshot('idle'));
-		assert.ok(decodeURIComponent(f.url()).includes('更新已停止'));
+		assert.ok(f.sends.some(([, value]) => (value as { phase?: string }).phase === 'idle'));
 		f.host.setConnection({ origin: 'http://127.0.0.1:12334' });
 		assert.strictEqual(f.host._appUpdateSuspended, false);
 		assert.strictEqual(f.counts().reloads, 1);
+	});
+
+	test('页面本身已不可用时也不换页（绝不加载全屏状态页）', () => {
+		const f = fixture();
+		f.host.pushDesktopUpdate(snapshot('installing'));
+		f.host.beginAppUpdate();
+		(f.slot.view.webContents as { mainFrame: { origin: string } }).mainFrame.origin = 'about:blank';
+		f.host.setConnection(undefined);
+		assert.strictEqual(f.url(), 'http://127.0.0.1:12333/');
+		assert.strictEqual(f.counts().loads, 0);
+		assert.strictEqual(f.slot.updateStandbyUrl, undefined);
 	});
 
 	test('Downloaded与安装Ready不同；本地页无脚本/网络资源和假进度', () => {
@@ -152,6 +170,8 @@ suite('更新停机的本地状态页', () => {
 		assert.match(source, /_appUpdateSuspended && !this\._connection/);
 		assert.match(source, /if \(!slot\.visible \|\| !this\._connection\)/);
 		assert.match(source, /isUpdateStandbyAction\(/);
+		assert.ok(!methods(VIEW, ['_showHostUnavailable']).includes('updateStandbyUrl('),
+			'后台安装路径不许再生成/加载全屏状态页 ✗');
 		assert.match(source, /_pageCommandHandler\?\.\(\{ method: 'desktopUpdateOpen' \}, slot\.id\)/);
 		assert.match(source, /frame\.parent === null && frame\.origin === this\._connection\.origin/);
 	});

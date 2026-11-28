@@ -4179,39 +4179,40 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	/**
-	 * 读一个包目录的**入口文件**内容（入口名取 `package.json` 的 `main`，缺省 `lib/index.js`）；
-	 * 读不到返回 `undefined`。
-	 *
-	 * ★ 2026-10-29：**读出来先归一化换行与 BOM**（CRLF→LF、去 UTF-8 BOM）。
-	 *
-	 * 为什么：指纹（{@link _entryFingerprint}）与"内容是否一致"（{@link _installedEntryMatches}）都按
-	 * **字节**比 ⇒ Windows 上工作区与打包产物是 CRLF、git 里是 LF ⇒ **内容其实逐行相同**却被判成
-	 * "同版本但内容变了" ⇒ 每次启动都强制重装 ⇒ `_pluginsStale` ⇒ 不复用常驻 Host ⇒ 每次都冷启。
-	 * 真机现场：`@vssaros/dsh-kb@0.5.58` 每次启动都 `installing ... (was 0.5.58)`
-	 * （随包 574605 字节 CRLF vs 仓库 565802 字节 LF，长度差 8803 = 行数 ⇒ 逐行完全相同）。
-	 *
-	 * ⚠ 归一化放在**这里**（而不是两个调用点各写一份）⇒ 指纹与内容判据天然同口径，
-	 *   不会出现"指纹说变了、判据说没变"这种自己跟自己打架的组合（这正是本函数被抽出来的原因 ✓）。
+	 * 读取入口及其目录内的 JS 模块，按相对路径排序并统一换行与 BOM。
+	 * 同版本的 codebuddy.js 等子模块变更也必须触发同步；不扫描依赖、开发工作区和二进制资源。
+	 * 任一文件读不到返回 undefined；内容比对与暂存指纹共用这份快照。
 	 */
 	private _readEntryFile(dir: string): string | undefined {
 		try {
 			const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
 			const main = typeof pkg?.main === 'string' && pkg.main ? pkg.main : join('lib', 'index.js');
-			const rel = main.replace(/^\.\//, '');
-			return normalizeEntryText(readFileSync(join(dir, rel), 'utf8'));
+			const rel = main.replace(/\\/g, '/').replace(/^\.\//, '');
+			const files = new Set<string>([rel]);
+			const devWorkspace = existsSync(join(dir, 'dev', 'package.json'));
+			const walk = (subdir: string): void => {
+				for (const entry of readdirSync(join(dir, subdir), { withFileTypes: true })) {
+					if (entry.name === 'node_modules' || entry.name.startsWith('.') || (devWorkspace && subdir === '.' && entry.name === 'dev')) {
+						continue;
+					}
+					const file = subdir === '.' ? entry.name : `${subdir}/${entry.name}`;
+					if (entry.isDirectory()) {
+						walk(file);
+					} else if ((entry.isFile() || entry.isSymbolicLink()) && /\.[cm]?js$/.test(entry.name)) {
+						files.add(file);
+					}
+				}
+			};
+			walk(dirname(rel));
+			return JSON.stringify([...files].sort().map(file => [file, normalizeEntryText(readFileSync(join(dir, file), 'utf8'))]));
 		} catch {
 			return undefined;
 		}
 	}
 
 	/**
-	 * 入口内容的**短指纹**（sha1 前 8 位）—— 进暂存目录名，让"同版本、内容变了"的插件换一个 spec 路径
-	 * ⇒ pnpm 才会真的替换那份副本（现场与缘由见 {@link _stagePlugin} 的长注释）。
-	 *
-	 * 为什么用**入口文件**而不是整目录哈希：判据要与"已装副本是否陈旧"**用同一个定义**（就是上面那个
-	 * 入口读取）—— 两边一致时，"指纹没变 ⇔ 判定阶段认为内容没变"，不会出现"指纹说变了、判定说没变"
-	 * 这种自己跟自己打架的组合。整目录哈希（几十 MB、含 wasm）另有多倍 I/O 代价，且会把包内**构建产物
-	 * 之外**的无关差异（如日志、缓存文件）算进来 ⇒ 白重装。
+	 * 入口及 JS 模块快照的短指纹（sha1 前 8 位），与内容比对共用 _readEntryFile。
+	 * 子模块内容变化也会改变暂存 spec 路径，避免 pnpm 同版本 no-op；不读取二进制资源。
 	 */
 	private _entryFingerprint(dir: string): string | undefined {
 		const text = this._readEntryFile(dir);

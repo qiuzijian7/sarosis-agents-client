@@ -86,8 +86,11 @@ export function desktopUpdatePresentation(state: State, previous: IDesktopUpdate
 	}
 }
 
-/** Legacy cards are read-only replicas; manual dialogs belong to the native controller. */
-export function desktopUpdateAppState(state: State, presentation: IDesktopUpdatePresentation, current: string, skippedVersion?: string): IDshUpgradeAppState {
+/**
+ * 应用更新快照的 `app` 段：dsh 通知卡片是**唯一 UI**，因此显式检查的
+ * `manual` / `presentationId` 也必须原样带给卡片（否则「已是最新 / 失败」没有反馈）。
+ */
+export function desktopUpdateAppState(state: State, presentation: IDesktopUpdatePresentation, current: string, skippedVersion?: string, manual = false, presentationId?: number): IDshUpgradeAppState {
 	const phase = presentation.phase === 'ready' ? 'downloaded'
 		: presentation.phase === 'installing' || presentation.phase === 'verifying' ? 'downloading'
 			: state.type === StateType.Disabled ? 'unsupported'
@@ -96,7 +99,8 @@ export function desktopUpdateAppState(state: State, presentation: IDesktopUpdate
 		current,
 		action: presentation.version ? 'upgrade' : phase === 'up-to-date' ? 'uptodate' : 'unknown',
 		phase,
-		manual: false,
+		manual,
+		...(manual && presentationId !== undefined ? { presentationId } : {}),
 		availableVersion: presentation.version,
 		remote: presentation.version,
 		percent: presentation.percent,

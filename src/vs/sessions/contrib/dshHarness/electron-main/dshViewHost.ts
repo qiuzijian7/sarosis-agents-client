@@ -32,7 +32,7 @@ import { dshDesktopEditingKeys, isDshDesktopMenuAction, type DshDesktopMenuActio
 import { resolveViewUrl } from '../common/dshPluginPage.js';
 import { DshAuthWarmup, sameAuthConnection } from '../common/dshAuthWarmup.js';
 import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
-import { isUpdateStandbyAction, updateStandbyUrl } from '../common/dshUpdateStandby.js';
+import { isUpdateStandbyAction } from '../common/dshUpdateStandby.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
 import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_THEME_SOURCE, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_UPGRADE, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageCommand, DshPageEvent, DshPageThemeSource, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshUpgradeState, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
 import { DSH_DESKTOP_UPDATE_IPC, IDesktopUpdateSnapshot, mergeDesktopUpdateReplica } from '../common/dshDesktopUpdate.js';
@@ -642,10 +642,31 @@ export class DshViewHost extends Disposable {
 	/** 桌面池分区的序号（单调递增 ⇒ 分区名不复用 ⇒ 不会撞上旧 cookie）。 */
 	private _desktopPoolSeq = 0;
 	private _connection: IDshHostConnection | undefined;
+	/** 最近一次 Host 连接的 origin：安装期间 Host 已停，但页面仍是它的页面 ⇒ 页内通知卡片还能收 IPC。 */
+	private _lastHostOrigin: string | undefined;
 	private _desktopUpdate: IDesktopUpdateSnapshot | undefined;
 	private _appUpdateSuspended = false;
 	private _appUpdatePreparationFailed = false;
 	private _upgradeSeq = 0;
+
+	/** 当前页面归属的 Host：正常取连接，安装停机期间取最后一次连接。 */
+	private _pageOrigin(): string | undefined {
+		return this._connection?.origin ?? (this._appUpdateSuspended ? this._lastHostOrigin : undefined);
+	}
+
+	/**
+	 * 后台安装：把更新状态推给**当前已加载的 dsh 页面**（页内通知卡片），不换整页。
+	 * @returns 页面可接收时为 true；页面已不是 Host 页面时由调用方决定退路。
+	 */
+	private _pushAppUpdateToSlot(slot: IViewSlot, snapshot: IDesktopUpdateSnapshot | undefined): boolean {
+		if (!snapshot) { return false; }
+		const wc = slot.view.webContents;
+		const origin = this._pageOrigin();
+		if (wc.isDestroyed() || !origin || wc.mainFrame.origin !== origin) { return false; }
+		wc.send(DSH_DESKTOP_UPDATE_IPC, snapshot.presentation);
+		this.pushUpgrade(slot.id, slot.lastUpgrade ?? { at: Date.now(), app: snapshot.app, runtime: {}, bundled: [], assets: [] });
+		return true;
+	}
 
 	beginAppUpdate(): void {
 		this._appUpdateSuspended = true;
@@ -655,21 +676,24 @@ export class DshViewHost extends Disposable {
 
 	appUpdatePreparationFailed(): void {
 		this._appUpdatePreparationFailed = true;
-		if (this._connection) { this._appUpdateSuspended = false; }
-		else { for (const slot of this._views.values()) { this._showHostUnavailable(slot); } }
+		const failure: IDesktopUpdateSnapshot = {
+			seq: (this._desktopUpdate?.seq ?? 0) + 1,
+			presentation: { phase: 'error', failure: 'stop-failed' },
+			app: { ...(this._desktopUpdate?.app ?? { current: '', action: 'unknown' as const }), phase: 'error', error: '会话服务未能安全停止，安装已中止' },
+		};
+		this._desktopUpdate = failure;
+		if (this._connection) {
+			this._appUpdateSuspended = false;
+			for (const slot of this._views.values()) { this._pushAppUpdateToSlot(slot, failure); }
+		} else { for (const slot of this._views.values()) { this._showHostUnavailable(slot); } }
 	}
 
 	pushDesktopUpdate(snapshot: IDesktopUpdateSnapshot): void {
 		this._desktopUpdate = snapshot;
 		this._appUpdatePreparationFailed = false;
 		for (const slot of this._views.values()) {
-			const wc = slot.view.webContents;
-			if (this._appUpdateSuspended && !this._connection) {
-				this._showHostUnavailable(slot);
-			} else if (!wc.isDestroyed() && wc.mainFrame.origin === this._connection?.origin) {
-				wc.send(DSH_DESKTOP_UPDATE_IPC, snapshot.presentation);
-				this.pushUpgrade(slot.id, slot.lastUpgrade ?? { at: Date.now(), app: snapshot.app, runtime: {}, bundled: [], assets: [] });
-			}
+			if (this._pushAppUpdateToSlot(slot, snapshot)) { continue; }
+			if (this._appUpdateSuspended && !this._connection) { this._showHostUnavailable(slot); }
 		}
 	}
 
@@ -880,6 +904,7 @@ export class DshViewHost extends Disposable {
 		}
 		this._authRefreshed = false;
 		if (connection) {
+			this._lastHostOrigin = connection.origin;
 			this._appUpdateSuspended = false;
 			this._appUpdatePreparationFailed = false;
 			this._authTimer = setInterval(() => void this._refreshAuth(), AUTH_REFRESH_INTERVAL_MS);
@@ -1341,7 +1366,8 @@ export class DshViewHost extends Disposable {
 		const seq = ++this._upgradeSeq;
 		state = this._desktopUpdate ? mergeDesktopUpdateReplica(state, this._desktopUpdate, seq) : { ...state, at: Date.now(), seq };
 		slot.lastUpgrade = state;
-		if (!slot.view.webContents.isDestroyed() && slot.view.webContents.mainFrame.origin === this._connection?.origin) {
+		// 安装停机期间 `_connection` 为空，但页面仍是上一次 Host 的页面 ⇒ 通知卡片照样要收到状态。
+		if (!slot.view.webContents.isDestroyed() && slot.view.webContents.mainFrame.origin === this._pageOrigin()) {
 			slot.view.webContents.send(DSH_PAGE_IPC_UPGRADE, state);
 		}
 	}
@@ -1832,20 +1858,13 @@ export class DshViewHost extends Disposable {
 			return;
 		}
 		if (this._appUpdateSuspended && !this._connection) {
-			const snapshot = this._appUpdatePreparationFailed ? {
-				seq: 0, presentation: { phase: 'error' as const, failure: 'stop-failed' as const },
-				app: { current: '', action: 'unknown' as const },
-			} : this._desktopUpdate;
-			const url = updateStandbyUrl(snapshot);
-			if (slot.updateStandbyUrl === url && wc.getURL() === url) { return; }
-			slot.updateStandbyUrl = url;
+			// 后台安装：**任何情况下都不再加载全屏本地状态页**（2026-11-28 用户要求）。
+			// 页面仍是 Host 页面时把状态推给 dsh 页内通知卡片；页面已不可用时不换页，
+			// 最多留原样（about:blank / 占位），避免整页盖住窗口、并把 100% 状态页卡住。
 			slot.blankChecks = 0;
-			this._logService.info(`[dshHarness] view ${slot.id} → 本地更新状态页（Host 已暂停，等待用户确认）`);
-			void wc.loadURL(url).catch(error => {
-				if ((error as { errno?: number }).errno !== -3 && !wc.isDestroyed()) {
-					this._logService.warn(`[dshHarness] update standby page failed: ${(error as Error).message}`);
-				}
-			});
+			slot.updateStandbyUrl = undefined;
+			const pushed = this._pushAppUpdateToSlot(slot, this._desktopUpdate);
+			this._logService.info(`[dshHarness] view ${slot.id} 保留当前页面：更新后台安装（卡片状态${pushed ? '已推送' : '不可推送，页面非 Host 页'}）`);
 			return;
 		}
 		if (!slot.pageSurface) {

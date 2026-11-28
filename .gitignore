@@ -116,6 +116,9 @@ venv/
 .vs/*
 .workbuddy/*
 build/*
+!build/win32/
+build/win32/*
+!build/win32/update-lock-guard.iss
 !build/lib/
 build/lib/*
 !build/lib/test/

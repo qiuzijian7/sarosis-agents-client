@@ -513,6 +513,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 				'/verysilent',
 				'/log',
 				`/update="${this.availableUpdate.updateFilePath}"`,
+				`/updatepid=${process.pid}`,
 				`/progress="${progressFilePath}"`,
 				`/sessionend="${sessionEndFlagPath}"`,
 				`/cancel="${cancelFilePath}"`,
@@ -530,16 +531,28 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		// Track the process so we can cancel it if needed
 		this.availableUpdate.updateProcess = child;
 
-		child.once('exit', () => {
+		child.once('error', error => {
+			if (this.availableUpdate !== availableUpdate) { return; }
 			this.availableUpdate = undefined;
-			this.setState(State.Idle(getUpdateType()));
+			this.logService.error('update#installer failed to start', error);
+			this.setState(State.Idle(getUpdateType(), `install: ${error.message}`));
+		});
+		child.once('exit', (code, signal) => {
+			if (this.availableUpdate !== availableUpdate || this.state.type === StateType.Restarting) { return; }
+			this.availableUpdate = undefined;
+			const failed = code !== 0 || signal !== null || (this.state as State).type === StateType.Updating;
+			this.setState(State.Idle(getUpdateType(), failed ? `install: installer exited before completion (code ${code}, signal ${signal ?? 'none'})` : undefined));
 		});
 
 		// The InnoSetup installer creates the -ready mutex using the host app's
 		// mutex name ({#AppMutex}). When running as the embedded app, use
 		// win32SetupMutexName (the host's mutex) to find the correct signal.
+		// ⚠ vssaros: `main.ts` 无条件把 `isEmbeddedApp` 设为 true，但 product.json **没有**
+		//   `win32SetupMutexName`（它只在 embedded overlay 的 product.sub.json 里生成）。
+		//   不回退 ⇒ readyMutexName = "undefined-ready" ⇒ 安装器写完 100% 后永远等不到信号，
+		//   UI 卡在「安装进度 100%」直到 1 小时超时（真机 2026-11-28）。
 		const setupMutexName = (process as INodeProcess).isEmbeddedApp
-			? this.productService.win32SetupMutexName
+			? this.productService.win32SetupMutexName ?? this.productService.win32MutexName
 			: this.productService.win32MutexName;
 		const readyMutexName = `${setupMutexName}-ready`;
 		const mutex = await import('@vscode/windows-mutex');
@@ -548,6 +561,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		const cts = this.updateCancellationTokenSource = new CancellationTokenSource();
 		const token = cts.token;
 
+		let sawProgress = false;
 		const poll = async () => {
 			while (this.state.type === StateType.Updating && !token.isCancellationRequested) {
 				if (mutex.isActive(readyMutexName)) {
@@ -562,12 +576,21 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 						const currentProgress = parseInt(currentStr, 10);
 						const maxProgress = parseInt(maxStr, 10);
 						if (!isNaN(currentProgress) && !isNaN(maxProgress) && this.state.type === StateType.Updating) {
+							sawProgress = true;
 							if (this.state.currentProgress !== currentProgress || this.state.maxProgress !== maxProgress) {
 								this.setState(State.Updating(update, explicit, currentProgress, maxProgress));
 							}
 						}
 					}
-				} catch {
+				} catch (error) {
+					// Inno 在 ssPostInstall 创建 -ready mutex 后立刻删掉进度文件：
+					// 万一 mutex 名字再次漂移，这个「进度文件消失」是不依赖名字的第二信号，
+					// 避免安装器写完 100% 后 UI 一直卡到一小时超时。
+					if (sawProgress && (error as NodeJS.ErrnoException).code === 'ENOENT' && this.state.type === StateType.Updating) {
+						this.logService.warn('update#doApplyUpdate: progress file removed before -ready mutex was observed; treating installer as ready');
+						this.setState(State.Ready(update, explicit, this._overwrite));
+						return;
+					}
 					// Progress file may not exist yet or be locked, ignore
 				}
 

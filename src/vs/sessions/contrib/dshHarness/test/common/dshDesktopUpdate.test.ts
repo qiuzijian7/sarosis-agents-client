@@ -121,7 +121,7 @@ suite('统一 Desktop 更新桥', () => {
 			async checkForUpdates() { calls.push('check'); }, async downloadUpdate() { calls.push('download'); },
 			async applyUpdate() { calls.push('install'); }, async quitAndInstall() { calls.push('restart'); },
 		};
-		const controller = new DshDesktopUpdateController(service, async () => { calls.push('dialog'); return { response: 1, checkboxChecked: false }; }, () => { }, { currentVersion: '1.0.0' });
+		const controller = new DshDesktopUpdateController(service, () => { }, { currentVersion: '1.0.0' });
 		try {
 			const first = controller.snapshot;
 			const phases: string[] = [];
@@ -136,7 +136,7 @@ suite('统一 Desktop 更新桥', () => {
 		} finally { controller.dispose(); emitter.dispose(); }
 	});
 
-	test('已下载更新准备失败后可直接重试安装，不重新检查或下载', async () => {
+	test('已下载更新准备失败后可由通知卡片直接重试安装，不重新检查或下载', async () => {
 		const emitter = new Emitter<State>();
 		let failed = true;
 		const calls: string[] = [];
@@ -147,17 +147,17 @@ suite('统一 Desktop 更新桥', () => {
 			async applyUpdate() { calls.push('apply'); if (failed) { throw new Error('tasks-changed: running'); } },
 			async quitAndInstall() { calls.push('must not restart'); },
 		};
-		const controller = new DshDesktopUpdateController(service, async () => ({ response: 0, checkboxChecked: false }), () => { });
+		const controller = new DshDesktopUpdateController(service, () => { });
 		try {
-			await controller.checkForUpdates();
+			await controller.confirmUpdate();
 			assert.strictEqual(controller.snapshot.presentation.failure, 'tasks-changed');
 			failed = false;
-			await controller.checkForUpdates();
+			await controller.confirmUpdate();
 			assert.deepStrictEqual(calls, ['apply', 'apply']);
 		} finally { controller.dispose(); emitter.dispose(); }
 	});
 
-	test('后台检查不下载不弹窗，控制器安装准备失败保留错误分类及可重读详情', async () => {
+	test('后台检查不下载；显式检查只推卡片状态；卡片确认下载失败只落快照和日志', async () => {
 		const emitter = new Emitter<State>();
 		const calls: string[] = [];
 		const service = {
@@ -166,15 +166,32 @@ suite('统一 Desktop 更新桥', () => {
 			async downloadUpdate() { throw new Error('tasks-unavailable: bridge down'); },
 			async applyUpdate() { }, async quitAndInstall() { },
 		};
-		const controller = new DshDesktopUpdateController(service, async () => { calls.push('dialog'); return { response: 0, checkboxChecked: false }; }, () => { });
+		const controller = new DshDesktopUpdateController(service, () => { });
 		try {
 			await controller.checkForUpdates(false);
 			assert.deepStrictEqual(calls, ['check:false']);
 			service.state = State.AvailableForDownload(update);
 			emitter.fire(service.state);
+			assert.strictEqual(controller.snapshot.app.manual, false);
 			await controller.checkForUpdates();
+			await flush();
+			assert.deepStrictEqual(calls, ['check:false'], '显式检查不许自动下载，也不弹确认框');
+			assert.strictEqual(controller.snapshot.app.manual, true);
+			await controller.confirmUpdate();
 			await flush();
 			assert.deepStrictEqual({ phase: controller.snapshot.presentation.phase, failure: controller.snapshot.presentation.failure, error: controller.snapshot.app.error }, { phase: 'error', failure: 'tasks-unavailable', error: 'tasks-unavailable: bridge down' });
 		} finally { controller.dispose(); emitter.dispose(); }
+	});
+
+	test('页面桥：更新按钮只驱动 dsh 卡片动作，不回退到 IDE 确认弹窗', () => {
+		const channel = readFileSync('src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts', 'utf8');
+		const openAt = channel.indexOf("command.method === 'desktopUpdateOpen'");
+		const checkAt = channel.indexOf("command.method === 'appUpdateCheck'");
+		assert.ok(openAt > 0 && checkAt > openAt, '页面桥必须区分「更新」动作和「重试」');
+		assert.match(channel.slice(openAt, checkAt), /confirmUpdate\(\)/, '「更新」必须直接推进下载/安装/重启 ✗');
+		assert.match(channel.slice(checkAt, checkAt + 500), /retry\(\)/, '「重试」必须走重试动作 ✗');
+		const controller = readFileSync('src/vs/sessions/contrib/dshHarness/electron-main/dshDesktopUpdateController.ts', 'utf8');
+		const code = controller.replace(/\/\*[\s\S]*?\*\//g, '').split(/\r?\n/).filter(line => !/^\s*\/\//.test(line)).join('\n');
+		assert.ok(!/showMessageBox|prompt\(/.test(code), '更新控制器里不许再出现原生 messagebox ✗');
 	});
 });

@@ -3,24 +3,32 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { classifyDesktopUpdateFailure, desktopUpdateAppState, desktopUpdatePresentation, IDesktopUpdatePresentation, IDesktopUpdateSnapshot } from '../common/dshDesktopUpdate.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { DisablementReason, IUpdateService, State, StateType } from '../../../../platform/update/common/update.js';
+import { IUpdateService, State, StateType } from '../../../../platform/update/common/update.js';
 import { parseAppUpdateResponse } from '../common/dshAppUpdate.js';
 
 type DesktopUpdateService = Pick<IUpdateService, 'state' | 'onStateChange' | 'checkForUpdates' | 'downloadUpdate' | 'applyUpdate' | 'quitAndInstall'>;
 
-/** Native update feedback for a desktop window that does not load UpdateContribution. */
+/**
+ * Update state source for a desktop window that does not load UpdateContribution.
+ *
+ * vssaros: 更新提示**只用 dsh 侧的通知卡片**（`vssaros-chat-surface/client.appUpdate.js`）。
+ * 本控制器只负责把原生更新状态推成快照，以及执行卡片按钮下发的动作；
+ * 不再弹任何 Electron / IDE messagebox（含「发现新版本」「重启」「已是最新」「失败」）。
+ */
 export class DshDesktopUpdateController extends Disposable {
 
 	private active = false;
-	private prompting = false;
+	private advancing = false;
 	private opening = false;
+	/** 显式发起的检查才允许卡片显示 checking / up-to-date / error 等手动态。 */
+	private manual = false;
+	private presentationId = 0;
 	private sequence = 0;
 	private presentation: IDesktopUpdatePresentation = { phase: 'idle' };
 	private skippedVersion: string | undefined;
@@ -35,7 +43,7 @@ export class DshDesktopUpdateController extends Disposable {
 			seq: this.sequence, presentation: { ...this.presentation },
 			restartReady: state.type === StateType.Ready && this.presentation.phase === 'ready',
 			app: {
-				...desktopUpdateAppState(state, this.presentation, this.options.currentVersion ?? '', this.skippedVersion),
+				...desktopUpdateAppState(state, this.presentation, this.options.currentVersion ?? '', this.skippedVersion, this.manual, this.presentationId),
 				...(metadata?.notes ? { releaseNotes: metadata.notes } : {}),
 				...(this.errorMessage ? { error: this.errorMessage } : {}),
 			},
@@ -43,7 +51,7 @@ export class DshDesktopUpdateController extends Disposable {
 		};
 	}
 
-	get ownsFeedback(): boolean { return this.active || this.prompting; }
+	get ownsFeedback(): boolean { return this.active || this.advancing; }
 
 	private publish(state: State): void {
 		this.errorMessage = undefined;
@@ -62,12 +70,11 @@ export class DshDesktopUpdateController extends Disposable {
 		this.publish(this.updateService.state);
 	}
 	private readonly checkTimeout = this._register(new RunOnceScheduler(() => {
-		void this.showError(localize('desktopUpdateTimeout', "检查更新超时，请检查网络连接后重试。"));
+		this.showError(localize('desktopUpdateTimeout', "检查更新超时，请检查网络连接后重试。"));
 	}, 30_000));
 
 	constructor(
 		private readonly updateService: DesktopUpdateService,
-		private readonly showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>,
 		private readonly logError: (message: string) => void,
 		private readonly options: { currentVersion?: string; skippedVersion?: string; startupCheck?: boolean; saveSkippedVersion?: (version: string | undefined) => Promise<void> | void } = {},
 	) {
@@ -77,9 +84,7 @@ export class DshDesktopUpdateController extends Disposable {
 		this._register(updateService.onStateChange(state => {
 			this.publish(state);
 			if (state.type !== StateType.CheckingForUpdates) { this.checkTimeout.cancel(); }
-			if (this.active && !this.prompting && state.type !== StateType.CheckingForUpdates && state.type !== StateType.Downloading && state.type !== StateType.Updating && state.type !== StateType.Overwriting) {
-				void this.handleState(state).catch(error => this.showError(toErrorMessage(error)));
-			}
+			if (state.type === StateType.Idle) { this.active = false; }
 		}));
 		if (options.startupCheck) {
 			const startup = this._register(new RunOnceScheduler(() => { void this.checkForUpdates(false); }, 8_000));
@@ -87,145 +92,96 @@ export class DshDesktopUpdateController extends Disposable {
 		}
 	}
 
+	/** 只检查并推状态：自动检查不产生 UI，显式检查由 dsh 通知卡片给出反馈。 */
 	async checkForUpdates(explicit = true): Promise<void> {
-		if (this.opening || this.prompting || !explicit && this.updateService.state.type !== StateType.Idle) {
+		const state = this.updateService.state;
+		if (this.opening || this.advancing || !explicit && state.type !== StateType.Idle) {
 			return;
 		}
 		this.opening = true;
 		this.active = explicit;
+		this.manual = explicit;
+		if (explicit) { this.presentationId++; }
 		try {
 			if (explicit) {
 				const saved = this.options.saveSkippedVersion?.(undefined);
 				if (saved) { await saved; }
 				this.skippedVersion = undefined;
 			}
-			this.publish(this.updateService.state);
-			const state = this.updateService.state;
+			this.publish(state);
 			if (state.type === StateType.Idle) {
 				if (explicit) { this.checkTimeout.schedule(); }
 				await this.updateService.checkForUpdates(explicit);
-				if (this.active && !this.prompting && this.updateService.state === state) {
-					await this.showError(localize('desktopUpdateSkipped', "更新检查未启动，请稍后重试。"));
+				if (this.active && this.updateService.state === state) {
+					this.showError(localize('desktopUpdateSkipped', "更新检查未启动，请稍后重试。"));
 				}
-			} else {
-				if (state.type === StateType.CheckingForUpdates) {
-					this.checkTimeout.schedule();
-				}
-				if (!this.prompting) { await this.handleState(state, true); }
+			} else if (explicit && state.type === StateType.CheckingForUpdates) {
+				this.checkTimeout.schedule();
 			}
 		} catch (error) {
-			if (explicit) { await this.showError(toErrorMessage(error)); }
+			if (explicit) { this.showError(toErrorMessage(error)); }
 			else { this.logError(toErrorMessage(error)); }
 		} finally {
 			this.opening = false;
 		}
 	}
 
-	private async handleState(state: State, explicit = false): Promise<void> {
-		if (state.type !== StateType.CheckingForUpdates) {
-			this.checkTimeout.cancel();
+	/** dsh 通知卡片「重试」：上次动作失败就重做该动作，否则重新检查一次。 */
+	async retry(): Promise<void> {
+		const state = this.updateService.state;
+		if (state.type === StateType.AvailableForDownload || state.type === StateType.Downloaded || state.type === StateType.Ready) {
+			await this.confirmUpdate();
+			return;
 		}
-		switch (state.type) {
-			case StateType.Idle:
-				this.active = false;
-				if (state.error) {
-					await this.showError(state.error);
-				} else if (state.notAvailable) {
-					await this.prompt({ type: 'info', message: localize('desktopNoUpdates', "当前已是最新版本。") });
-				}
-				return;
-			case StateType.AvailableForDownload: {
-				const result = await this.prompt({
-					type: 'info',
-					message: localize('desktopUpdateAvailable', "发现新版本（{0}），是否更新？", state.update.productVersion ?? state.update.version),
-					detail: localize('desktopUpdateDownloadDetail', "确认后将下载更新；安装版会在后台安装，完成后提示重启。"),
-					buttons: [localize('desktopUpdateNow', "立即更新"), localize('desktopUpdateLater', "暂不更新")],
-					cancelId: 1,
-				});
-				this.active = result.response === 0;
-				if (this.active && this.updateService.state.type === StateType.AvailableForDownload) {
-					await this.updateService.downloadUpdate(true);
-				}
-				return;
-			}
-			case StateType.Downloaded: {
-				if (!explicit) {
-					return;
-				}
-				const result = await this.prompt({
-					type: 'info',
-					message: localize('desktopUpdateDownloaded', "更新已下载，是否安装？"),
-					buttons: [localize('desktopUpdateInstall', "立即安装"), localize('desktopUpdateLater', "暂不更新")],
-					cancelId: 1,
-				});
-				this.active = result.response === 0;
-				if (this.active && this.updateService.state.type === StateType.Downloaded) {
-					await this.updateService.applyUpdate();
-				}
-				return;
-			}
-			case StateType.Ready: {
-				const result = await this.prompt({
-					type: 'info',
-					message: localize('desktopUpdateReady', "更新已安装，是否立即重启？"),
-					buttons: [localize('desktopUpdateRestart', "立即重启"), localize('desktopUpdateRestartLater', "稍后重启")],
-					cancelId: 1,
-				});
-				this.active = false;
-				if (result.response === 0 && this.updateService.state.type === StateType.Ready) {
-					await this.updateService.quitAndInstall();
-				}
-				return;
-			}
-			case StateType.Disabled:
-				await this.showError(state.reason === DisablementReason.RunningAsAdmin
-					? localize('desktopUpdateAdmin', "用户级安装版以管理员身份运行时无法更新，请以普通权限重新启动后重试。")
-					: localize('desktopUpdateDisabled', "更新服务已禁用，请检查更新设置和安装配置。"));
-				return;
-			case StateType.Uninitialized:
-				await this.showError(localize('desktopUpdateInitializing', "更新服务尚未就绪，请稍后重试。"));
-				return;
-			default:
-				if (explicit) {
-					await this.prompt({
-						type: 'info',
-						message: state.type === StateType.CheckingForUpdates
-							? localize('desktopUpdateChecking', "正在检查更新，请稍候。")
-							: localize('desktopUpdateInProgress', "更新正在下载、安装或重启中，请稍候。"),
-					});
-					if (this.active && this.updateService.state !== state) {
-						await this.handleState(this.updateService.state);
-					}
-				}
-		}
+		await this.checkForUpdates();
 	}
 
-	private async prompt(options: MessageBoxOptions): Promise<MessageBoxReturnValue> {
-		this.prompting = true;
+	/**
+	 * dsh 通知卡片按钮（更新 / 重新启动并安装）下发的动作，**不弹二次确认**。
+	 * 已有更新就下载；已下载就安装；安装就绪就重启；空闲则重新检查一次。
+	 */
+	async confirmUpdate(): Promise<void> {
+		if (this.opening || this.advancing) { return; }
+		const state = this.updateService.state;
+		if (state.type === StateType.Idle) {
+			await this.checkForUpdates();
+			return;
+		}
+		if (state.type !== StateType.AvailableForDownload && state.type !== StateType.Downloaded && state.type !== StateType.Ready) {
+			this.publish(state);
+			return;
+		}
+		this.advancing = true;
+		this.active = true;
+		// 卡片按钮就是一次用户确认：后续进度/失败都算这次「手动呈现」，卡片必须可见。
+		this.manual = true;
+		this.presentationId++;
 		try {
-			return await this.showMessageBox({
-				title: localize('desktopUpdateTitle', "检查更新"),
-				buttons: [localize('desktopUpdateOk', "确定")],
-				noLink: true,
-				...options,
-			});
+			if (state.type === StateType.AvailableForDownload) {
+				await this.updateService.downloadUpdate(true);
+			} else if (state.type === StateType.Downloaded) {
+				await this.updateService.applyUpdate();
+			} else {
+				await this.updateService.quitAndInstall();
+			}
+		} catch (error) {
+			this.showError(toErrorMessage(error));
 		} finally {
-			this.prompting = false;
+			this.advancing = false;
 		}
 	}
 
-	private async showError(message: string): Promise<void> {
+	/** 错误只落到快照（卡片显示「更新失败」）和日志，不再弹原生框。 */
+	private showError(message: string): void {
 		this.active = false;
 		this.checkTimeout.cancel();
+		// 没有 messagebox / 全屏状态页了：失败必须作为一次新的手动呈现交给 dsh 通知卡片。
+		this.manual = true;
+		this.presentationId++;
 		this.errorMessage = message;
 		this.presentation = { phase: 'error', failure: this.presentation.phase === 'error' && this.presentation.failure ? this.presentation.failure : classifyDesktopUpdateFailure(message, this.presentation.phase) };
 		this.sequence++;
 		this.changed.fire(this.snapshot);
 		this.logError(message);
-		try {
-			await this.prompt({ type: 'warning', message: localize('desktopUpdateFailed', "无法完成更新检查或安装。"), detail: message });
-		} catch (error) {
-			this.logError(toErrorMessage(error));
-		}
 	}
 }

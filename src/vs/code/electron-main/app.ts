@@ -215,7 +215,7 @@ import { DshRightbarCdpRelay } from '../../sessions/contrib/dshHarness/electron-
 import { DesktopControlRelay } from '../../sessions/contrib/dshHarness/electron-main/desktopControlRelay.js';
 import { DesktopControlPresence } from '../../sessions/contrib/dshHarness/electron-main/desktopControlPresence.js';
 import { DshViewHost } from '../../sessions/contrib/dshHarness/electron-main/dshViewHost.js';
-import { DshDesktopWindowMainService, focusDshDesktopWindow, getActiveDshDesktopWindow } from '../../sessions/contrib/dshHarness/electron-main/dshDesktopWindowMainService.js';
+import { DshDesktopWindowMainService, focusDshDesktopWindow } from '../../sessions/contrib/dshHarness/electron-main/dshDesktopWindowMainService.js';
 import { DshDesktopUpdateController } from '../../sessions/contrib/dshHarness/electron-main/dshDesktopUpdateController.js';
 import { DSH_HARNESS_CHANNEL, DshHarnessSettings } from '../../sessions/contrib/dshHarness/common/dshHarness.js';
 import { KbDocConvertChannel } from '../../sessions/contrib/agentStudio/electron-main/kbDocConvertChannel.js';
@@ -243,6 +243,8 @@ export class CodeApplication extends Disposable {
 	private auxiliaryWindowsMainService: IAuxiliaryWindowsMainService | undefined;
 	private nativeHostMainService: INativeHostMainService | undefined;
 	private dshDesktopWindowMainService: DshDesktopWindowMainService | undefined;
+	/** Retain the native mutex through shutdown joiners; Windows releases its handle at process exit. */
+	private _processLifetimeMutex: object | undefined;
 
 	constructor(
 		private readonly mainProcessNodeIpcServer: NodeIPCServer,
@@ -1807,12 +1809,10 @@ export class CodeApplication extends Disposable {
 			));
 			effectiveUpdateService = updateCoordinator;
 		}
-		// Show a native "no updates available" dialog from the focused app's main
-		// process to avoid double dialogs across apps and ensure a native dialog.
+		// vssaros: 更新反馈只用 dsh 侧通知卡片 ⇒ 控制器不再注入 showMessageBox。
 		const updateDialogService = accessor.get(IDialogMainService);
 		const desktopUpdateController = this._register(new DshDesktopUpdateController(
 			effectiveUpdateService,
-			options => updateDialogService.showMessageBox(options, getActiveDshDesktopWindow()),
 			message => this.logService.warn(`[dshDesktopOnly] update failed: ${message}`),
 			{
 				currentVersion: this.productService.version,
@@ -1823,7 +1823,10 @@ export class CodeApplication extends Disposable {
 		));
 		const updateChannel = new UpdateChannel(effectiveUpdateService, this.productService.quality === 'saros' ? () => desktopUpdateController.checkForUpdates() : undefined);
 		mainProcessElectronServer.registerChannel('update', updateChannel);
-		this._register(new NotAvailableUpdateDialog(effectiveUpdateService, updateDialogService, () => !desktopUpdateController.ownsFeedback));
+		// saros 一律不弹「当前没有可用更新」的 IDE messagebox（该状态已由 dsh 通知卡片呈现）。
+		if (this.productService.quality !== 'saros') {
+			this._register(new NotAvailableUpdateDialog(effectiveUpdateService, updateDialogService, () => !desktopUpdateController.ownsFeedback));
+		}
 
 		// Cross-app secret sharing (macOS only, demand-driven)
 		if (isMacintosh) {
@@ -2485,11 +2488,10 @@ export class CodeApplication extends Disposable {
 		//     （见下方 agentmemory 端口 3111/3112 那段注释的依据）。
 		const rawMutexName = this.productService.win32MutexName;
 		const win32MutexName = rawMutexName && !this.environmentMainService.isBuilt ? `${rawMutexName}-dev` : rawMutexName;
-		if (isWindows && win32MutexName) {
+		if (isWindows && win32MutexName && !this._processLifetimeMutex) {
 			try {
 				const WindowsMutex = await import('@vscode/windows-mutex');
-				const mutex = new WindowsMutex.Mutex(win32MutexName);
-				Event.once(this.lifecycleMainService.onWillShutdown)(() => mutex.release());
+				this._processLifetimeMutex = new WindowsMutex.Mutex(win32MutexName);
 			} catch (error) {
 				this.logService.error(error);
 			}
