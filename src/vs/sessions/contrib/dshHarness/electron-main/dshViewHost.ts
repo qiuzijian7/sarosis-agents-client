@@ -646,7 +646,6 @@ export class DshViewHost extends Disposable {
 	private _lastHostOrigin: string | undefined;
 	private _desktopUpdate: IDesktopUpdateSnapshot | undefined;
 	private _appUpdateSuspended = false;
-	private _appUpdatePreparationFailed = false;
 	private _upgradeSeq = 0;
 
 	/** 当前页面归属的 Host：正常取连接，安装停机期间取最后一次连接。 */
@@ -670,12 +669,10 @@ export class DshViewHost extends Disposable {
 
 	beginAppUpdate(): void {
 		this._appUpdateSuspended = true;
-		this._appUpdatePreparationFailed = false;
 		if (!this._connection) { for (const slot of this._views.values()) { this._showHostUnavailable(slot); } }
 	}
 
 	appUpdatePreparationFailed(): void {
-		this._appUpdatePreparationFailed = true;
 		const failure: IDesktopUpdateSnapshot = {
 			seq: (this._desktopUpdate?.seq ?? 0) + 1,
 			presentation: { phase: 'error', failure: 'stop-failed' },
@@ -690,7 +687,6 @@ export class DshViewHost extends Disposable {
 
 	pushDesktopUpdate(snapshot: IDesktopUpdateSnapshot): void {
 		this._desktopUpdate = snapshot;
-		this._appUpdatePreparationFailed = false;
 		for (const slot of this._views.values()) {
 			if (this._pushAppUpdateToSlot(slot, snapshot)) { continue; }
 			if (this._appUpdateSuspended && !this._connection) { this._showHostUnavailable(slot); }
@@ -906,7 +902,6 @@ export class DshViewHost extends Disposable {
 		if (connection) {
 			this._lastHostOrigin = connection.origin;
 			this._appUpdateSuspended = false;
-			this._appUpdatePreparationFailed = false;
 			this._authTimer = setInterval(() => void this._refreshAuth(), AUTH_REFRESH_INTERVAL_MS);
 			(this._authTimer as { unref?: () => void } | undefined)?.unref?.();
 			// P0-3：即使早 auth 事件没赶上，也在 setConnection 时先发起交换，_load 复用 in-flight。

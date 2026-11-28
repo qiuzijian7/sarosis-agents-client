@@ -68,7 +68,7 @@ function fixture() {
 	const wc = { isDestroyed: () => false, getURL: () => url, mainFrame: { origin: 'http://127.0.0.1:12333' },
 		send: (channel: string, value: unknown) => { sends.push([channel, value]); },
 		loadURL: async (value: string) => { loads++; url = value; }, executeJavaScript: async () => { probes++; return false; } };
-	const slot = { id: 'desktop', visible: true, view: { webContents: wc } };
+	const slot: Slot = { id: 'desktop', visible: true, view: { webContents: wc } };
 	Object.assign(host, { _views: new Map([[slot.id, slot]]), _connection: { origin: 'http://127.0.0.1:12333' },
 		_lastHostOrigin: 'http://127.0.0.1:12333', _appUpdateSuspended: false,
 		_authWarmup: { setConnection() {} }, prefetchAuth() {}, _load() { reloads++; },
