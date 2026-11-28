@@ -11,6 +11,10 @@
  *
  * 原子性：先解压到 `node.tmp-<pid>`，自检 `node --version` 通过后再整体替换 `node/`；
  * 任何一步失败都不影响已有的托管 Node。
+ *
+ * ★ 落位不能只靠目录 rename：Windows 上只要待改名目录树里有任一文件被持有句柄（杀软实时扫描 /
+ *   文件监视器 / 刚执行过的 node.exe），`MoveFileEx` 就持续 EPERM，重试也不会好。
+ *   见 `publishStagedNode()` 的复制兜底。
  */
 
 import { execFile } from 'child_process';
@@ -21,6 +25,7 @@ import { join } from '../../../../base/common/path.js';
 import { extract } from '../../../../base/node/zip.js';
 import { isSupportedNodeVersion } from '../common/dshCli.js';
 import { DEFAULT_NODE_MIRROR, INodeDistEntry, joinUrl, managedNodeLayout, nodeArchiveFor, parseShasums, selectNodeVersion } from '../common/dshNodeDist.js';
+import { copyDirectoryConcurrently } from './dshConcurrentCopy.js';
 
 export type FetchLike = (url: string) => Promise<{ ok: boolean; status: number; arrayBuffer(): Promise<ArrayBuffer>; text(): Promise<string>; body?: unknown }>;
 
@@ -54,20 +59,117 @@ function nodeVersionOf(exe: string): Promise<string | undefined> {
 	});
 }
 
+/** Windows 目录 rename 被占用时的错误码（`MoveFileEx` 的访问拒绝 / 共享冲突）。 */
+function isLockedError(e: unknown): boolean {
+	const code = (e as NodeJS.ErrnoException | undefined)?.code;
+	return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+}
+
 /**
  * Windows：刚执行过的 node.exe、刚写入的文件常被杀毒软件短暂占用，目录改名会 EPERM / EBUSY（实测）。
- * 与 graceful-fs 相同，按退避重试，最长约 10 秒。
+ * 与 graceful-fs 相同，按退避重试；落位处还有复制兜底，所以那里只给 4 秒，不让首启白等。
  */
-async function renameWithRetry(from: string, to: string): Promise<void> {
-	const deadline = Date.now() + 10_000;
+async function renameWithRetry(from: string, to: string, timeoutMs = 10_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
 	for (let delay = 100; ; delay = Math.min(delay * 2, 1_000)) {
 		try {
 			await fsp.rename(from, to);
 			return;
 		} catch (e) {
-			const code = (e as NodeJS.ErrnoException).code;
-			if ((code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY') || Date.now() > deadline) {
+			if (!isLockedError(e) || Date.now() > deadline) {
 				throw e;
+			}
+			await new Promise(r => setTimeout(r, delay));
+		}
+	}
+}
+
+export interface IPublishStagedNodeOptions {
+	/** 已解压并自检过的目录（`<managedRoot>/node.tmp-<pid>/node-vX-win-x64`）。 */
+	readonly stagedDir: string;
+	/** 落位目标（`<managedRoot>/node`）。 */
+	readonly finalDir: string;
+	/** 旧目录临时名（`<managedRoot>/node.old-<pid>`）。 */
+	readonly oldDir: string;
+	readonly log: (line: string) => void;
+	/** 仅测试注入：模拟 Windows 上 rename 一直被占用。 */
+	readonly rename?: (from: string, to: string) => Promise<void>;
+	/** 仅测试注入：替换目录复制实现。 */
+	readonly copyDir?: (from: string, to: string) => Promise<void>;
+}
+
+/**
+ * 把自检过的暂存目录落位到 `<managedRoot>/node`。
+ *
+ * 常规路径：旧目录先改名让位 → 新目录整体 rename（同卷原子），失败可整体回滚。
+ *
+ * ★ 2026-11-28（真机：别的机器安装包首启 `EPERM: operation not permitted, rename
+ *   '…\node.tmp-<pid>\node-v26.13.1-win-x64' -> '…\dsh-runtime\node'`）：
+ *   只要待改名目录树里有**任一文件被持有句柄**（杀软实时扫描、文件监视器、刚执行过的
+ *   `node.exe`），或目标目录已存在，Windows `MoveFileEx` 就持续 EPERM —— 本机实测仅一个
+ *   `open(path, 'r')` 句柄就能让整目录 rename 永久失败，等 10 秒也不会好。
+ *   ⇒ 锁类错误不能只重试：退化为**逐文件复制就位** —— 只读源、只在目标新建/覆盖文件，
+ *   不需要源目录的「可删除」句柄。项目里 profile 插件层早已因同一原因改成就地覆盖
+ *   （`dshHostSupervisor.ts` 的插件同步），此处同口径。
+ */
+export async function publishStagedNode(opts: IPublishStagedNodeOptions): Promise<void> {
+	const { stagedDir, finalDir, oldDir } = opts;
+	const rename = opts.rename ?? ((from: string, to: string) => renameWithRetry(from, to, 4_000));
+	// dereference: true —— 官方 Linux 包里 bin/npm 等是符号链接，Windows 非管理员建链接会 EPERM
+	// （与 copyProfileSeed 同口径）。解引用后它们变成等价的普通文件，node/npm 仍可用。
+	const copyDir = opts.copyDir ?? ((from: string, to: string) => copyDirectoryConcurrently(from, to, { dereference: true }));
+	const hadFinal = existsSync(finalDir);
+	let finalUsable = hadFinal;
+	let oldMoved = false;
+	try {
+		if (hadFinal) {
+			await rename(finalDir, oldDir);
+			oldMoved = true;
+			finalUsable = false;
+		}
+		await rename(stagedDir, finalDir);
+	} catch (e) {
+		if (!isLockedError(e)) {
+			if (oldMoved) {
+				await rename(oldDir, finalDir).catch(() => undefined);
+			}
+			throw e;
+		}
+		// 先把旧目录挪回去，让「就地覆盖」从一份完整的 Node 开始；挪不动也没关系，
+		// 旧副本留在 oldDir 当备份，下面会重建 finalDir。
+		if (oldMoved && !existsSync(finalDir)) {
+			try {
+				await rename(oldDir, finalDir);
+				oldMoved = false;
+				finalUsable = true;
+			} catch { /* 旧目录同样被占用：保留备份 */ }
+		}
+		opts.log(`managed Node: 目录 rename 被占用（${(e as NodeJS.ErrnoException).code}）⇒ 改用逐文件复制落位`);
+		try {
+			await fsp.mkdir(finalDir, { recursive: true });
+			await copyDir(stagedDir, finalDir);
+			finalUsable = true;
+		} catch (copyError) {
+			// 目标里没有一份可用 Node 时删掉半成品，避免下次启动把半份目录当成已安装。
+			if (!finalUsable) {
+				await rmWithRetry(finalDir);
+			}
+			throw new Error(`托管 Node 落位失败（目录 rename 被占用，逐文件复制也未完成）：${String((copyError as Error)?.message ?? copyError)}`);
+		}
+	}
+	await rmWithRetry(oldDir);
+}
+
+/** 同一批文件被占用时 `rm` 也会 EPERM/EBUSY；清理失败不能盖掉「安装已成功」这个结果。 */
+async function rmWithRetry(dir: string, timeoutMs = 3_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	for (let delay = 100; ; delay = Math.min(delay * 2, 500)) {
+		try {
+			await fsp.rm(dir, { recursive: true, force: true });
+			return;
+		} catch (e) {
+			if (!isLockedError(e) || Date.now() > deadline) {
+				return;
 			}
 			await new Promise(r => setTimeout(r, delay));
 		}
@@ -146,7 +248,7 @@ export async function installManagedNode(opts: INodeInstallOptions): Promise<INo
 	const staging = join(opts.managedRoot, `node.tmp-${process.pid}`);
 	const final = join(opts.managedRoot, 'node');
 	const old = join(opts.managedRoot, `node.old-${process.pid}`);
-	await fsp.rm(staging, { recursive: true, force: true });
+	await rmWithRetry(staging);
 
 	try {
 		opts.log(`downloading ${archive.fileName} from ${mirror}`);
@@ -179,23 +281,12 @@ export async function installManagedNode(opts: INodeInstallOptions): Promise<INo
 		}
 		await fsp.writeFile(join(unpacked, '.vssaros-node.json'), JSON.stringify({ version, mirror, sha256, installedAt: new Date().toISOString() }, undefined, 2));
 
-		// 原子替换：旧目录先改名，新目录就位后再删旧目录；替换失败时恢复旧目录。
-		if (existsSync(final)) {
-			await renameWithRetry(final, old);
-		}
-		try {
-			await renameWithRetry(unpacked, final);
-		} catch (e) {
-			if (existsSync(old)) {
-				await renameWithRetry(old, final).catch(() => undefined);
-			}
-			throw e;
-		}
-		await fsp.rm(old, { recursive: true, force: true }).catch(() => undefined);
+		// 落位：优先原子 rename；Windows 上目录被占用时由 publishStagedNode() 退化为逐文件复制。
+		await publishStagedNode({ stagedDir: unpacked, finalDir: final, oldDir: old, log: opts.log });
 		opts.log(`managed Node ${version} installed at ${final}`);
 		return { version, path: managedNodePath(opts.managedRoot, platform), mirror, bytes };
 	} finally {
 		await fsp.rm(tmpArchive, { force: true }).catch(() => undefined);
-		await fsp.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+		await rmWithRetry(staging);
 	}
 }
