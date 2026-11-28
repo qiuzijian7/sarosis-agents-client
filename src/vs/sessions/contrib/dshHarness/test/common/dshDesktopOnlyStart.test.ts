@@ -206,6 +206,23 @@ suite('启动只露桌面窗口（不许 IDE 闪一下）', () => {
 		assert.match(app, /showMessageBox\(options, getActiveDshDesktopWindow\(\)\)/);
 		assert.match(app, /\(\) => !desktopUpdateController\.ownsFeedback/);
 	});
+
+	test('9) 启动 UI 必须显示阶段说明与耗时，并接上主进程的细粒度进度', () => {
+		const shell = code(SHELL);
+		assert.match(shell, /DshHarnessChannelEvent\.OnDidProgress/,
+			'不订阅进度事件就只剩一句「正在准备运行环境…」，用户看不出卡在哪');
+		assert.match(shell, /boot\.note\(line\)/);
+		for (const stage of ['shell', 'view', 'runtime', 'ui']) {
+			assert.match(shell, new RegExp(`beginStage\\('${stage}'\\)`), `${stage} 阶段必须显式记时`);
+		}
+		assert.match(shell, /boot\.finish\('启动完成'\)/, '完成时必须冻结总耗时并展示汇总');
+		assert.match(shell, /boot\.failCurrent\(message\)/, '失败时必须标出卡在哪个阶段');
+		assert.match(shell, /logBootSummary\(\)/, '各阶段耗时还要落日志，面板消失后仍可回溯');
+		const html = read('src/vs/sessions/electron-browser/dshDesktop.html');
+		assert.match(html, /boot-stage-detail/, '每个阶段必须有详细说明的容器');
+		assert.match(html, /boot-stage-time/, '每个阶段必须显示耗时');
+		assert.match(html, /boot-steps/, '进度子步骤必须逐条显示');
+	});
 });
 
 suite('独立桌面窗口更新反馈', () => {

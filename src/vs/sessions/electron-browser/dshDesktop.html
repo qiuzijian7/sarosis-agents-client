@@ -10,6 +10,41 @@
 		html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #1f1f1f; color: #cccccc; font-family: "Segoe UI", system-ui, sans-serif; }
 		#root { position: absolute; inset: var(--dsh-caption-h) 0 0 0; }
 		#booting { position: absolute; inset: var(--dsh-caption-h) 0 0 0; display: flex; align-items: center; justify-content: center; padding: 0 24px; font-size: 13px; color: #9d9d9d; text-align: center; pointer-events: none; }
+		/* 启动阶段面板：每个阶段一段说明 + 实时耗时；主进程进度文本作为子步骤逐条计时。
+		   启动完成后短暂显示紧凑汇总 —— 原生 WebContentsView 会盖住 DOM，所以必须在显示视图之前展示。 */
+		.boot-card { width: min(580px, 100%); max-height: calc(100% - 40px); overflow: hidden; box-sizing: border-box; padding: 18px 20px; background: #252526; border: 1px solid #3c3c3c; border-radius: 8px; box-shadow: 0 8px 30px rgba(0, 0, 0, .35); text-align: left; }
+		.boot-title { font-size: 14px; font-weight: 600; color: #e7e7e7; margin-bottom: 4px; }
+		.boot-message { font-size: 12px; line-height: 1.5; color: #9d9d9d; white-space: pre-wrap; margin-bottom: 6px; }
+		.boot-total { font-size: 11px; color: #858585; font-variant-numeric: tabular-nums; margin-bottom: 12px; }
+		.boot-stages { display: flex; flex-direction: column; gap: 9px; }
+		.boot-stage { border-left: 2px solid #3c3c3c; padding-left: 10px; opacity: .55; }
+		.boot-stage.is-running { border-left-color: #FF5A2E; opacity: 1; }
+		.boot-stage.is-done { border-left-color: #4ec9b0; opacity: .85; }
+		.boot-stage.is-failed { border-left-color: #f14c4c; opacity: 1; }
+		.boot-stage-head { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+		.boot-mark { flex: none; width: 12px; color: #858585; }
+		.boot-stage.is-running .boot-mark { color: #FF5A2E; }
+		.boot-stage.is-done .boot-mark { color: #4ec9b0; }
+		.boot-stage.is-failed .boot-mark { color: #f14c4c; }
+		.boot-stage-label { flex: 1; font-weight: 600; color: #cccccc; }
+		.boot-stage-time { flex: none; color: #9d9d9d; font-variant-numeric: tabular-nums; }
+		.boot-stage-detail { margin: 3px 0 0 20px; font-size: 11px; line-height: 1.5; color: #858585; }
+		/* 未到达的阶段先只列标题，进入/完成后才展开说明 —— 小窗口也不会把面板顶出屏幕。 */
+		.boot-stage.is-pending .boot-stage-detail { display: none; }
+		.boot-steps { display: flex; flex-direction: column; gap: 2px; margin: 5px 0 0 20px; }
+		.boot-step { display: flex; gap: 8px; font-size: 11px; color: #9d9d9d; }
+		.boot-step.is-running { color: #e7e7e7; }
+		.boot-step.is-more { color: #6f6f6f; font-style: italic; }
+		.boot-step-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		.boot-step-time { flex: none; color: #858585; font-variant-numeric: tabular-nums; }
+		.boot-hint { margin-top: 12px; font-size: 11px; line-height: 1.5; color: #cca700; }
+		.boot-hint:empty { display: none; }
+		#booting.is-failed .boot-message { color: #f48771; }
+		#booting.is-complete .boot-card { width: 400px; padding: 14px 18px; }
+		#booting.is-complete .boot-title { color: #4ec9b0; }
+		#booting.is-complete .boot-message, #booting.is-complete .boot-stage-detail, #booting.is-complete .boot-steps, #booting.is-complete .boot-hint { display: none; }
+		#booting.is-complete .boot-total { margin-bottom: 10px; }
+		#booting.is-complete .boot-stages { gap: 5px; }
 		/* 自绘 caption：与 Electron WCO 窗控带同色同高（右侧 138px 由原生层画，DOM 不许比它矮，否则出现台阶）；整条可拖拽，交互元素单独 no-drag。 */
 		#caption { position: absolute; left: 0; top: 0; right: 0; height: var(--dsh-caption-h); box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding: 0 192px 0 10px; background: #1f1f1f; color: #cccccc; font-size: 12px; line-height: 1; white-space: nowrap; overflow: hidden; z-index: 2; -webkit-app-region: drag; user-select: none; }
 		#caption .logo { flex: none; width: 16px; height: 16px; }
@@ -39,7 +74,13 @@
 		<span class="menubar" id="dsh-menubar" role="menubar" aria-label="应用菜单"></span>
 	</div>
 	<div id="root"></div>
-	<div id="booting">正在启动 dsh 桌面窗口…</div>
+	<!-- 首帧静态骨架；dshDesktop.ts 接管后按阶段重绘，每个阶段都带说明与耗时。 -->
+	<div id="booting">
+		<div class="boot-card">
+			<div class="boot-title">VsSaros 正在启动</div>
+			<div class="boot-message">正在启动 dsh 桌面窗口…</div>
+		</div>
+	</div>
 	<button id="open-ide" type="button" title="打开 VsSaros IDE">IDE</button>
 	<script src="./dshDesktop.js" type="module"></script>
 </body>
